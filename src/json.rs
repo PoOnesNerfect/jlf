@@ -1,176 +1,103 @@
 use std::iter::Peekable;
 
 pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError<'a>> {
-    let mut indicies = JsonIndices::Null; // Start with a Null value
-    indicies.parse_replace(input)?;
-    Ok(Json {
-        raw: input,
-        indicies,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct Json<'a> {
-    pub raw: &'a str,
-    pub indicies: JsonIndices,
-}
-
-impl<'a> Json<'a> {
-    pub fn as_ref(&self) -> JsonRef {
-        JsonRef {
-            raw: self.raw,
-            indicies: &self.indicies,
-        }
-    }
-
-    pub fn get(&'a self, key: &str) -> JsonRef<'a> {
-        self.as_ref().get(key)
-    }
-
-    pub fn get_i(&'a self, index: usize) -> JsonRef<'a> {
-        self.as_ref().get_i(index)
-    }
-
-    pub fn is_null(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Null)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match &self.indicies {
-            JsonIndices::Object(obj, _) => obj.is_empty(),
-            JsonIndices::Array(arr) => arr.is_empty(),
-            JsonIndices::Null => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_object(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Object(_, _))
-    }
-
-    pub fn is_array(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Array(_))
-    }
-
-    pub fn is_value(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Value(_))
-    }
-
-    pub fn as_value(&self) -> Option<&str> {
-        match self.indicies {
-            JsonIndices::Value((s, e)) => Some(&self.raw[s..e]),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError<'a>> {
-        self.indicies.parse_replace(input)?;
-        self.raw = input;
-        Ok(())
-    }
-
-    // Replace self with a new value and return the previous value
-    pub fn replace(&mut self, value: Self) -> Self {
-        std::mem::replace(self, value)
-    }
-
-    // Replace self with JsonIndices::Null and return the previous value
-    pub fn take(&mut self) -> Self {
-        self.replace(Self {
-            raw: self.raw,
-            indicies: JsonIndices::Null,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct JsonRef<'a> {
-    pub raw: &'a str,
-    pub indicies: &'a JsonIndices,
+    let mut json = Json::Null; // Start with a Null value
+    json.parse_replace(input)?;
+    Ok(json)
 }
 
 #[derive(Debug, Clone, Default)]
-pub enum JsonIndices {
-    // first arg is the key value pairs, second is a list of keys used as cache for parse_in_place
-    Object(Vec<((usize, usize), JsonIndices)>, Vec<(usize, usize)>),
-    Array(Vec<JsonIndices>),
-    Value((usize, usize)),
+pub enum Json<'a> {
+    // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
+    Object(Vec<(&'a str, Json<'a>)>, Vec<&'a str>),
+    Array(Vec<Json<'a>>),
+    Value(&'a str),
     #[default]
     Null,
 }
 
-impl<'a> JsonRef<'a> {
-    pub fn get(&self, key: &str) -> Self {
-        let indices = match self.indicies {
-            JsonIndices::Object(obj, _) => obj
+impl<'a> Json<'a> {
+    pub fn get(&self, key: &str) -> &Json {
+        match self {
+            Json::Object(obj, _) => obj
                 .iter()
-                .find(|((s, e), _)| &self.raw[*s..*e] == key)
+                .find(|(k, _)| k == &key)
                 .map(|(_, v)| v)
-                .unwrap_or(&JsonIndices::Null),
-            _ => &JsonIndices::Null,
-        };
-
-        Self {
-            raw: self.raw,
-            indicies: indices,
+                .unwrap_or(&Json::Null),
+            _ => &Json::Null,
         }
     }
 
-    pub fn get_i(&self, index: usize) -> Self {
-        let indices = match self.indicies {
-            JsonIndices::Array(arr) => arr.get(index).unwrap_or(&JsonIndices::Null),
-            _ => &JsonIndices::Null,
-        };
-
-        Self {
-            raw: self.raw,
-            indicies: indices,
+    pub fn get_i(&self, index: usize) -> &Json {
+        match self {
+            Json::Array(arr) => arr.get(index).unwrap_or(&Json::Null),
+            _ => &Json::Null,
         }
     }
 
     pub fn is_null(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Null)
+        matches!(self, Json::Null)
     }
 
     pub fn is_empty(&self) -> bool {
-        match self.indicies {
-            JsonIndices::Object(obj, _) => obj.is_empty(),
-            JsonIndices::Array(arr) => arr.is_empty(),
-            JsonIndices::Null => true,
-            _ => false,
+        match self {
+            Json::Object(obj, _) => obj.is_empty(),
+            Json::Array(arr) => arr.is_empty(),
+            Json::Value(v) => v.is_empty(),
+            Json::Null => true,
         }
     }
 
     pub fn is_object(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Object(_, _))
+        matches!(self, Json::Object(_, _))
     }
 
     pub fn is_array(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Array(_))
+        matches!(self, Json::Array(_))
     }
 
     pub fn is_value(&self) -> bool {
-        matches!(self.indicies, JsonIndices::Value(_))
+        matches!(self, Json::Value(_))
     }
 
-    pub fn as_value(&self) -> Option<&str> {
-        match self.indicies {
-            JsonIndices::Value((s, e)) => Some(&self.raw[*s..*e]),
+    pub fn as_object(&self) -> Option<&Vec<(&'a str, Json<'a>)>> {
+        match self {
+            Json::Object(obj, _) => Some(obj),
             _ => None,
         }
     }
-}
 
-impl JsonIndices {
-    #[inline]
-    fn parse_replace<'a>(&mut self, input: &'a str) -> Result<(), ParseError<'a>> {
+    pub fn as_array(&self) -> Option<&Vec<Json<'a>>> {
+        match self {
+            Json::Array(arr) => Some(arr),
+            _ => None,
+        }
+    }
+
+    pub fn as_value(&self) -> Option<&str> {
+        match self {
+            Json::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    // Replace self with a new value and return the previous value
+    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> {
+        std::mem::replace(self, value)
+    }
+
+    // Replace self with Json::Null and return the previous value
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
+    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError<'a>> {
         let mut chars = input.char_indices().peekable();
         self.parse_value_in_place(&mut chars, input)?;
         Ok(())
     }
 
-    fn parse_value_in_place<'a, I>(
+    fn parse_value_in_place<I>(
         &mut self,
         chars: &mut Peekable<I>,
         input: &'a str,
@@ -180,22 +107,22 @@ impl JsonIndices {
     {
         match chars.peek().map(|&(_, c)| c) {
             Some('{') => {
-                if let JsonIndices::Object(obj, keys) = self {
+                if let Json::Object(obj, keys) = self {
                     parse_object_in_place(obj, chars, input, keys)?;
                 } else {
                     let mut obj = Vec::new();
                     let mut keys = Vec::new();
                     parse_object_in_place(&mut obj, chars, input, &mut keys)?;
-                    *self = JsonIndices::Object(obj, keys);
+                    *self = Json::Object(obj, keys);
                 }
             }
             Some('[') => {
-                if let JsonIndices::Array(arr) = self {
+                if let Json::Array(arr) = self {
                     parse_array_in_place(arr, chars, input)?;
                 } else {
                     let mut arr = Vec::new();
                     parse_array_in_place(&mut arr, chars, input)?;
-                    *self = JsonIndices::Array(arr);
+                    *self = Json::Array(arr);
                 }
             }
             Some('"') => {
@@ -241,10 +168,10 @@ impl JsonIndices {
 }
 
 fn parse_object_in_place<'a, I>(
-    pairs: &mut Vec<((usize, usize), JsonIndices)>,
+    pairs: &mut Vec<(&'a str, Json<'a>)>,
     chars: &mut Peekable<I>,
     input: &'a str,
-    new_keys: &mut Vec<(usize, usize)>,
+    new_keys: &mut Vec<&'a str>,
 ) -> Result<(), ParseError<'a>>
 where
     I: Iterator<Item = (usize, char)>,
@@ -262,9 +189,9 @@ where
     if let Some((_, '}')) = chars.peek() {
         chars.next(); // Consume the closing '}'
 
-        // Set values to JsonIndices::Null for keys not found in the input
+        // Set values to Json::Null for keys not found in the input
         for (_, value) in pairs.iter_mut() {
-            *value = JsonIndices::Null;
+            *value = Json::Null;
         }
 
         return Ok(());
@@ -273,7 +200,7 @@ where
     new_keys.clear();
 
     loop {
-        let Ok(JsonIndices::Value(key_in_quotes)) = parse_string(chars, input) else {
+        let Ok(Json::Value(key_in_quotes)) = parse_string(chars, input) else {
             return Err(ParseError {
                 message: "Unexpected char in object",
                 value: input,
@@ -284,7 +211,7 @@ where
             });
         };
 
-        let key = (key_in_quotes.0 + 1, key_in_quotes.1 - 1);
+        let key = &key_in_quotes[1..key_in_quotes.len() - 1];
 
         skip_whitespace(chars);
         if chars.next().map(|(_, c)| c) != Some(':') {
@@ -304,7 +231,7 @@ where
             value.parse_value_in_place(chars, input)?;
             new_keys.push(key);
         } else {
-            let mut new_value = JsonIndices::Null;
+            let mut new_value = Json::Null;
             new_value.parse_value_in_place(chars, input)?;
             pairs.push((key, new_value));
             new_keys.push(key);
@@ -321,7 +248,7 @@ where
 
                 for (key, value) in pairs {
                     if !new_keys.contains(key) {
-                        *value = JsonIndices::Null;
+                        *value = Json::Null;
                     }
                 }
 
@@ -339,7 +266,7 @@ where
 }
 
 fn parse_array_in_place<'a, I>(
-    arr: &mut Vec<JsonIndices>,
+    arr: &mut Vec<Json<'a>>,
     chars: &mut Peekable<I>,
     input: &'a str,
 ) -> Result<(), ParseError<'a>>
@@ -353,7 +280,7 @@ where
         chars.next(); // Consume the closing ']'
 
         for value in arr.iter_mut() {
-            *value = JsonIndices::Null;
+            *value = Json::Null;
         }
 
         return Ok(());
@@ -365,7 +292,7 @@ where
         if count < arr.len() {
             arr[count].parse_value_in_place(chars, input)?;
         } else {
-            let mut new_element = JsonIndices::Null;
+            let mut new_element = Json::Null;
             new_element.parse_value_in_place(chars, input)?;
             arr.push(new_element);
         }
@@ -381,7 +308,7 @@ where
                 chars.next(); // Consume the closing ']'
 
                 for value in arr.iter_mut().skip(count) {
-                    *value = JsonIndices::Null;
+                    *value = Json::Null;
                 }
 
                 return Ok(());
@@ -401,10 +328,7 @@ where
     }
 }
 
-fn parse_string<'a, I>(
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<JsonIndices, ParseError<'a>>
+fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError<'a>>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -421,7 +345,7 @@ where
 
     while let Some((i, c)) = chars.next() {
         match c {
-            '"' => return Ok(JsonIndices::Value((start_index, i + 1))),
+            '"' => return Ok(Json::Value(&input[start_index..=i])),
             '\\' => {
                 chars.next(); // Skip the character following the escape
             }
@@ -436,7 +360,7 @@ where
     })
 }
 
-fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<JsonIndices, ParseError<'a>>
+fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError<'a>>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -446,7 +370,7 @@ where
         && chars.next().map(|(_, c)| c) == Some('l')
         && chars.next().map(|(_, c)| c) == Some('l')
     {
-        Ok(JsonIndices::Null)
+        Ok(Json::Null)
     } else {
         Err(ParseError {
             message: "Invalid null value",
@@ -460,19 +384,19 @@ where
 fn parse_raw_value<'a, I>(
     chars: &mut Peekable<I>,
     input: &'a str,
-) -> Result<JsonIndices, ParseError<'a>>
+) -> Result<Json<'a>, ParseError<'a>>
 where
     I: Iterator<Item = (usize, char)>,
 {
     let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     while let Some(&(i, c)) = chars.peek() {
         if c == ',' || c == ']' || c == '}' {
-            return Ok(JsonIndices::Value((start_index, i)));
+            return Ok(Json::Value(&input[start_index..i]));
         }
         chars.next();
     }
 
-    Ok(JsonIndices::Value((start_index, input.len())))
+    Ok(Json::Value(&input[start_index..]))
 }
 
 // skip whitespaces and return the number of characters skipped
