@@ -1,0 +1,22 @@
+[package]
+name = "jl"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "jl"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
+serde = "1.0.196"
+serde_json = "1.0.113"
+
+[[bench]]
+name = "parse_json"
+harness = false
