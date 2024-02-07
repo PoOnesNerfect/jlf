@@ -87,7 +87,7 @@ fn custom_parse_bench(c: &mut Criterion) {
 fn serde_value_parse_bench(c: &mut Criterion) {
     let mut value = Value::Null;
 
-    c.bench_function("serde parse", |b| {
+    c.bench_function("serde value parse", |b| {
         b.iter(|| serde_value_parse(black_box(&mut value), black_box(&INPUTS)))
     });
 }
@@ -95,7 +95,7 @@ fn serde_value_parse_bench(c: &mut Criterion) {
 fn serde_structured_parse_bench(c: &mut Criterion) {
     let mut value = serde_json::from_str(&INPUTS[0]).unwrap();
 
-    c.bench_function("structured parse", |b| {
+    c.bench_function("serde structured parse", |b| {
         b.iter(|| serde_structured_parse(black_box(&mut value), black_box(&INPUTS)))
     });
 }

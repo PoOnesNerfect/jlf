@@ -1,3 +1,4 @@
+use core::fmt;
 use std::iter::Peekable;
 
 pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
@@ -6,7 +7,7 @@ pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
     Ok(json)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
     Object(Vec<(&'a str, Json<'a>)>),
@@ -73,6 +74,20 @@ impl<'a> Json<'a> {
     }
 
     pub fn as_array(&self) -> Option<&Vec<Json<'a>>> {
+        match self {
+            Json::Array(arr) => Some(arr),
+            _ => None,
+        }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut Vec<(&'a str, Json<'a>)>> {
+        match self {
+            Json::Object(obj) => Some(obj),
+            _ => None,
+        }
+    }
+
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Json<'a>>> {
         match self {
             Json::Array(arr) => Some(arr),
             _ => None,
@@ -429,6 +444,107 @@ where
             chars.next();
         } else {
             break;
+        }
+    }
+}
+
+impl<'a> fmt::Display for Json<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Json::Object(obj) => {
+                write!(f, "{{")?;
+
+                for (key, value) in obj.iter().take(obj.len().saturating_sub(1)) {
+                    if !value.is_null() {
+                        write!(f, "\"{}\": ", key)?;
+                        fmt::Display::fmt(&value, f)?;
+                        write!(f, ", ")?;
+                    }
+                }
+
+                if let Some((key, value)) = obj.last() {
+                    if !value.is_null() {
+                        write!(f, "\"{}\": ", key)?;
+                        fmt::Display::fmt(&value, f)?;
+                    }
+                }
+
+                write!(f, "}}")
+            }
+            Json::Array(arr) => {
+                write!(f, "[")?;
+                for value in arr.iter().take(arr.len().saturating_sub(1)) {
+                    if !value.is_null() {
+                        fmt::Display::fmt(&value, f)?;
+                        write!(f, ", ")?;
+                    }
+                }
+                if let Some(value) = arr.last() {
+                    if !value.is_null() {
+                        fmt::Display::fmt(&value, f)?;
+                    }
+                }
+
+                write!(f, "]")
+            }
+            Json::Value(v) => write!(f, "{}", v),
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
+        }
+    }
+}
+
+impl<'a> fmt::Debug for Json<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        self.fmt_pretty(f, 0)
+    }
+}
+
+impl Json<'_> {
+    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> Result<(), fmt::Error> {
+        match self {
+            Json::Object(obj) => {
+                if obj.is_empty() {
+                    return write!(f, "{{}}");
+                }
+
+                let mut non_nulls = obj.iter().filter(|(_, v)| !v.is_null());
+                let Some((key, value)) = non_nulls.next() else {
+                    return write!(f, "{{}}");
+                };
+                write!(f, "{{\n")?;
+                write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
+                value.fmt_pretty(f, indent + 2)?;
+
+                for (key, value) in non_nulls {
+                    write!(f, ",\n")?;
+                    write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
+                    value.fmt_pretty(f, indent + 2)?;
+                }
+
+                write!(f, "\n{:indent$}}}", "", indent = indent)
+            }
+            Json::Array(arr) => {
+                if arr.is_empty() {
+                    return write!(f, "[]");
+                }
+
+                let mut non_nulls = arr.iter().filter(|v| !v.is_null());
+                let Some(value) = non_nulls.next() else {
+                    return write!(f, "[]");
+                };
+                write!(f, "[\n")?;
+                write!(f, "{:indent$}", "", indent = (indent + 2))?;
+                value.fmt_pretty(f, indent + 2)?;
+
+                for value in non_nulls {
+                    write!(f, ",\n")?;
+                    write!(f, "{:indent$}", "", indent = (indent + 2))?;
+                    value.fmt_pretty(f, indent + 2)?;
+                }
+                write!(f, "\n{:indent$}]", "", indent = indent)
+            }
+            Json::Value(v) => write!(f, "{}", v),
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
         }
     }
 }
