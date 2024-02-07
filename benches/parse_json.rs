@@ -4,8 +4,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const INPUTS: &'static [&'static str] = &[
-    r#"{"timestamp":"2024-02-06T23:52:48.349676Z","level":"INFO","message":"This is a info log","target":"my_service::my_module::my_api","filename":"my-service/src/my_module.rs","line_number":77,"spans":[{"name":"my_service"},{"name":"my_func"},{"field1":"value1","name":"my_api1"},{"field2":"value2","field3":"value3","field4":1234,"field5":false}]}"#,
-    r#"{"timestamp":"2024-02-07T23:52:48.349676Z","level":"DEBUG","message":"This is a debug log","target":"my_service::my_module::my_api2","filename":"my-service/src/my_module.rs","line_number":78,"spans":[{"name":"my_service"},{"name":"my_func"},{"field1":"value1","name":"my_api2"},{"field2":"value2","field6":"value4","field4":1234,"field5":false},{"field7":123.123,"field8":"some other value"}]}"#,
+    r#"{"timestamp":"2024-02-06T23:52:48.349676Z","level":"INFO","message":"This is a info log","target":"my_service::my_module::my_api","filename":"my-service/src/my_module.rs","line_number":77,"spans":[{"name":"my_service"},{"name":"my_func"},{"name":"my_api1"},{"name":"something"}]}"#,
+    r#"{"timestamp":"2024-02-07T23:52:48.349676Z","level":"DEBUG","message":"This is a debug log","target":"my_service::my_module::my_api2","filename":"my-service/src/my_module.rs","line_number":78,"spans":[{"name":"my_service"},{"name":"my_func"},{"name":"my_api2"},{"name":"something"},{"name":"some other value"}]}"#,
     r#"{"timestamp":"2024-02-07T23:52:48.349676Z","level":"ERROR","message":"This is an error log","target":"my_service::my_module::my_api3","filename":"my-service/src/my_module.rs","line_number":78,"spans":[{"name":"my_service"}]}"#,
 ];
 
@@ -57,7 +57,12 @@ pub struct Log<'a> {
     target: &'a str,
     filename: &'a str,
     line_number: u32,
-    spans: Vec<Value>,
+    spans: Vec<Span<'a>>,
+}
+
+#[derive(Deserialize)]
+struct Span<'a> {
+    name: &'a str,
 }
 
 fn serde_structured_parse<'a>(value: &mut Log<'a>, inputs: &[&'a str]) {
