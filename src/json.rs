@@ -1,19 +1,20 @@
 use std::iter::Peekable;
 
-pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError<'a>> {
+pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
     let mut json = Json::Null; // Start with a Null value
     json.parse_replace(input)?;
     Ok(json)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
     Object(Vec<(&'a str, Json<'a>)>, Vec<&'a str>),
     Array(Vec<Json<'a>>),
     Value(&'a str),
-    #[default]
     Null,
+    NullPrevObject(Vec<(&'a str, Json<'a>)>, Vec<&'a str>),
+    NullPrevArray(Vec<Json<'a>>),
 }
 
 impl<'a> Json<'a> {
@@ -36,15 +37,19 @@ impl<'a> Json<'a> {
     }
 
     pub fn is_null(&self) -> bool {
-        matches!(self, Json::Null)
+        matches!(
+            self,
+            Json::Null | Json::NullPrevObject(_, _) | Json::NullPrevArray(_)
+        )
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
             Json::Object(obj, _) => obj.is_empty(),
             Json::Array(arr) => arr.is_empty(),
+            // never happens since string contains at least 2 quotes
             Json::Value(v) => v.is_empty(),
-            Json::Null => true,
+            Json::Null | Json::NullPrevObject(_, _) | Json::NullPrevArray(_) => true,
         }
     }
 
@@ -86,12 +91,7 @@ impl<'a> Json<'a> {
         std::mem::replace(self, value)
     }
 
-    // Replace self with Json::Null and return the previous value
-    pub fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError<'a>> {
+    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError> {
         let mut chars = input.char_indices().peekable();
         self.parse_value_in_place(&mut chars, input)?;
         Ok(())
@@ -101,7 +101,7 @@ impl<'a> Json<'a> {
         &mut self,
         chars: &mut Peekable<I>,
         input: &'a str,
-    ) -> Result<(), ParseError<'a>>
+    ) -> Result<(), ParseError>
     where
         I: Iterator<Item = (usize, char)>,
     {
@@ -110,31 +110,44 @@ impl<'a> Json<'a> {
                 if let Json::Object(obj, keys) = self {
                     parse_object_in_place(obj, chars, input, keys)?;
                 } else {
-                    let mut obj = Vec::new();
-                    let mut keys = Vec::new();
-                    parse_object_in_place(&mut obj, chars, input, &mut keys)?;
-                    *self = Json::Object(obj, keys);
+                    let this = self.replace(Json::Null);
+                    if let Json::NullPrevObject(mut obj, mut keys) = this {
+                        parse_object_in_place(&mut obj, chars, input, &mut keys)?;
+                        *self = Json::Object(obj, keys);
+                    } else {
+                        let mut obj = Vec::new();
+                        let mut keys = Vec::new();
+                        parse_object_in_place(&mut obj, chars, input, &mut keys)?;
+                        *self = Json::Object(obj, keys);
+                    }
                 }
             }
             Some('[') => {
                 if let Json::Array(arr) = self {
                     parse_array_in_place(arr, chars, input)?;
                 } else {
-                    let mut arr = Vec::new();
-                    parse_array_in_place(&mut arr, chars, input)?;
-                    *self = Json::Array(arr);
+                    let this = self.replace(Json::Null);
+                    if let Json::NullPrevArray(mut arr) = this {
+                        parse_array_in_place(&mut arr, chars, input)?;
+                        *self = Json::Array(arr);
+                    } else {
+                        let mut arr = Vec::new();
+                        parse_array_in_place(&mut arr, chars, input)?;
+                        *self = Json::Array(arr);
+                    }
                 }
             }
             Some('"') => {
                 *self = parse_string(chars, input)?;
             }
             Some('n') => {
-                *self = parse_null(chars, input)?;
+                parse_null(chars, input)?;
+                self.replace_with_null();
             }
             Some(']') => {
                 return Err(ParseError {
                     message: "Unexpected closing bracket",
-                    value: input,
+                    value: input.to_owned(),
                     index: chars
                         .peek()
                         .map(|&(i, _)| i)
@@ -144,7 +157,7 @@ impl<'a> Json<'a> {
             Some('}') => {
                 return Err(ParseError {
                     message: "Unexpected closing brace",
-                    value: input,
+                    value: input.to_owned(),
                     index: chars
                         .peek()
                         .map(|&(i, _)| i)
@@ -157,13 +170,27 @@ impl<'a> Json<'a> {
             None => {
                 return Err(ParseError {
                     message: "Unexpected end of input",
-                    value: input,
+                    value: input.to_owned(),
                     index: input.len(),
                 })
             }
         }
 
         Ok(())
+    }
+
+    fn replace_with_null(&mut self) {
+        let prev = self.replace(Json::Null);
+
+        if let Json::Object(obj, keys) = prev {
+            *self = Json::NullPrevObject(obj, keys);
+        } else if let Json::Array(arr) = prev {
+            *self = Json::NullPrevArray(arr);
+        } else if matches!(prev, Json::NullPrevObject(_, _))
+            || matches!(prev, Json::NullPrevArray(_))
+        {
+            *self = prev;
+        }
     }
 }
 
@@ -172,7 +199,7 @@ fn parse_object_in_place<'a, I>(
     chars: &mut Peekable<I>,
     input: &'a str,
     new_keys: &mut Vec<&'a str>,
-) -> Result<(), ParseError<'a>>
+) -> Result<(), ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -180,7 +207,7 @@ where
     let Some((_, '{')) = chars.next() else {
         return Err(ParseError {
             message: "Object doesn't have a starting brace",
-            value: input,
+            value: input.to_owned(),
             index: 0,
         });
     };
@@ -191,7 +218,7 @@ where
 
         // Set values to Json::Null for keys not found in the input
         for (_, value) in pairs.iter_mut() {
-            *value = Json::Null;
+            value.replace_with_null();
         }
 
         return Ok(());
@@ -203,7 +230,7 @@ where
         let Ok(Json::Value(key_in_quotes)) = parse_string(chars, input) else {
             return Err(ParseError {
                 message: "Unexpected char in object",
-                value: input,
+                value: input.to_owned(),
                 index: chars
                     .peek()
                     .map(|&(i, _)| i - 1)
@@ -217,7 +244,7 @@ where
         if chars.next().map(|(_, c)| c) != Some(':') {
             return Err(ParseError {
                 message: "Expected colon ':' after key in object",
-                value: input,
+                value: input.to_owned(),
                 // Use the index right after the key, which should be the current position
                 index: chars
                     .peek()
@@ -248,7 +275,7 @@ where
 
                 for (key, value) in pairs {
                     if !new_keys.contains(key) {
-                        *value = Json::Null;
+                        value.replace_with_null();
                     }
                 }
 
@@ -257,7 +284,7 @@ where
             _ => {
                 return Err(ParseError {
                     message: "Expected comma or closing brace '}' in object",
-                    value: input,
+                    value: input.to_owned(),
                     index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
                 })
             }
@@ -269,7 +296,7 @@ fn parse_array_in_place<'a, I>(
     arr: &mut Vec<Json<'a>>,
     chars: &mut Peekable<I>,
     input: &'a str,
-) -> Result<(), ParseError<'a>>
+) -> Result<(), ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -280,7 +307,7 @@ where
         chars.next(); // Consume the closing ']'
 
         for value in arr.iter_mut() {
-            *value = Json::Null;
+            value.replace_with_null();
         }
 
         return Ok(());
@@ -308,7 +335,7 @@ where
                 chars.next(); // Consume the closing ']'
 
                 for value in arr.iter_mut().skip(count) {
-                    *value = Json::Null;
+                    value.replace_with_null();
                 }
 
                 return Ok(());
@@ -316,7 +343,7 @@ where
             _ => {
                 return Err(ParseError {
                     message: "Expected comma or closing bracket ']' in array",
-                    value: input,
+                    value: input.to_owned(),
                     // Use the current position as the error index
                     index: chars
                         .peek()
@@ -328,7 +355,7 @@ where
     }
 }
 
-fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError<'a>>
+fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -338,7 +365,7 @@ where
     let Some((_, '"')) = chars.next() else {
         return Err(ParseError {
             message: "Expected opening quote for string",
-            value: input,
+            value: input.to_owned(),
             index: start_index,
         });
     };
@@ -355,12 +382,12 @@ where
 
     Err(ParseError {
         message: "Closing quote not found for string started",
-        value: input,
+        value: input.to_owned(),
         index: start_index,
     })
 }
 
-fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError<'a>>
+fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -374,17 +401,14 @@ where
     } else {
         Err(ParseError {
             message: "Invalid null value",
-            value: input,
+            value: input.to_owned(),
             // Point to the start of 'n' that led to expecting "null"
             index: start_index,
         })
     }
 }
 
-fn parse_raw_value<'a, I>(
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<Json<'a>, ParseError<'a>>
+fn parse_raw_value<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -413,13 +437,13 @@ where
     }
 }
 
-pub struct ParseError<'a> {
+pub struct ParseError {
     pub message: &'static str,
-    pub value: &'a str,
+    pub value: String,
     pub index: usize,
 }
 
-impl std::fmt::Display for ParseError<'_> {
+impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // Create a snippet from the input, showing up to 10 characters before and after the error index
         let start = self.index.saturating_sub(15);
@@ -430,7 +454,7 @@ impl std::fmt::Display for ParseError<'_> {
     }
 }
 
-impl std::fmt::Debug for ParseError<'_> {
+impl std::fmt::Debug for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let snippet_length = 20;
         let start = self.index.saturating_sub(snippet_length);
@@ -450,7 +474,7 @@ impl std::fmt::Debug for ParseError<'_> {
         )
     }
 }
-impl std::error::Error for ParseError<'_> {}
+impl std::error::Error for ParseError {}
 
 #[cfg(test)]
 mod tests {
