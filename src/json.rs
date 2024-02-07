@@ -9,18 +9,18 @@ pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
 #[derive(Debug, Clone)]
 pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
-    Object(Vec<(&'a str, Json<'a>)>, Vec<&'a str>),
+    Object(Vec<(&'a str, Json<'a>)>),
     Array(Vec<Json<'a>>),
     Value(&'a str),
     Null,
-    NullPrevObject(Vec<(&'a str, Json<'a>)>, Vec<&'a str>),
+    NullPrevObject(Vec<(&'a str, Json<'a>)>),
     NullPrevArray(Vec<Json<'a>>),
 }
 
 impl<'a> Json<'a> {
     pub fn get(&self, key: &str) -> &Json {
         match self {
-            Json::Object(obj, _) => obj
+            Json::Object(obj) => obj
                 .iter()
                 .find(|(k, _)| k == &key)
                 .map(|(_, v)| v)
@@ -39,22 +39,22 @@ impl<'a> Json<'a> {
     pub fn is_null(&self) -> bool {
         matches!(
             self,
-            Json::Null | Json::NullPrevObject(_, _) | Json::NullPrevArray(_)
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_)
         )
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
-            Json::Object(obj, _) => obj.is_empty(),
+            Json::Object(obj) => obj.is_empty(),
             Json::Array(arr) => arr.is_empty(),
             // never happens since string contains at least 2 quotes
             Json::Value(v) => v.is_empty(),
-            Json::Null | Json::NullPrevObject(_, _) | Json::NullPrevArray(_) => true,
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
         }
     }
 
     pub fn is_object(&self) -> bool {
-        matches!(self, Json::Object(_, _))
+        matches!(self, Json::Object(_))
     }
 
     pub fn is_array(&self) -> bool {
@@ -67,7 +67,7 @@ impl<'a> Json<'a> {
 
     pub fn as_object(&self) -> Option<&Vec<(&'a str, Json<'a>)>> {
         match self {
-            Json::Object(obj, _) => Some(obj),
+            Json::Object(obj) => Some(obj),
             _ => None,
         }
     }
@@ -107,18 +107,17 @@ impl<'a> Json<'a> {
     {
         match chars.peek().map(|&(_, c)| c) {
             Some('{') => {
-                if let Json::Object(obj, keys) = self {
-                    parse_object_in_place(obj, chars, input, keys)?;
+                if let Json::Object(obj) = self {
+                    parse_object_in_place(obj, chars, input)?;
                 } else {
                     let this = self.replace(Json::Null);
-                    if let Json::NullPrevObject(mut obj, mut keys) = this {
-                        parse_object_in_place(&mut obj, chars, input, &mut keys)?;
-                        *self = Json::Object(obj, keys);
+                    if let Json::NullPrevObject(mut obj) = this {
+                        parse_object_in_place(&mut obj, chars, input)?;
+                        *self = Json::Object(obj);
                     } else {
                         let mut obj = Vec::new();
-                        let mut keys = Vec::new();
-                        parse_object_in_place(&mut obj, chars, input, &mut keys)?;
-                        *self = Json::Object(obj, keys);
+                        parse_object_in_place(&mut obj, chars, input)?;
+                        *self = Json::Object(obj);
                     }
                 }
             }
@@ -182,12 +181,11 @@ impl<'a> Json<'a> {
     fn replace_with_null(&mut self) {
         let prev = self.replace(Json::Null);
 
-        if let Json::Object(obj, keys) = prev {
-            *self = Json::NullPrevObject(obj, keys);
+        if let Json::Object(obj) = prev {
+            *self = Json::NullPrevObject(obj);
         } else if let Json::Array(arr) = prev {
             *self = Json::NullPrevArray(arr);
-        } else if matches!(prev, Json::NullPrevObject(_, _))
-            || matches!(prev, Json::NullPrevArray(_))
+        } else if matches!(prev, Json::NullPrevObject(_)) || matches!(prev, Json::NullPrevArray(_))
         {
             *self = prev;
         }
@@ -198,7 +196,6 @@ fn parse_object_in_place<'a, I>(
     pairs: &mut Vec<(&'a str, Json<'a>)>,
     chars: &mut Peekable<I>,
     input: &'a str,
-    new_keys: &mut Vec<&'a str>,
 ) -> Result<(), ParseError>
 where
     I: Iterator<Item = (usize, char)>,
@@ -224,7 +221,7 @@ where
         return Ok(());
     }
 
-    new_keys.clear();
+    let mut count = 0;
 
     loop {
         let Ok(Json::Value(key_in_quotes)) = parse_string(chars, input) else {
@@ -254,15 +251,16 @@ where
         }
 
         skip_whitespace(chars);
-        if let Some(value) = pairs.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v) {
+        if let Some((old_key, value)) = pairs.get_mut(count) {
+            *old_key = key;
             value.parse_value_in_place(chars, input)?;
-            new_keys.push(key);
         } else {
             let mut new_value = Json::Null;
             new_value.parse_value_in_place(chars, input)?;
             pairs.push((key, new_value));
-            new_keys.push(key);
         }
+
+        count += 1;
 
         skip_whitespace(chars);
         match chars.peek().map(|&(_, c)| c) {
@@ -273,10 +271,8 @@ where
             Some('}') => {
                 chars.next(); // Consume the closing '}'
 
-                for (key, value) in pairs {
-                    if !new_keys.contains(key) {
-                        value.replace_with_null();
-                    }
+                for (_, value) in pairs.iter_mut().skip(count) {
+                    value.replace_with_null();
                 }
 
                 return Ok(());
