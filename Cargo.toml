@@ -2,6 +2,14 @@
 name = "jlf"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
+description = "simple CLI for viewing json logs"
+categories = ["command-line-interface"]
+keywords = ["json", "log", "jl", "format"]
+documentation = "https://docs.rs/jlf"
+repository = "https://github.com/poonesnerfect/jlf"
+license = "MIT OR Apache-2.0"
+rust-version = "1.56"
 
 [lib]
 path = "src/lib.rs"
