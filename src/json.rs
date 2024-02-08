@@ -509,21 +509,21 @@ impl fmt::Debug for StyledJson<'_> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct JsonStyles {
-    pub key_style: Style,
-    pub value_style: Style,
-    pub str_style: Style,
-    pub brackets_style: Style,
+    pub key: Style,
+    pub value: Style,
+    pub str: Style,
+    pub syntax: Style,
 }
 
 impl Default for JsonStyles {
     fn default() -> Self {
         Self {
-            key_style: Style::new().fg::<Blue>(),
-            value_style: Style::new().fg::<BrightWhite>(),
-            str_style: Style::new().fg::<Green>(),
-            brackets_style: Style::new().fg::<White>(),
+            key: Style::new().fg::<Blue>(),
+            value: Style::new().fg::<BrightWhite>(),
+            str: Style::new().fg::<Green>(),
+            syntax: Style::new().fg::<White>(),
         }
     }
 }
@@ -548,38 +548,34 @@ impl Json<'_> {
     ) -> Result<(), fmt::Error> {
         match self {
             Json::Object(obj) => {
-                write_brackets(f, "{", styles)?;
+                write_syntax(f, "{", styles)?;
 
                 for (key, value) in obj.iter().take(obj.len().saturating_sub(1)) {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
-                        write_brackets(f, ":", styles)?;
-                        write!(f, " ")?;
+                        write_syntax(f, ":", styles)?;
                         value.fmt_compact(f, styles)?;
-                        write_brackets(f, ",", styles)?;
-                        write!(f, " ")?;
+                        write_syntax(f, ",", styles)?;
                     }
                 }
 
                 if let Some((key, value)) = obj.last() {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
-                        write_brackets(f, ":", styles)?;
-                        write!(f, " ")?;
+                        write_syntax(f, ":", styles)?;
                         value.fmt_compact(f, styles)?;
                     }
                 }
 
-                write_brackets(f, "}", styles)
+                write_syntax(f, "}", styles)
             }
             Json::Array(arr) => {
-                write_brackets(f, "[", styles)?;
+                write_syntax(f, "[", styles)?;
 
                 for value in arr.iter().take(arr.len().saturating_sub(1)) {
                     if !value.is_null() {
                         value.fmt_compact(f, styles)?;
-                        write_brackets(f, ",", styles)?;
-                        write!(f, " ")?;
+                        write_syntax(f, ",", styles)?;
                     }
                 }
                 if let Some(value) = arr.last() {
@@ -588,7 +584,7 @@ impl Json<'_> {
                     }
                 }
 
-                write_brackets(f, "]", styles)
+                write_syntax(f, "]", styles)
             }
             Json::String(v) => write_str(f, v, styles),
             Json::Value(v) => write_value(f, v, styles),
@@ -607,53 +603,54 @@ impl Json<'_> {
         match self {
             Json::Object(obj) => {
                 if obj.is_empty() {
-                    return write_brackets(f, "{}", styles);
+                    return write_syntax(f, "{}", styles);
                 }
 
                 let mut non_nulls = obj.iter().filter(|(_, v)| !v.is_null());
                 let Some((key, value)) = non_nulls.next() else {
-                    return write_brackets(f, "{}", styles);
+                    return write_syntax(f, "{}", styles);
                 };
 
-                write_brackets(f, "{", &styles)?;
+                write_syntax(f, "{", &styles)?;
                 write!(f, "\n{:indent$}", "", indent = (indent + 2))?;
                 write_key(f, key, styles)?;
-                write_brackets(f, ":", styles)?;
+                write_syntax(f, ":", styles)?;
                 write!(f, " ")?;
                 value.fmt_pretty(f, indent + 2, styles)?;
 
                 for (key, value) in non_nulls {
-                    write_brackets(f, ",", styles)?;
+                    write_syntax(f, ",", styles)?;
                     write!(f, "\n{:indent$}", "", indent = (indent + 2))?;
                     write_key(f, key, styles)?;
-                    write_brackets(f, ":", styles)?;
+                    write_syntax(f, ":", styles)?;
                     write!(f, " ")?;
                     value.fmt_pretty(f, indent + 2, styles)?;
                 }
 
                 write!(f, "\n{:indent$}", "", indent = indent)?;
-                write_brackets(f, "}", styles)
+                write_syntax(f, "}", styles)
             }
             Json::Array(arr) => {
                 if arr.is_empty() {
-                    return write_brackets(f, "[]", styles);
+                    return write_syntax(f, "[]", styles);
                 }
 
                 let mut non_nulls = arr.iter().filter(|v| !v.is_null());
                 let Some(value) = non_nulls.next() else {
-                    return write_brackets(f, "[]", styles);
+                    return write_syntax(f, "[]", styles);
                 };
 
-                write_brackets(f, "[", styles)?;
+                write_syntax(f, "[", styles)?;
                 write!(f, "\n{:indent$}", "", indent = (indent + 2))?;
                 value.fmt_pretty(f, indent + 2, styles)?;
 
                 for value in non_nulls {
-                    write_brackets(f, ",", styles)?;
+                    write_syntax(f, ",", styles)?;
                     write!(f, "\n{:indent$}", "", indent = (indent + 2))?;
                     value.fmt_pretty(f, indent + 2, styles)?;
                 }
-                write!(f, "\n{:indent$}]", "", indent = indent)
+                write!(f, "\n{:indent$}", "", indent = indent)?;
+                write_syntax(f, "]", styles)
             }
             Json::String(v) => write_str(f, v, styles),
             Json::Value(v) => write_value(f, v, styles),
@@ -670,7 +667,7 @@ fn write_key(
     styles: &Option<JsonStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
-        write!(f, "{}", format_args!("\"{key}\"").style(style.key_style))
+        write!(f, "{}", format_args!("\"{key}\"").style(style.key))
     } else {
         write!(f, "\"{}\"", key)
     }
@@ -682,7 +679,7 @@ fn write_value(
     styles: &Option<JsonStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
-        write!(f, "{}", value.style(style.value_style))
+        write!(f, "{}", value.style(style.value))
     } else {
         write!(f, "{}", value)
     }
@@ -694,21 +691,21 @@ fn write_str(
     styles: &Option<JsonStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
-        write!(f, "{}", format_args!("\"{str}\"").style(style.str_style))
+        write!(f, "{}", format_args!("\"{str}\"").style(style.str))
     } else {
         write!(f, "\"{}\"", str)
     }
 }
 
-fn write_brackets(
+fn write_syntax(
     f: &mut fmt::Formatter<'_>,
-    brackets: &str,
+    syntax: &str,
     styles: &Option<JsonStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
-        write!(f, "{}", brackets.style(style.brackets_style))
+        write!(f, "{}", syntax.style(style.syntax))
     } else {
-        write!(f, "{}", brackets)
+        write!(f, "{}", syntax)
     }
 }
 

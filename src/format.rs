@@ -33,13 +33,22 @@ fn parse_escaped(c: char) -> Result<Piece, FormatError> {
         '\'' => Ok(Piece::Escaped('\'')),
         '"' => Ok(Piece::Escaped('\"')),
         '{' => Ok(Piece::Escaped('{')),
+        '}' => Ok(Piece::Escaped('}')),
         '\\' => Ok(Piece::Escaped('\\')),
         _ => Err(FormatError::UnknownCharEscape(c)),
     }
 }
 
 fn parse2(pieces: &mut Vec<Piece>, input: &str, no_color: bool) -> Result<(), FormatError> {
-    for part in input.split('{') {
+    let mut parts = input.split('{');
+
+    if let Some(part) = parts.next() {
+        if !part.is_empty() {
+            pieces.push(Piece::Literal(part.to_owned()));
+        }
+    }
+
+    for part in parts {
         if let Some(end) = part.find('}') {
             let (name, format) = match part[..end].split_once(':') {
                 Some((name, styles)) => (name.to_string(), Format::new(Some(styles), no_color)?),
@@ -89,6 +98,7 @@ pub struct Format {
     pub compact: bool,
     pub json: bool,
     pub indent: usize,
+    pub json_styles: JsonStyles,
 }
 
 impl Format {
@@ -97,6 +107,7 @@ impl Format {
         let mut compact = false;
         let mut json = false;
         let mut indent = 0;
+        let mut json_styles = JsonStyles::default();
 
         let Some(input) = input else {
             return Ok(Self {
@@ -104,6 +115,7 @@ impl Format {
                 compact,
                 json,
                 indent,
+                json_styles,
             });
         };
 
@@ -122,27 +134,54 @@ impl Format {
                 ("fg", part)
             };
 
-            if name == "fg" {
-                let Ok(color) = value.parse::<DynColors>() else {
-                    return Err(FormatError::ParseColor(value.to_owned()));
-                };
-                if let Some(s) = style.take() {
-                    style = Some(s.color(color));
+            match name {
+                "fg" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::ParseColor(value.to_owned()));
+                    };
+                    if let Some(s) = style.take() {
+                        style = Some(s.color(color));
+                    }
                 }
-            } else if name == "bg" {
-                let Ok(color) = value.parse::<DynColors>() else {
-                    return Err(FormatError::ParseColor(value.to_owned()));
-                };
-                if let Some(s) = style.take() {
-                    style = Some(s.on_color(color));
+                "bg" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::ParseColor(value.to_owned()));
+                    };
+                    if let Some(s) = style.take() {
+                        style = Some(s.on_color(color));
+                    }
                 }
-            } else if name == "ident" {
-                let Ok(value) = value.parse::<usize>() else {
-                    return Err(FormatError::ParseIndent(value.to_owned()));
-                };
-                indent = value;
-            } else {
-                return Err(FormatError::InvalidModifier(name.to_owned()));
+                "ident" => {
+                    let Ok(value) = value.parse::<usize>() else {
+                        return Err(FormatError::ParseIndent(value.to_owned()));
+                    };
+                    indent = value;
+                }
+                "key" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::InvalidModifier(value.to_owned()));
+                    };
+                    json_styles.key = json_styles.key.color(color);
+                }
+                "value" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::InvalidModifier(value.to_owned()));
+                    };
+                    json_styles.value = json_styles.value.color(color);
+                }
+                "str" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::InvalidModifier(value.to_owned()));
+                    };
+                    json_styles.str = json_styles.str.color(color);
+                }
+                "syntax" => {
+                    let Ok(color) = value.parse::<DynColors>() else {
+                        return Err(FormatError::InvalidModifier(value.to_owned()));
+                    };
+                    json_styles.syntax = json_styles.syntax.color(color);
+                }
+                _ => return Err(FormatError::InvalidModifier(name.to_owned())),
             }
         }
 
@@ -151,6 +190,7 @@ impl Format {
             compact,
             json,
             indent,
+            json_styles,
         })
     }
 }
@@ -181,6 +221,7 @@ impl fmt::Display for FormatterWithJson<'_> {
                         compact,
                         json,
                         indent,
+                        json_styles,
                     } = format;
                     let indent = *indent;
 
@@ -211,36 +252,28 @@ impl fmt::Display for FormatterWithJson<'_> {
                         match (json, compact) {
                             (true, true) => {
                                 if style.is_some() {
-                                    write!(f, "{}", val.styled(JsonStyles::default()))?;
+                                    write!(f, "{}", val.styled(*json_styles))?;
                                 } else {
                                     write!(f, "{}", val)?;
                                 }
                             }
                             (true, false) => {
                                 if style.is_some() {
-                                    write!(
-                                        f,
-                                        "{:?}",
-                                        val.indented(indent).styled(JsonStyles::default())
-                                    )?;
+                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                                 } else {
                                     write!(f, "{:?}", val.indented(indent))?;
                                 }
                             }
                             (false, true) => {
                                 if style.is_some() {
-                                    write!(f, "{}", val.styled(JsonStyles::default()))?;
+                                    write!(f, "{}", val.styled(*json_styles))?;
                                 } else {
                                     write!(f, "{}", val)?;
                                 }
                             }
                             (false, false) => {
                                 if style.is_some() {
-                                    write!(
-                                        f,
-                                        "{:?}",
-                                        val.indented(indent).styled(JsonStyles::default())
-                                    )?;
+                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                                 } else {
                                     write!(f, "{:?}", val.indented(indent))?;
                                 }
@@ -251,36 +284,28 @@ impl fmt::Display for FormatterWithJson<'_> {
                         match (json, compact) {
                             (true, true) => {
                                 if style.is_some() {
-                                    write!(f, "{}", val.styled(JsonStyles::default()))?;
+                                    write!(f, "{}", val.styled(*json_styles))?;
                                 } else {
                                     write!(f, "{}", val)?;
                                 }
                             }
                             (true, false) => {
                                 if style.is_some() {
-                                    write!(
-                                        f,
-                                        "{:?}",
-                                        val.indented(indent).styled(JsonStyles::default())
-                                    )?;
+                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                                 } else {
                                     write!(f, "{:?}", val.indented(indent))?;
                                 }
                             }
                             (false, true) => {
                                 if style.is_some() {
-                                    write!(f, "{}", val.styled(JsonStyles::default()))?;
+                                    write!(f, "{}", val.styled(*json_styles))?;
                                 } else {
                                     write!(f, "{}", val)?;
                                 }
                             }
                             (false, false) => {
                                 if style.is_some() {
-                                    write!(
-                                        f,
-                                        "{:?}",
-                                        val.indented(indent).styled(JsonStyles::default())
-                                    )?;
+                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                                 } else {
                                     write!(f, "{:?}", val.indented(indent))?;
                                 }
