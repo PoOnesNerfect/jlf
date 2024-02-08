@@ -1,3 +1,4 @@
+use bumpalo::Bump;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use json_logger::{parse_json, Json};
 use serde::Deserialize;
@@ -82,7 +83,8 @@ fn serde_structured_parse<'a>(value: &mut Log<'a>, inputs: &[&'a str]) {
 }
 
 fn custom_parse_bench(c: &mut Criterion) {
-    let mut value = parse_json(&INPUTS[0]).unwrap();
+    let bump = Bump::new();
+    let mut value = parse_json(&INPUTS[0], &bump).unwrap();
 
     c.bench_function("custom parse", |b| {
         b.iter(|| custom_parse(black_box(&mut value), black_box(&INPUTS)))

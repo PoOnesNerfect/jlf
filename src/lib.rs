@@ -2,6 +2,7 @@ use core::fmt;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 mod json;
+use bumpalo::Bump;
 pub use json::{parse_json, Json, ParseError};
 
 pub fn run() {
@@ -12,9 +13,11 @@ pub fn run() {
     } else {
         let mut stdout = io::stdout().lock();
 
+        let bump = Bump::new();
+
         for line in stdin.lock().lines() {
             let line = line.unwrap();
-            let json = parse_json(&line).unwrap();
+            let json = parse_json(&line, &bump).unwrap();
 
             let mut log = Log::default();
 

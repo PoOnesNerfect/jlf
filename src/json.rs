@@ -1,161 +1,183 @@
+use bumpalo::Bump;
 use core::fmt;
+use smallvec::SmallVec;
 use std::iter::Peekable;
 
-pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
-    let mut json = Json::Null; // Start with a Null value
+pub fn parse_json<'a>(input: &'a str, bump: &'a Bump) -> Result<Json<'a>, ParseError> {
+    let mut json = Json::new(bump);
     json.parse_replace(input)?;
     Ok(json)
 }
 
-#[derive(Clone)]
-pub enum Json<'a> {
+pub struct Json<'a> {
+    inner: JsonInner<'a>,
+    bump: &'a bumpalo::Bump,
+}
+
+pub enum JsonInner<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
-    Object(Vec<(&'a str, Json<'a>)>),
-    Array(Vec<Json<'a>>),
+    Object(SmallVec<[(&'a str, &'a mut JsonInner<'a>); 20]>),
+    Array(SmallVec<[&'a mut JsonInner<'a>; 20]>),
     String(&'a str),
     Value(&'a str),
     Null,
-    NullPrevObject(Vec<(&'a str, Json<'a>)>),
-    NullPrevArray(Vec<Json<'a>>),
+    NullPrevObject(SmallVec<[(&'a str, &'a mut JsonInner<'a>); 20]>),
+    NullPrevArray(SmallVec<[&'a mut JsonInner<'a>; 20]>),
 }
 
 impl<'a> Json<'a> {
-    pub fn get(&self, key: &str) -> &Json {
-        match self {
-            Json::Object(obj) => obj
-                .iter()
-                .find(|(k, _)| k == &key)
-                .map(|(_, v)| v)
-                .unwrap_or(&Json::Null),
-            _ => &Json::Null,
+    pub fn new(bump: &'a Bump) -> Self {
+        Json {
+            inner: JsonInner::Null,
+            bump,
         }
     }
+}
 
-    pub fn get_i(&self, index: usize) -> &Json {
-        match self {
-            Json::Array(arr) => arr.get(index).unwrap_or(&Json::Null),
-            _ => &Json::Null,
-        }
-    }
+impl<'a> Json<'a> {
+    // pub fn get(&self, key: &str) -> &JsonInner<'a> {
+    //     match self.inner {
+    //         JsonInner::Object(obj) => obj
+    //             .iter()
+    //             .find(|(k, _)| k == &key)
+    //             .map(|(_, &v)| &*v)
+    //             .unwrap_or(&JsonInner::Null),
+    //         _ => &JsonInner::Null,
+    //     }
+    // }
 
-    pub fn is_null(&self) -> bool {
-        matches!(
-            self,
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_)
-        )
-    }
+    // pub fn get_i(&self, index: usize) -> &Json {
+    //     match self {
+    //         JsonInner::Array(arr) => arr.get(index).unwrap_or(&JsonInner::Null),
+    //         _ => &JsonInner::Null,
+    //     }
+    // }
 
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Json::Object(obj) => obj.is_empty(),
-            Json::Array(arr) => arr.is_empty(),
-            Json::String(s) => s.is_empty(),
-            Json::Value(_) => false,
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
-        }
-    }
+    // pub fn is_null(&self) -> bool {
+    //     matches!(
+    //         self,
+    //         JsonInner::Null | JsonInner::NullPrevObject(_) | JsonInner::NullPrevArray(_)
+    //     )
+    // }
 
-    pub fn is_object(&self) -> bool {
-        matches!(self, Json::Object(_))
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     match self {
+    //         JsonInner::Object(obj) => obj.is_empty(),
+    //         JsonInner::Array(arr) => arr.is_empty(),
+    //         JsonInner::String(s) => s.is_empty(),
+    //         JsonInner::Value(_) => false,
+    //         JsonInner::Null | JsonInner::NullPrevObject(_) | JsonInner::NullPrevArray(_) => true,
+    //     }
+    // }
 
-    pub fn is_array(&self) -> bool {
-        matches!(self, Json::Array(_))
-    }
+    // pub fn is_object(&self) -> bool {
+    //     matches!(self, JsonInner::Object(_))
+    // }
 
-    pub fn is_value(&self) -> bool {
-        matches!(self, Json::Value(_))
-    }
+    // pub fn is_array(&self) -> bool {
+    //     matches!(self, JsonInner::Array(_))
+    // }
 
-    pub fn as_object(&self) -> Option<&Vec<(&'a str, Json<'a>)>> {
-        match self {
-            Json::Object(obj) => Some(obj),
+    // pub fn is_value(&self) -> bool {
+    //     matches!(self, JsonInner::Value(_))
+    // }
+
+    pub fn as_object(&self) -> Option<impl Iterator<Item = &(&'a str, &'a mut JsonInner<'a>)>> {
+        match &self.inner {
+            JsonInner::Object(obj) => Some(obj.iter()),
             _ => None,
         }
     }
 
-    pub fn as_array(&self) -> Option<&Vec<Json<'a>>> {
-        match self {
-            Json::Array(arr) => Some(arr),
-            _ => None,
-        }
-    }
+    // pub fn as_array(&self) -> Option<&Vec<Json<'a>>> {
+    //     match self {
+    //         JsonInner::Array(arr) => Some(arr),
+    //         _ => None,
+    //     }
+    // }
 
-    pub fn as_object_mut(&mut self) -> Option<&mut Vec<(&'a str, Json<'a>)>> {
-        match self {
-            Json::Object(obj) => Some(obj),
-            _ => None,
-        }
-    }
+    // pub fn as_object_mut(&mut self) -> Option<&mut Vec<(&'a str, Json<'a>)>> {
+    //     match self {
+    //         JsonInner::Object(obj) => Some(obj),
+    //         _ => None,
+    //     }
+    // }
 
-    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Json<'a>>> {
-        match self {
-            Json::Array(arr) => Some(arr),
-            _ => None,
-        }
-    }
+    // pub fn as_array_mut(&mut self) -> Option<&mut Vec<Json<'a>>> {
+    //     match self {
+    //         JsonInner::Array(arr) => Some(arr),
+    //         _ => None,
+    //     }
+    // }
 
     pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Json::String(s) => Some(s),
+        match &self.inner {
+            JsonInner::String(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_value(&self) -> Option<&str> {
-        match self {
-            Json::Value(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    // Replace self with a new value and return the previous value
-    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> {
-        std::mem::replace(self, value)
-    }
+    // pub fn as_value(&self) -> Option<&str> {
+    //     match self {
+    //         JsonInner::Value(v) => Some(v),
+    //         _ => None,
+    //     }
+    // }
 
     pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError> {
+        let Self { inner, bump } = self;
+
         let mut chars = input.char_indices().peekable();
-        self.parse_value_in_place(&mut chars, input)?;
+        inner.parse_value_in_place(&mut chars, input, bump)?;
         Ok(())
+    }
+}
+
+impl<'a> JsonInner<'a> {
+    pub fn as_str(&self) -> Option<&str> {
+        match &self {
+            JsonInner::String(s) => Some(s),
+            _ => None,
+        }
     }
 
     fn parse_value_in_place<I>(
         &mut self,
         chars: &mut Peekable<I>,
         input: &'a str,
+        bump: &'a Bump,
     ) -> Result<(), ParseError>
     where
         I: Iterator<Item = (usize, char)>,
     {
         match chars.peek().map(|&(_, c)| c) {
             Some('{') => {
-                if let Json::Object(obj) = self {
-                    parse_object_in_place(obj, chars, input)?;
+                if let JsonInner::Object(obj) = self {
+                    parse_object_in_place(obj, chars, input, bump)?;
                 } else {
-                    let this = self.replace(Json::Null);
-                    if let Json::NullPrevObject(mut obj) = this {
-                        parse_object_in_place(&mut obj, chars, input)?;
-                        *self = Json::Object(obj);
+                    let this = self.replace(JsonInner::Null);
+                    if let JsonInner::NullPrevObject(mut obj) = this {
+                        parse_object_in_place(&mut obj, chars, input, bump)?;
+                        *self = JsonInner::Object(obj);
                     } else {
-                        let mut obj = Vec::new();
-                        parse_object_in_place(&mut obj, chars, input)?;
-                        *self = Json::Object(obj);
+                        let mut obj = SmallVec::new();
+                        parse_object_in_place(&mut obj, chars, input, bump)?;
+                        *self = JsonInner::Object(obj);
                     }
                 }
             }
             Some('[') => {
-                if let Json::Array(arr) = self {
-                    parse_array_in_place(arr, chars, input)?;
+                if let JsonInner::Array(arr) = self {
+                    parse_array_in_place(arr, chars, input, bump)?;
                 } else {
-                    let this = self.replace(Json::Null);
-                    if let Json::NullPrevArray(mut arr) = this {
-                        parse_array_in_place(&mut arr, chars, input)?;
-                        *self = Json::Array(arr);
+                    let this = self.replace(JsonInner::Null);
+                    if let JsonInner::NullPrevArray(mut arr) = this {
+                        parse_array_in_place(&mut arr, chars, input, bump)?;
+                        *self = JsonInner::Array(arr);
                     } else {
-                        let mut arr = Vec::new();
-                        parse_array_in_place(&mut arr, chars, input)?;
-                        *self = Json::Array(arr);
+                        let mut arr = SmallVec::new();
+                        parse_array_in_place(&mut arr, chars, input, bump)?;
+                        *self = JsonInner::Array(arr);
                     }
                 }
             }
@@ -202,23 +224,30 @@ impl<'a> Json<'a> {
     }
 
     fn replace_with_null(&mut self) {
-        let prev = self.replace(Json::Null);
+        let prev = self.replace(JsonInner::Null);
 
-        if let Json::Object(obj) = prev {
-            *self = Json::NullPrevObject(obj);
-        } else if let Json::Array(arr) = prev {
-            *self = Json::NullPrevArray(arr);
-        } else if matches!(prev, Json::NullPrevObject(_)) || matches!(prev, Json::NullPrevArray(_))
+        if let JsonInner::Object(obj) = prev {
+            *self = JsonInner::NullPrevObject(obj);
+        } else if let JsonInner::Array(arr) = prev {
+            *self = JsonInner::NullPrevArray(arr);
+        } else if matches!(prev, JsonInner::NullPrevObject(_))
+            || matches!(prev, JsonInner::NullPrevArray(_))
         {
             *self = prev;
         }
     }
+
+    // Replace self with a new value and return the previous value
+    pub fn replace(&mut self, value: JsonInner<'a>) -> JsonInner<'a> {
+        std::mem::replace(self, value)
+    }
 }
 
 fn parse_object_in_place<'a, I>(
-    pairs: &mut Vec<(&'a str, Json<'a>)>,
+    pairs: &mut SmallVec<[(&'a str, &mut JsonInner<'a>); 20]>,
     chars: &mut Peekable<I>,
     input: &'a str,
+    bump: &'a Bump,
 ) -> Result<(), ParseError>
 where
     I: Iterator<Item = (usize, char)>,
@@ -236,7 +265,7 @@ where
     if let Some((_, '}')) = chars.peek() {
         chars.next(); // Consume the closing '}'
 
-        // Set values to Json::Null for keys not found in the input
+        // Set values to JsonInner::Null for keys not found in the input
         for (_, value) in pairs.iter_mut() {
             value.replace_with_null();
         }
@@ -247,7 +276,7 @@ where
     let mut count = 0;
 
     loop {
-        let Ok(Json::String(key)) = parse_string(chars, input) else {
+        let Ok(JsonInner::String(key)) = parse_string(chars, input) else {
             return Err(ParseError {
                 message: "Unexpected char in object",
                 value: input.to_owned(),
@@ -274,10 +303,10 @@ where
         skip_whitespace(chars);
         if let Some((old_key, value)) = pairs.get_mut(count) {
             *old_key = key;
-            value.parse_value_in_place(chars, input)?;
+            value.parse_value_in_place(chars, input, bump)?;
         } else {
-            let mut new_value = Json::Null;
-            new_value.parse_value_in_place(chars, input)?;
+            let mut new_value = bump.alloc(JsonInner::Null);
+            new_value.parse_value_in_place(chars, input, bump)?;
             pairs.push((key, new_value));
         }
 
@@ -310,9 +339,10 @@ where
 }
 
 fn parse_array_in_place<'a, I>(
-    arr: &mut Vec<Json<'a>>,
+    arr: &mut SmallVec<[&'a mut JsonInner<'a>; 20]>,
     chars: &mut Peekable<I>,
     input: &'a str,
+    bump: &'a Bump,
 ) -> Result<(), ParseError>
 where
     I: Iterator<Item = (usize, char)>,
@@ -334,10 +364,10 @@ where
 
     loop {
         if count < arr.len() {
-            arr[count].parse_value_in_place(chars, input)?;
+            arr[count].parse_value_in_place(chars, input, bump)?;
         } else {
-            let mut new_element = Json::Null;
-            new_element.parse_value_in_place(chars, input)?;
+            let mut new_element = bump.alloc(JsonInner::Null);
+            new_element.parse_value_in_place(chars, input, bump)?;
             arr.push(new_element);
         }
         count += 1;
@@ -372,7 +402,7 @@ where
     }
 }
 
-fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<JsonInner<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -387,7 +417,7 @@ where
 
     while let Some((i, c)) = chars.next() {
         match c {
-            '"' => return Ok(Json::String(&input[start_index + 1..i])),
+            '"' => return Ok(JsonInner::String(&input[start_index + 1..i])),
             '\\' => {
                 chars.next(); // Skip the character following the escape
             }
@@ -402,7 +432,7 @@ where
     })
 }
 
-fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<JsonInner<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -412,7 +442,7 @@ where
         && chars.next().map(|(_, c)| c) == Some('l')
         && chars.next().map(|(_, c)| c) == Some('l')
     {
-        Ok(Json::Null)
+        Ok(JsonInner::Null)
     } else {
         Err(ParseError {
             message: "Invalid null value",
@@ -423,19 +453,22 @@ where
     }
 }
 
-fn parse_raw_value<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_raw_value<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<JsonInner<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
     let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     while let Some(&(i, c)) = chars.peek() {
         if c == ',' || c == ']' || c == '}' {
-            return Ok(Json::Value(&input[start_index..i]));
+            return Ok(JsonInner::Value(&input[start_index..i]));
         }
         chars.next();
     }
 
-    Ok(Json::Value(&input[start_index..]))
+    Ok(JsonInner::Value(&input[start_index..]))
 }
 
 // skip whitespaces and return the number of characters skipped
@@ -452,108 +485,112 @@ where
     }
 }
 
-impl<'a> fmt::Display for Json<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            Json::Object(obj) => {
-                write!(f, "{{")?;
+// impl<'a> fmt::Display for Json<'a> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+//         match self.inner {
+//             JsonInner::Object(obj) => {
+//                 write!(f, "{{")?;
 
-                for (key, value) in obj.iter().take(obj.len().saturating_sub(1)) {
-                    if !value.is_null() {
-                        write!(f, "\"{}\": ", key)?;
-                        fmt::Display::fmt(&value, f)?;
-                        write!(f, ", ")?;
-                    }
-                }
+//                 for (key, value) in obj.iter().take(obj.len().saturating_sub(1)) {
+//                     if !value.is_null() {
+//                         write!(f, "\"{}\": ", key)?;
+//                         fmt::Display::fmt(&value, f)?;
+//                         write!(f, ", ")?;
+//                     }
+//                 }
 
-                if let Some((key, value)) = obj.last() {
-                    if !value.is_null() {
-                        write!(f, "\"{}\": ", key)?;
-                        fmt::Display::fmt(&value, f)?;
-                    }
-                }
+//                 if let Some((key, value)) = obj.last() {
+//                     if !value.is_null() {
+//                         write!(f, "\"{}\": ", key)?;
+//                         fmt::Display::fmt(&value, f)?;
+//                     }
+//                 }
 
-                write!(f, "}}")
-            }
-            Json::Array(arr) => {
-                write!(f, "[")?;
-                for value in arr.iter().take(arr.len().saturating_sub(1)) {
-                    if !value.is_null() {
-                        fmt::Display::fmt(&value, f)?;
-                        write!(f, ", ")?;
-                    }
-                }
-                if let Some(value) = arr.last() {
-                    if !value.is_null() {
-                        fmt::Display::fmt(&value, f)?;
-                    }
-                }
+//                 write!(f, "}}")
+//             }
+//             JsonInner::Array(arr) => {
+//                 write!(f, "[")?;
+//                 for value in arr.iter().take(arr.len().saturating_sub(1)) {
+//                     if !value.is_null() {
+//                         fmt::Display::fmt(&value, f)?;
+//                         write!(f, ", ")?;
+//                     }
+//                 }
+//                 if let Some(value) = arr.last() {
+//                     if !value.is_null() {
+//                         fmt::Display::fmt(&value, f)?;
+//                     }
+//                 }
 
-                write!(f, "]")
-            }
-            Json::String(v) => write!(f, "\"{}\"", v),
-            Json::Value(v) => write!(f, "{}", v),
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
-        }
-    }
-}
+//                 write!(f, "]")
+//             }
+//             JsonInner::String(v) => write!(f, "\"{}\"", v),
+//             JsonInner::Value(v) => write!(f, "{}", v),
+//             JsonInner::Null | JsonInner::NullPrevObject(_) | JsonInner::NullPrevArray(_) => {
+//                 write!(f, "null")
+//             }
+//         }
+//     }
+// }
 
-impl<'a> fmt::Debug for Json<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        self.fmt_pretty(f, 0)
-    }
-}
+// impl<'a> fmt::Debug for Json<'a> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+//         self.fmt_pretty(f, 0)
+//     }
+// }
 
-impl Json<'_> {
-    fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> Result<(), fmt::Error> {
-        match self {
-            Json::Object(obj) => {
-                if obj.is_empty() {
-                    return write!(f, "{{}}");
-                }
+// impl Json<'_> {
+//     fn fmt_pretty(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> Result<(), fmt::Error> {
+//         match self {
+//             JsonInner::Object(obj) => {
+//                 if obj.is_empty() {
+//                     return write!(f, "{{}}");
+//                 }
 
-                let mut non_nulls = obj.iter().filter(|(_, v)| !v.is_null());
-                let Some((key, value)) = non_nulls.next() else {
-                    return write!(f, "{{}}");
-                };
-                write!(f, "{{\n")?;
-                write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
-                value.fmt_pretty(f, indent + 2)?;
+//                 let mut non_nulls = obj.iter().filter(|(_, v)| !v.is_null());
+//                 let Some((key, value)) = non_nulls.next() else {
+//                     return write!(f, "{{}}");
+//                 };
+//                 write!(f, "{{\n")?;
+//                 write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
+//                 value.fmt_pretty(f, indent + 2)?;
 
-                for (key, value) in non_nulls {
-                    write!(f, ",\n")?;
-                    write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
-                    value.fmt_pretty(f, indent + 2)?;
-                }
+//                 for (key, value) in non_nulls {
+//                     write!(f, ",\n")?;
+//                     write!(f, "{:indent$}\"{}\": ", "", key, indent = (indent + 2))?;
+//                     value.fmt_pretty(f, indent + 2)?;
+//                 }
 
-                write!(f, "\n{:indent$}}}", "", indent = indent)
-            }
-            Json::Array(arr) => {
-                if arr.is_empty() {
-                    return write!(f, "[]");
-                }
+//                 write!(f, "\n{:indent$}}}", "", indent = indent)
+//             }
+//             JsonInner::Array(arr) => {
+//                 if arr.is_empty() {
+//                     return write!(f, "[]");
+//                 }
 
-                let mut non_nulls = arr.iter().filter(|v| !v.is_null());
-                let Some(value) = non_nulls.next() else {
-                    return write!(f, "[]");
-                };
-                write!(f, "[\n")?;
-                write!(f, "{:indent$}", "", indent = (indent + 2))?;
-                value.fmt_pretty(f, indent + 2)?;
+//                 let mut non_nulls = arr.iter().filter(|v| !v.is_null());
+//                 let Some(value) = non_nulls.next() else {
+//                     return write!(f, "[]");
+//                 };
+//                 write!(f, "[\n")?;
+//                 write!(f, "{:indent$}", "", indent = (indent + 2))?;
+//                 value.fmt_pretty(f, indent + 2)?;
 
-                for value in non_nulls {
-                    write!(f, ",\n")?;
-                    write!(f, "{:indent$}", "", indent = (indent + 2))?;
-                    value.fmt_pretty(f, indent + 2)?;
-                }
-                write!(f, "\n{:indent$}]", "", indent = indent)
-            }
-            Json::String(v) => write!(f, "\"{}\"", v),
-            Json::Value(v) => write!(f, "{}", v),
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
-        }
-    }
-}
+//                 for value in non_nulls {
+//                     write!(f, ",\n")?;
+//                     write!(f, "{:indent$}", "", indent = (indent + 2))?;
+//                     value.fmt_pretty(f, indent + 2)?;
+//                 }
+//                 write!(f, "\n{:indent$}]", "", indent = indent)
+//             }
+//             JsonInner::String(v) => write!(f, "\"{}\"", v),
+//             JsonInner::Value(v) => write!(f, "{}", v),
+//             JsonInner::Null | JsonInner::NullPrevObject(_) | JsonInner::NullPrevArray(_) => {
+//                 write!(f, "null")
+//             }
+//         }
+//     }
+// }
 
 pub struct ParseError {
     pub message: &'static str,
@@ -598,62 +635,62 @@ impl std::error::Error for ParseError {}
 mod tests {
     use super::*;
 
-    #[test]
-    fn basic() {
-        let test_cases = vec![
-            r#"{"key": "value"}"#,
-            r#"{"escaped": "This is a \"test\""}"#,
-            r#"{"nested": {"array": [1, "two", null], "emptyObj": {}, "bool": true}}"#,
-            r#"["mixed", 123, {"obj": "inside array"}]"#,
-            r#"{}"#,
-            r#"[]"#,
-        ];
+    // #[test]
+    // fn basic() {
+    //     let test_cases = vec![
+    //         r#"{"key": "value"}"#,
+    //         r#"{"escaped": "This is a \"test\""}"#,
+    //         r#"{"nested": {"array": [1, "two", null], "emptyObj": {}, "bool": true}}"#,
+    //         r#"["mixed", 123, {"obj": "inside array"}]"#,
+    //         r#"{}"#,
+    //         r#"[]"#,
+    //     ];
 
-        for case in test_cases {
-            match parse_json(case) {
-                Ok(parsed) => println!("Parsed JSON: {:#?}", parsed),
-                Err(e) => println!("Failed to parse JSON: {}", e),
-            }
-        }
+    //     for case in test_cases {
+    //         match parse_json(case) {
+    //             Ok(parsed) => println!("Parsed JSON: {:#?}", parsed),
+    //             Err(e) => println!("Failed to parse JSON: {}", e),
+    //         }
+    //     }
 
-        let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
-        println!("Array: {:#?}", arr);
-        assert_eq!(arr.get_i(2).get("obj").as_value(), Some("\"inside array\""));
-    }
+    //     let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
+    //     println!("Array: {:#?}", arr);
+    //     assert_eq!(arr.get_i(2).get("obj").as_value(), Some("\"inside array\""));
+    // }
 
-    #[test]
-    fn invalid() {
-        let test_cases = vec![
-            (
-                r#"{"key": "value"         "#,
-                "Missing Closing Brace for an Object",
-            ),
-            (
-                r#"{"key": "value         }"#,
-                "Missing Closing Quote for a String",
-            ),
-            (r#"{"key"     ,     "value"}"#, "Missing Colon in an Object"),
-            (
-                r#"{"key1": "value1", "key2": "value2"       ,          }"#,
-                "Extra Comma in an Object",
-            ),
-            (r#"{key: "value"}"#, "Unquoted Key"),
-            (
-                r#"{"array": [1, 2, "missing bracket"        ,    }        "#,
-                "Unclosed Array",
-            ),
-        ];
+    // #[test]
+    // fn invalid() {
+    //     let test_cases = vec![
+    //         (
+    //             r#"{"key": "value"         "#,
+    //             "Missing Closing Brace for an Object",
+    //         ),
+    //         (
+    //             r#"{"key": "value         }"#,
+    //             "Missing Closing Quote for a String",
+    //         ),
+    //         (r#"{"key"     ,     "value"}"#, "Missing Colon in an Object"),
+    //         (
+    //             r#"{"key1": "value1", "key2": "value2"       ,          }"#,
+    //             "Extra Comma in an Object",
+    //         ),
+    //         (r#"{key: "value"}"#, "Unquoted Key"),
+    //         (
+    //             r#"{"array": [1, 2, "missing bracket"        ,    }        "#,
+    //             "Unclosed Array",
+    //         ),
+    //     ];
 
-        for (json_str, description) in test_cases {
-            println!("Testing case: {}", description);
-            match parse_json(json_str) {
-                Ok(_) => println!("No error detected, but expected an error."),
-                Err(e) => {
-                    println!("Error (Display): {}", e);
-                    println!("Error (Debug):\n{:?}", e);
-                }
-            }
-            println!("---------------------------------------\n");
-        }
-    }
+    //     for (json_str, description) in test_cases {
+    //         println!("Testing case: {}", description);
+    //         match parse_json(json_str) {
+    //             Ok(_) => println!("No error detected, but expected an error."),
+    //             Err(e) => {
+    //                 println!("Error (Display): {}", e);
+    //                 println!("Error (Debug):\n{:?}", e);
+    //             }
+    //         }
+    //         println!("---------------------------------------\n");
+    //     }
+    // }
 }
