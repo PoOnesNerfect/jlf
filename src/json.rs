@@ -12,6 +12,7 @@ pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
     Object(Vec<(&'a str, Json<'a>)>),
     Array(Vec<Json<'a>>),
+    String(&'a str),
     Value(&'a str),
     Null,
     NullPrevObject(Vec<(&'a str, Json<'a>)>),
@@ -48,8 +49,8 @@ impl<'a> Json<'a> {
         match self {
             Json::Object(obj) => obj.is_empty(),
             Json::Array(arr) => arr.is_empty(),
-            // never happens since string contains at least 2 quotes
-            Json::Value(v) => v.is_empty(),
+            Json::String(s) => s.is_empty(),
+            Json::Value(_) => false,
             Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
         }
     }
@@ -90,6 +91,13 @@ impl<'a> Json<'a> {
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<Json<'a>>> {
         match self {
             Json::Array(arr) => Some(arr),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Json::String(s) => Some(s),
             _ => None,
         }
     }
@@ -239,7 +247,7 @@ where
     let mut count = 0;
 
     loop {
-        let Ok(Json::Value(key_in_quotes)) = parse_string(chars, input) else {
+        let Ok(Json::String(key)) = parse_string(chars, input) else {
             return Err(ParseError {
                 message: "Unexpected char in object",
                 value: input.to_owned(),
@@ -249,8 +257,6 @@ where
                     .unwrap_or_else(|| input.len() - 1),
             });
         };
-
-        let key = &key_in_quotes[1..key_in_quotes.len() - 1];
 
         skip_whitespace(chars);
         if chars.next().map(|(_, c)| c) != Some(':') {
@@ -370,20 +376,18 @@ fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
-
     // Consume the opening quote
-    let Some((_, '"')) = chars.next() else {
+    let Some((start_index, '"')) = chars.next() else {
         return Err(ParseError {
             message: "Expected opening quote for string",
             value: input.to_owned(),
-            index: start_index,
+            index: input.len(),
         });
     };
 
     while let Some((i, c)) = chars.next() {
         match c {
-            '"' => return Ok(Json::Value(&input[start_index..=i])),
+            '"' => return Ok(Json::String(&input[start_index + 1..i])),
             '\\' => {
                 chars.next(); // Skip the character following the escape
             }
@@ -487,6 +491,7 @@ impl<'a> fmt::Display for Json<'a> {
 
                 write!(f, "]")
             }
+            Json::String(v) => write!(f, "\"{}\"", v),
             Json::Value(v) => write!(f, "{}", v),
             Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
         }
@@ -543,6 +548,7 @@ impl Json<'_> {
                 }
                 write!(f, "\n{:indent$}]", "", indent = indent)
             }
+            Json::String(v) => write!(f, "\"{}\"", v),
             Json::Value(v) => write!(f, "{}", v),
             Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => write!(f, "null"),
         }
