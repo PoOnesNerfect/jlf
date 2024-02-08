@@ -1,10 +1,26 @@
-use core::fmt;
+use clap::Parser;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 mod json;
 pub use json::{parse_json, Json, ParseError};
 
+mod format;
+pub use format::{parse_formatter, Formatter};
+
+#[derive(Parser, Debug)]
+pub struct Args {
+    #[arg(default_value = "{timestamp:fg=green} {level:fg=blue} {message}")]
+    format_string: String,
+    #[arg(short = 'n', long = "no-color", default_value_t = false)]
+    no_color: bool,
+}
+
 pub fn run() {
+    let Args {
+        format_string,
+        no_color,
+    } = Args::parse();
+
     let stdin = io::stdin();
 
     if stdin.is_terminal() {
@@ -12,47 +28,17 @@ pub fn run() {
     } else {
         let mut stdout = io::stdout().lock();
 
+        let no_color = no_color || !stdout.is_terminal();
+
+        let formatter = parse_formatter(&format_string, no_color).unwrap();
+
         for line in stdin.lock().lines() {
             let line = line.unwrap();
             let json = parse_json(&line).unwrap();
 
-            let mut log = Log::default();
+            let fmt = formatter.with_json(&json);
 
-            for (key, value) in json.as_object().unwrap() {
-                match *key {
-                    "timestamp" => log.timestamp = value.as_str(),
-                    "level" => log.level = value.as_str(),
-                    "message" => log.message = value.as_str(),
-                    _ => {}
-                }
-            }
-
-            stdout.write_fmt(format_args!("{log}\n")).unwrap();
+            stdout.write_fmt(format_args!("{fmt}\n")).unwrap();
         }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct Log<'a> {
-    pub timestamp: Option<&'a str>,
-    pub level: Option<&'a str>,
-    pub message: Option<&'a str>,
-}
-
-impl fmt::Display for Log<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(timestamp) = self.timestamp {
-            write!(f, "{} ", timestamp)?;
-        }
-
-        if let Some(level) = self.level {
-            write!(f, "{} ", level)?;
-        }
-
-        if let Some(message) = self.message {
-            write!(f, "{}", message)?;
-        }
-
-        Ok(())
     }
 }

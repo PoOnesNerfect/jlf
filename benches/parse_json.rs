@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use json_logger::{parse_json, Json};
+use jlf::{parse_json, Json};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -49,6 +49,7 @@ fn serde_value_parse(value: &mut Value, inputs: &[&str]) {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct Log<'a> {
     timestamp: &'a str,
@@ -60,6 +61,7 @@ pub struct Log<'a> {
     spans: Vec<Span<'a>>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct Span<'a> {
     name: &'a str,

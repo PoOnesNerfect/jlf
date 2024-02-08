@@ -1,11 +1,11 @@
 [package]
-name = "json-logger"
+name = "jlf"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
 path = "src/lib.rs"
-name = "json_logger"
+name = "jlf"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,10 +13,12 @@ name = "json_logger"
 [dependencies]
 clap = { version = "4.4.18", features = ["derive"] }
 owo-colors = { version = "4.0.0", features = ["alloc", "supports-colors"] }
+thiserror = "1.0.56"
+tosserror = "0.1.2"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }
-serde = "1.0.196"
+serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
 
 [[bench]]
