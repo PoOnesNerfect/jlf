@@ -4,7 +4,7 @@ jlf is a simple cli for formatting json logs.
 
 Given some log file as below:
 
-[./examples/dummy_logs](./examples/dummy_logs)
+[./examples/dummy_logs](https://github.com/PoOnesNerfect/jlf/blob/main/examples/dummy_logs)
 
 ```sh
 {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "action": "login", "success": false, "error_code": null}}
@@ -19,6 +19,7 @@ cat ./examples/dummy_logs | jlf
 ```
 
 It will output the logs in a more colorful and readable format:
+<img width="700" alt="Screenshot 2024-02-09 at 12 31 37 AM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/32b347cd-f56a-4db3-b0e9-99e9d24624e6">
 
 ## Installation
 
@@ -78,4 +79,4 @@ You can optionally provide the style type before the `=`. If you don't provide i
 
 ### Available Colors
 
-You can view all available colors in [colors.md](colors.md).
+You can view all available colors in [colors.md](https://github.com/PoOnesNerfect/jlf/blob/main/colors.md).
