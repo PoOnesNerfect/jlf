@@ -99,6 +99,17 @@ fn serde_value_parse_bench(c: &mut Criterion) {
     });
 }
 
+#[allow(dead_code)]
+fn serde_json_from_str_in_place<'a, T: serde::de::Deserialize<'a>>(
+    s: &'a str,
+    value: &mut T,
+) -> serde_json::Result<()> {
+    let read = serde_json::de::StrRead::new(s);
+    let mut de = serde_json::Deserializer::new(read);
+
+    T::deserialize_in_place(&mut de, value).and_then(|_| de.end())
+}
+
 fn serde_structured_parse_bench(c: &mut Criterion) {
     let mut value = serde_json::from_str(&INPUTS[0]).unwrap();
 

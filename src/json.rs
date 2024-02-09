@@ -469,7 +469,7 @@ impl Json<'_> {
         }
     }
 
-    pub fn styled(&self, styles: JsonStyles) -> StyledJson {
+    pub fn styled(&self, styles: MarkupStyles) -> StyledJson {
         StyledJson {
             json: self,
             indent: 0,
@@ -481,7 +481,7 @@ impl Json<'_> {
 pub struct StyledJson<'a> {
     json: &'a Json<'a>,
     indent: usize,
-    styles: Option<JsonStyles>,
+    styles: Option<MarkupStyles>,
 }
 
 impl StyledJson<'_> {
@@ -489,7 +489,7 @@ impl StyledJson<'_> {
         Self { indent, ..self }
     }
 
-    pub fn styled(self, styles: JsonStyles) -> Self {
+    pub fn styled(self, styles: MarkupStyles) -> Self {
         Self {
             styles: Some(styles),
             ..self
@@ -510,14 +510,14 @@ impl fmt::Debug for StyledJson<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct JsonStyles {
+pub struct MarkupStyles {
     pub key: Style,
     pub value: Style,
     pub str: Style,
     pub syntax: Style,
 }
 
-impl Default for JsonStyles {
+impl Default for MarkupStyles {
     fn default() -> Self {
         Self {
             key: Style::new().fg::<Blue>(),
@@ -544,7 +544,7 @@ impl Json<'_> {
     fn fmt_compact(
         &self,
         f: &mut fmt::Formatter<'_>,
-        styles: &Option<JsonStyles>,
+        styles: &Option<MarkupStyles>,
     ) -> Result<(), fmt::Error> {
         match self {
             Json::Object(obj) => {
@@ -598,7 +598,7 @@ impl Json<'_> {
         &self,
         f: &mut fmt::Formatter<'_>,
         indent: usize,
-        styles: &Option<JsonStyles>,
+        styles: &Option<MarkupStyles>,
     ) -> Result<(), fmt::Error> {
         match self {
             Json::Object(obj) => {
@@ -664,7 +664,7 @@ impl Json<'_> {
 fn write_key(
     f: &mut fmt::Formatter<'_>,
     key: &str,
-    styles: &Option<JsonStyles>,
+    styles: &Option<MarkupStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
         write!(f, "{}", format_args!("\"{key}\"").style(style.key))
@@ -676,7 +676,7 @@ fn write_key(
 fn write_value(
     f: &mut fmt::Formatter<'_>,
     value: &str,
-    styles: &Option<JsonStyles>,
+    styles: &Option<MarkupStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
         write!(f, "{}", value.style(style.value))
@@ -688,7 +688,7 @@ fn write_value(
 fn write_str(
     f: &mut fmt::Formatter<'_>,
     str: &str,
-    styles: &Option<JsonStyles>,
+    styles: &Option<MarkupStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
         write!(f, "{}", format_args!("\"{str}\"").style(style.str))
@@ -700,7 +700,7 @@ fn write_str(
 fn write_syntax(
     f: &mut fmt::Formatter<'_>,
     syntax: &str,
-    styles: &Option<JsonStyles>,
+    styles: &Option<MarkupStyles>,
 ) -> Result<(), fmt::Error> {
     if let Some(style) = styles {
         write!(f, "{}", syntax.style(style.syntax))

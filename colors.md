@@ -1,0 +1,444 @@
+# Available Colors
+
+<!--toc:start-->
+
+- [Available Colors](#available-colors)
+  - [Hex](#hex)
+  - [Ansi](#ansi)
+  - [CSS](#css)
+  - [Xterm](#xterm)
+
+<!--toc:end-->
+
+## Hex
+
+Can be any value `#RRGGBB`
+
+## Ansi
+
+- black
+- red
+- green
+- yellow
+- blue
+- magenta
+- cyan
+- white
+- default
+- bright black
+- bright red
+- bright green
+- bright yellow
+- bright blue
+- bright magenta
+- bright cyan
+- bright white
+
+## CSS
+
+- alice blue
+- antique white
+- aqua
+- aquamarine
+- azure
+- beige
+- bisque
+- black
+- blanched almond
+- blue
+- blue violet
+- brown
+- burly wood
+- cadet blue
+- chartreuse
+- chocolate
+- coral
+- cornflower blue
+- cornsilk
+- crimson
+- dark blue
+- dark cyan
+- dark golden rod
+- dark gray
+- dark grey
+- dark green
+- dark khaki
+- dark magenta
+- dark olive green
+- dark orange
+- dark orchid
+- dark red
+- dark salmon
+- dark sea green
+- dark slate blue
+- dark slate gray
+- dark slate grey
+- dark turquoise
+- dark violet
+- deep pink
+- deep sky blue
+- dim gray
+- dim grey
+- dodger blue
+- fire brick
+- floral white
+- forest green
+- fuchsia
+- gainsboro
+- ghost white
+- gold
+- golden rod
+- gray
+- grey
+- green
+- green yellow
+- honey dew
+- hot pink
+- indian red
+- indigo
+- ivory
+- khaki
+- lavender
+- lavender blush
+- lawn green
+- lemon chiffon
+- light blue
+- light coral
+- light cyan
+- light golden rod yellow
+- light gray
+- light grey
+- light green
+- light pink
+- light salmon
+- light sea green
+- light sky blue
+- light slate gray
+- light slate grey
+- light steel blue
+- light yellow
+- lime
+- lime green
+- linen
+- magenta
+- maroon
+- medium aqua marine
+- medium blue
+- medium orchid
+- medium purple
+- medium sea green
+- medium slate blue
+- medium spring green
+- medium turquoise
+- medium violet red
+- midnight blue
+- mint cream
+- misty rose
+- moccasin
+- navajo white
+- navy
+- old lace
+- olive
+- olive drab
+- orange
+- orange red
+- orchid
+- pale golden rod
+- pale green
+- pale turquoise
+- pale violet red
+- papaya whip
+- peach puff
+- peru
+- pink
+- plum
+- powder blue
+- purple
+- rebecca purple
+- red
+- rosy brown
+- royal blue
+- saddle brown
+- salmon
+- sandy brown
+- sea green
+- sea shell
+- sienna
+- silver
+- sky blue
+- slate blue
+- slate gray
+- slate grey
+- snow
+- spring green
+- steel blue
+- tan
+- teal
+- thistle
+- tomato
+- turquoise
+- violet
+- wheat
+- white
+- white smoke
+- yellow
+- yellow green
+
+## Xterm
+
+- user black
+- user red
+- user green
+- user yellow
+- user blue
+- user magenta
+- user cyan
+- user white
+- user bright black
+- user bright red
+- user bright green
+- user bright yellow
+- user bright blue
+- user bright magenta
+- user bright cyan
+- user bright white
+- black
+- stratos blue
+- navy blue
+- midnight blue
+- dark blue
+- blue
+- camarone green
+- blue stone
+- orient blue
+- endeavour blue
+- science blue
+- blue ribbon
+- japanese laurel
+- deep sea green
+- teal
+- deep cerulean
+- lochmara blue
+- azure radiance
+- light japanese laurel
+- jade
+- persian green
+- bondi blue
+- cerulean
+- light azure radiance
+- dark green
+- malachite
+- caribbean green
+- light caribbean green
+- robin egg blue
+- aqua
+- green
+- dark spring green
+- spring green
+- light spring green
+- bright turquoise
+- cyan
+- rosewood
+- pompadour magenta
+- pigment indigo
+- dark purple
+- electric indigo
+- electric purple
+- verdun green
+- scorpion olive
+- lilac
+- scampi indigo
+- indigo
+- dark cornflower blue
+- dark limeade
+- glade green
+- juniper green
+- hippie blue
+- havelock blue
+- cornflower blue
+- limeade
+- fern green
+- silver tree
+- tradewind
+- shakespeare blue
+- dark malibu blue
+- dark bright green
+- dark pastel green
+- pastel green
+- downy teal
+- viking
+- malibu blue
+- bright green
+- dark screamin green
+- screamin green
+- dark aquamarine
+- aquamarine
+- light aquamarine
+- maroon
+- dark fresh eggplant
+- light fresh eggplant
+- purple
+- electric violet
+- light electric violet
+- brown
+- copper rose
+- strikemaster purple
+- deluge purple
+- dark medium purple
+- dark heliotrope purple
+- olive
+- clay creek olive
+- dark gray
+- wild blue yonder
+- chetwode blue
+- slate blue
+- light limeade
+- chelsea cucumber
+- bay leaf
+- gulf stream
+- polo blue
+- light malibu blue
+- pistachio
+- light pastel green
+- dark feijoa green
+- vista blue
+- bermuda
+- dark anakiwa blue
+- chartreuse green
+- light screamin green
+- dark mint green
+- mint green
+- lighter aquamarine
+- anakiwa blue
+- bright red
+- dark flirt
+- flirt
+- light flirt
+- dark violet
+- bright electric violet
+- roseof sharon orange
+- matrix pink
+- tapestry pink
+- fuchsia pink
+- medium purple
+- heliotrope
+- pirate gold
+- muesli orange
+- pharlap pink
+- bouquet
+- lavender
+- light heliotrope
+- buddha gold
+- olive green
+- hillary olive
+- silver chalice
+- wistful lilac
+- melrose lilac
+- rio grande green
+- conifer green
+- feijoa
+- pixie green
+- jungle mist
+- light anakiwa blue
+- lime
+- green yellow
+- light mint green
+- celadon
+- aero blue
+- french pass light blue
+- guardsman red
+- razzmatazz cerise
+- medium violet red
+- hollywood cerise
+- dark purple pizzazz
+- brighter electric violet
+- tenn orange
+- roman orange
+- cranberry pink
+- hopbush pink
+- orchid
+- lighter heliotrope
+- mango tango
+- copperfield
+- sea pink
+- can can pink
+- light orchid
+- bright heliotrope
+- dark corn
+- dark tacha orange
+- tan beige
+- clam shell
+- thistle pink
+- mauve
+- corn
+- tacha orange
+- deco orange
+- pale goldenrod
+- alto beige
+- fog pink
+- chartreuse yellow
+- canary
+- honeysuckle
+- reef pale yellow
+- snowy mint
+- oyster bay
+- red
+- dark rose
+- rose
+- light hollywood cerise
+- purple pizzazz
+- fuchsia
+- blaze orange
+- bittersweet orange
+- wild watermelon
+- dark hot pink
+- hot pink
+- pink flamingo
+- flush orange
+- salmon
+- vivid tangerine
+- pink salmon
+- dark lavender rose
+- blush pink
+- yellow sea
+- texas rose
+- tacao
+- sundown
+- cotton candy
+- lavender rose
+- gold
+- dandelion
+- grandis caramel
+- caramel
+- cosmos salmon
+- pink lace
+- yellow
+- laser lemon
+- dolly yellow
+- portafino yellow
+- cumulus
+- white
+- dark cod gray
+- cod gray
+- light cod gray
+- dark mine shaft
+- mine shaft
+- light mine shaft
+- dark tundora
+- tundora
+- scorpion gray
+- dark dove gray
+- dove gray
+- boulder
+- gray
+- light gray
+- dusty gray
+- nobel gray
+- dark silver chalice
+- light silver chalice
+- dark silver
+- silver
+- dark alto
+- alto
+- mercury
+- gallery gray

@@ -20,7 +20,9 @@ name = "jlf"
 
 [dependencies]
 clap = { version = "4.4.18", features = ["derive"] }
+color-eyre = "0.6.2"
 owo-colors = { version = "4.0.0", features = ["alloc", "supports-colors"] }
+smallvec = "1.13.1"
 thiserror = "1.0.56"
 tosserror = "0.1.2"
 

@@ -1,3 +1,3 @@
 fn main() {
-    jlf::run();
+    jlf::run().unwrap();
 }
