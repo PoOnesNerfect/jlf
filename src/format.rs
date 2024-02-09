@@ -1,4 +1,5 @@
 use core::fmt;
+use owo_colors::AnsiColors;
 use smallvec::SmallVec;
 
 use crate::{
@@ -117,6 +118,8 @@ pub struct Format {
     pub compact: bool,
     pub is_json: bool,
     pub indent: usize,
+    // special type of modifier only applicable to level field, where the style changes based on the level
+    pub is_level: bool,
     pub markup_styles: MarkupStyles,
 }
 
@@ -125,6 +128,7 @@ impl Format {
         let mut style = (!no_color).then(|| Style::new());
         let mut is_json = false;
         let mut indent = 0;
+        let mut is_level = false;
         let mut markup_styles = MarkupStyles::default();
 
         let Some(input) = input else {
@@ -133,6 +137,7 @@ impl Format {
                 compact,
                 is_json,
                 indent,
+                is_level,
                 markup_styles,
             });
         };
@@ -146,6 +151,11 @@ impl Format {
                 (name, value)
             } else {
                 match part {
+                    // special type of modifier only applicable to level field, where the style changes based on the level
+                    "level" => {
+                        is_level = true;
+                        continue;
+                    }
                     "compact" => {
                         compact = true;
                         continue;
@@ -216,6 +226,7 @@ impl Format {
             compact,
             is_json,
             indent,
+            is_level,
             markup_styles,
         })
     }
@@ -246,10 +257,12 @@ impl fmt::Display for FormatterWithJson<'_> {
                         style,
                         compact,
                         is_json,
+                        is_level,
                         indent,
                         markup_styles: json_styles,
                     } = format;
                     let indent = *indent;
+                    let is_level = *is_level;
 
                     match prev {
                         None | Some(&Escaped('\n')) | Some(&Escaped('\r')) => {
@@ -270,7 +283,36 @@ impl fmt::Display for FormatterWithJson<'_> {
 
                     if let Some(val) = val.as_str() {
                         if let Some(style) = style {
-                            write!(f, "{}", val.style(*style))?;
+                            if is_level {
+                                match val {
+                                    "TRACE" | "trace" => write!(
+                                        f,
+                                        "{}",
+                                        val.style((*style).color(AnsiColors::Cyan).dimmed())
+                                    )?,
+                                    "DEBUG" | "debug" => write!(
+                                        f,
+                                        "{}",
+                                        val.style((*style).color(AnsiColors::Cyan))
+                                    )?,
+                                    "INFO" | "info" => write!(
+                                        f,
+                                        " {}",
+                                        val.style((*style).color(AnsiColors::Green))
+                                    )?,
+                                    "WARN" | "warn" => write!(
+                                        f,
+                                        " {}",
+                                        val.style((*style).color(AnsiColors::Yellow))
+                                    )?,
+                                    "ERROR" | "error" => {
+                                        write!(f, "{}", val.style((*style).color(AnsiColors::Red)))?
+                                    }
+                                    _ => write!(f, "{}", val.style(*style))?,
+                                }
+                            } else {
+                                write!(f, "{}", val.style(*style))?;
+                            }
                         } else {
                             write!(f, "{}", val)?;
                         }

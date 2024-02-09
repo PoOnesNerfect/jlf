@@ -44,7 +44,7 @@ cargo install --path . --locked
 You can optionally provide your custom format.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:blue} {message|msg|body}'
+cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body}'
 ```
 
 Above will print the logs with dimmed timestamp, blue level and message as is.
@@ -70,7 +70,7 @@ This is also the default behavior.
 You can provide styles to the values by providing styles after the `:`.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:bright blue,bg=red,bold} {message|msg|body:fg=bright white}'
+cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
 ```
 
 If you have multiple styles, you can separate them with `,`.

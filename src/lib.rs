@@ -13,7 +13,7 @@ pub use format::{parse_formatter, Formatter};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(default_value = r#"{timestamp:dimmed} {level|lvl|serverity:blue} {message|msg|body}"#)]
+    #[arg(default_value = r#"{timestamp:dimmed} {level|lvl|serverity:level} {message|msg|body}"#)]
     format_string: String,
     /// Print the given format in addition to the default format
     #[arg(short = 'a', long = "add-format", default_value = r#"\n{data|spans}"#)]
