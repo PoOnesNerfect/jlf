@@ -11,6 +11,7 @@ mod format;
 pub use format::{parse_formatter, Formatter};
 
 #[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
 pub struct Args {
     #[arg(default_value = r#"{timestamp:dimmed} {level|lvl|serverity:blue} {message|msg|body}"#)]
     format_string: String,
