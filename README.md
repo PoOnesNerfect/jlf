@@ -20,6 +20,24 @@ cat ./examples/dummy_logs | jlf
 
 It will output the logs in a more colorful and readable format:
 
+## Installation
+
+### Cargo
+
+```sh
+cargo install jlf
+```
+
+### Manual
+
+You can also clone the repo and install it manually.
+
+```sh
+git clone https://github.com/PoOnesNerfect/jlf.git
+cd jlf
+cargo install --path . --locked
+```
+
 ## Custom Formatting
 
 You can optionally provide your custom format.
