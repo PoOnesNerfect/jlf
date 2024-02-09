@@ -19,7 +19,8 @@ cat ./examples/dummy_logs | jlf
 ```
 
 It will output the logs in a more colorful and readable format:
-<img width="700" alt="Screenshot 2024-02-09 at 12 31 37 AM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/32b347cd-f56a-4db3-b0e9-99e9d24624e6">
+
+<img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
 
 ## Installation
 
@@ -50,7 +51,7 @@ cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|m
 Above will print the logs with dimmed timestamp, blue level and message as is.
 Above format is actually the default format.
 
-`{timestamp:dimmed}` means that the cli will look for `timestamp` in the json and color it with `dimmed` color.
+`{timestamp:dimmed}` means that the cli will look for `timestamp` in the json and print it with `dimmed` dimmed.
 
 `level|lvl` means that the cli will look for `level` and `lvl` in the json and use the first one it finds.
 
