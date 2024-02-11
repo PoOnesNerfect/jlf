@@ -55,16 +55,29 @@ Above format is actually the default format.
 
 `level|lvl` means that the cli will look for `level` and `lvl` in the json and use the first one it finds.
 
-### Additional Formatting
+## Functions
 
-You can also only customize the additional formatting with `-a` flag.
+Functions in jlf start with `#` inside `{}`.
+
+### log
+
+`log` is a convenience function that prints the basic log format.
 
 ```sh
-cat ./examples/dummy_logs | jlf -a '\n{data}'
+cat ./examples/dummy_logs | jlf '{#log}'
 ```
 
-Above will print the logs with additional data in a new line.
-This is also the default behavior.
+equals
+
+```sh
+cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body}'
+```
+
+and will print
+
+```sh
+2024-02-09T07:22:41.439284 DEBUG User logged in successfully
+```
 
 ## Styling
 

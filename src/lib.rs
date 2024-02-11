@@ -13,11 +13,8 @@ pub use format::{parse_formatter, Formatter};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(default_value = r#"{timestamp:dimmed} {level|lvl|serverity:level} {message|msg|body}"#)]
+    #[arg(default_value = r#"{#log}\n{spans|data:json}"#)]
     format_string: String,
-    /// Print the given format in addition to the default format
-    #[arg(short = 'a', long = "add-format", default_value = r#"\n{data|spans}"#)]
-    add_format: String,
     /// Disable color output. If output is not a terminal, this is always true
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
     no_color: bool,
@@ -37,7 +34,6 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
     let Args {
         format_string,
-        add_format,
         no_color,
         compact,
         lenient,
@@ -51,7 +47,6 @@ pub fn run() -> Result<(), color_eyre::Report> {
         let no_color = no_color || !stdout.is_terminal();
 
         let formatter = parse_formatter(&format_string, no_color, compact)?;
-        let formatter2 = parse_formatter(&add_format, no_color, compact)?;
 
         for line in stdin.lock().lines() {
             let line = line?;
@@ -75,9 +70,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
             };
 
             let fmt = formatter.with_json(&json);
-            let fmt2 = formatter2.with_json(&json);
 
-            stdout.write_fmt(format_args!("{fmt} {fmt2}\n"))?;
+            stdout.write_fmt(format_args!("{fmt}\n"))?;
         }
     }
 
