@@ -1,6 +1,6 @@
 use core::fmt;
 use owo_colors::AnsiColors;
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 use std::num::ParseIntError;
 
 use crate::{
@@ -12,27 +12,28 @@ use crate::{
 pub use owo_colors::{OwoColorize as Colorize, Style};
 
 // Example log format
-// '{timestamp:fg=green} {level:fg=blue} {message} {#for span in spans}{span.name}{/for}'
+// '{#log}{#for span in spans} {span.name}{/for}'
 pub fn parse_formatter(
     input: &str,
     no_color: bool,
     compact: bool,
 ) -> Result<Formatter, FormatError> {
     let mut pieces = Vec::new();
+    let mut args = Vec::new();
 
-    let mut parts = input.split('\\');
+    let mut chunks = input.split('\\');
 
-    if let Some(part) = parts.next() {
-        parse2(&mut pieces, part, no_color, compact)?;
+    if let Some(chunk) = chunks.next() {
+        parse_chunk(&mut pieces, &mut args, chunk, no_color, compact)?;
     }
 
-    for part in parts {
-        let (escaped, rest) = part.split_at(1);
+    for chunk in chunks {
+        let (escaped, rest) = chunk.split_at(1);
         pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
-        parse2(&mut pieces, rest, no_color, compact)?;
+        parse_chunk(&mut pieces, &mut args, rest, no_color, compact)?;
     }
 
-    Ok(Formatter { pieces })
+    Ok(Formatter { pieces, args })
 }
 
 fn parse_escaped(c: char) -> Result<Piece, FormatError> {
@@ -49,13 +50,14 @@ fn parse_escaped(c: char) -> Result<Piece, FormatError> {
     }
 }
 
-fn parse2(
+fn parse_chunk(
     pieces: &mut Vec<Piece>,
-    input: &str,
+    args: &mut Args,
+    chunk: &str,
     no_color: bool,
     compact: bool,
 ) -> Result<(), FormatError> {
-    let mut parts = input.split('{');
+    let mut parts = chunk.split('{');
 
     if let Some(part) = parts.next() {
         if !part.is_empty() {
@@ -65,19 +67,14 @@ fn parse2(
 
     for part in parts {
         if let Some(end) = part.find('}') {
-            let (name_part, format) = match part[..end].split_once(':') {
-                Some((name, styles)) => (name, Format::new(Some(styles), no_color, compact)?),
-                None => (&part[..end], Format::new(None, no_color, compact)?),
-            };
+            let param = &part[..end];
 
-            let mut names = SmallVec::new();
-            for name in name_part.split('|') {
-                if !name.is_empty() {
-                    names.push(parse_name(name)?);
-                }
+            // '#' means param is a function
+            if let Some(content) = param.strip_prefix('#') {
+                parse_func(pieces, args, content, no_color, compact)?;
+            } else {
+                parse_field(pieces, args, param, no_color, compact)?;
             }
-
-            pieces.push(Piece::Arg(names, format));
 
             let literal = &part[end + 1..];
             if !literal.is_empty() {
@@ -91,9 +88,88 @@ fn parse2(
     Ok(())
 }
 
+fn parse_func(
+    pieces: &mut Vec<Piece>,
+    args: &mut Args,
+    content: &str,
+    no_color: bool,
+    compact: bool,
+) -> Result<(), FormatError> {
+    let (func, _rest) = content
+        .split_once(' ')
+        .map(|(f, r)| (f, Some(r)))
+        .unwrap_or((&content, None));
+
+    match func {
+        "log" => {
+            // default log format
+            let timestamp = smallvec![smallvec![FieldType::Name("timestamp".to_owned())]];
+            let timestamp_fmt = Format::new(Some("dimmed"), no_color, compact)?;
+            args.push((timestamp, timestamp_fmt));
+            pieces.push(Piece::Arg(args.len() - 1));
+            pieces.push(Piece::Literal(" ".to_owned()));
+
+            let level = smallvec![
+                smallvec![FieldType::Name("level".to_owned())],
+                smallvec![FieldType::Name("lvl".to_owned())],
+                smallvec![FieldType::Name("severity".to_owned())],
+            ];
+            let level_fmt = Format::new(Some("level"), no_color, compact)?;
+            args.push((level, level_fmt));
+            pieces.push(Piece::Arg(args.len() - 1));
+            pieces.push(Piece::Literal(" ".to_owned()));
+
+            let message = smallvec![
+                smallvec![FieldType::Name("message".to_owned())],
+                smallvec![FieldType::Name("msg".to_owned())],
+                smallvec![FieldType::Name("body".to_owned())],
+            ];
+            let message_fmt = Format::new(None, no_color, compact)?;
+            args.push((message, message_fmt));
+            pieces.push(Piece::Arg(args.len() - 1));
+        }
+        _ => {
+            return Err(FormatError::UnsupportedFunction {
+                func: func.to_owned(),
+            })
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_field(
+    pieces: &mut Vec<Piece>,
+    args: &mut Args,
+    content: &str,
+    no_color: bool,
+    compact: bool,
+) -> Result<(), FormatError> {
+    // param is a field
+    let (name_part, format) = match content.split_once(':') {
+        Some((name, styles)) => (name, Format::new(Some(styles), no_color, compact)?),
+        None => (content, Format::new(None, no_color, compact)?),
+    };
+
+    let mut names = SmallVec::new();
+    for name in name_part.split('|') {
+        if !name.is_empty() {
+            names.push(parse_name(name)?);
+        }
+    }
+
+    args.push((names, format));
+    pieces.push(Piece::Arg(args.len() - 1));
+
+    Ok(())
+}
+
+type Args = Vec<(SmallVec<[SmallVec<[FieldType; 4]>; 4]>, Format)>;
+
 #[derive(Debug, Clone)]
 pub struct Formatter {
     pieces: Vec<Piece>,
+    args: Args,
 }
 
 impl Formatter {
@@ -108,8 +184,8 @@ impl Formatter {
 #[derive(Debug, Clone)]
 pub enum Piece {
     Literal(String),
-    // (PossibleNames(NestedFields), format)
-    Arg(SmallVec<[SmallVec<[FieldType; 4]>; 4]>, Format),
+    // arg index
+    Arg(usize),
     Escaped(char),
 }
 
@@ -139,6 +215,7 @@ fn parse_name(name: &str) -> Result<SmallVec<[FieldType; 4]>, FormatError> {
             args.push(FieldType::Name(part.to_owned()));
         }
     }
+
     Ok(args)
 }
 
@@ -155,7 +232,7 @@ pub struct Format {
 
 impl Format {
     fn new(input: Option<&str>, no_color: bool, mut compact: bool) -> Result<Self, FormatError> {
-        let mut style = (!no_color).then(|| Style::new());
+        let mut style = (!no_color).then(Style::new);
         let mut is_json = false;
         let mut indent = 0;
         let mut is_level = false;
@@ -272,7 +349,7 @@ impl fmt::Display for FormatterWithJson<'_> {
         use Piece::*;
 
         let Self {
-            formatter: Formatter { pieces },
+            formatter: Formatter { pieces, args },
             ..
         } = self;
 
@@ -282,7 +359,9 @@ impl fmt::Display for FormatterWithJson<'_> {
             match piece {
                 Literal(literal) => write!(f, "{}", literal)?,
                 Escaped(c) => write!(f, "{}", c)?,
-                Arg(names, format) => {
+                Arg(i) => {
+                    let (names, format) = &args[*i];
+
                     let Format {
                         style,
                         compact,
@@ -369,40 +448,8 @@ impl fmt::Display for FormatterWithJson<'_> {
                         } else {
                             write!(f, "{}", val)?;
                         }
-                    } else if val.is_object() {
+                    } else if val.is_object() || val.is_array() {
                         // TODO: Implement formatting for objects
-                        match (is_json, compact) {
-                            (true, true) => {
-                                if style.is_some() {
-                                    write!(f, "{}", val.styled(*json_styles))?;
-                                } else {
-                                    write!(f, "{}", val)?;
-                                }
-                            }
-                            (true, false) => {
-                                if style.is_some() {
-                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
-                                } else {
-                                    write!(f, "{:?}", val.indented(indent))?;
-                                }
-                            }
-                            (false, true) => {
-                                if style.is_some() {
-                                    write!(f, "{}", val.styled(*json_styles))?;
-                                } else {
-                                    write!(f, "{}", val)?;
-                                }
-                            }
-                            (false, false) => {
-                                if style.is_some() {
-                                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
-                                } else {
-                                    write!(f, "{:?}", val.indented(indent))?;
-                                }
-                            }
-                        }
-                    } else if val.is_array() {
-                        // TODO: Implement formatting for arrays
                         match (is_json, compact) {
                             (true, true) => {
                                 if style.is_some() {
@@ -466,4 +513,6 @@ pub enum FormatError {
         source: ParseIntError,
         value: String,
     },
+    #[error("Unsupported function '{func}'")]
+    UnsupportedFunction { func: String },
 }

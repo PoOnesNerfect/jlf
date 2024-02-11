@@ -3,7 +3,7 @@ use jlf::{parse_json, Json};
 use serde::Deserialize;
 use serde_json::Value;
 
-const INPUTS: &'static [&'static str] = &[
+const INPUTS: &[&str] = &[
     r#"{"timestamp":"2024-02-06T23:52:48.349676Z","level":"INFO","message":"This is a info log","target":"my_service::my_module::my_api","filename":"my-service/src/my_module.rs","line_number":77,"spans":[{"name":"my_service"},{"name":"my_func"},{"name":"my_api1"},{"name":"something"}]}"#,
     r#"{"timestamp":"2024-02-07T23:52:48.349676Z","level":"DEBUG","message":"This is a debug log","target":"my_service::my_module::my_api2","filename":"my-service/src/my_module.rs","line_number":78,"spans":[{"name":"my_service"},{"name":"my_func"},{"name":"my_api2"},{"name":"something"},{"name":"some other value"}]}"#,
     r#"{"timestamp":"2024-02-07T23:52:48.349676Z","level":"ERROR","message":"This is an error log","target":"my_service::my_module::my_api3","filename":"my-service/src/my_module.rs","line_number":78,"spans":[{"name":"my_service"}]}"#,
@@ -84,10 +84,10 @@ fn serde_structured_parse<'a>(value: &mut Log<'a>, inputs: &[&'a str]) {
 }
 
 fn custom_parse_bench(c: &mut Criterion) {
-    let mut value = parse_json(&INPUTS[0]).unwrap();
+    let mut value = parse_json(INPUTS[0]).unwrap();
 
     c.bench_function("custom parse", |b| {
-        b.iter(|| custom_parse(black_box(&mut value), black_box(&INPUTS)))
+        b.iter(|| custom_parse(black_box(&mut value), black_box(INPUTS)))
     });
 }
 
@@ -95,7 +95,7 @@ fn serde_value_parse_bench(c: &mut Criterion) {
     let mut value = Value::Null;
 
     c.bench_function("serde value parse", |b| {
-        b.iter(|| serde_value_parse(black_box(&mut value), black_box(&INPUTS)))
+        b.iter(|| serde_value_parse(black_box(&mut value), black_box(INPUTS)))
     });
 }
 
@@ -111,10 +111,10 @@ fn serde_json_from_str_in_place<'a, T: serde::de::Deserialize<'a>>(
 }
 
 fn serde_structured_parse_bench(c: &mut Criterion) {
-    let mut value = serde_json::from_str(&INPUTS[0]).unwrap();
+    let mut value = serde_json::from_str(INPUTS[0]).unwrap();
 
     c.bench_function("serde structured parse", |b| {
-        b.iter(|| serde_structured_parse(black_box(&mut value), black_box(&INPUTS)))
+        b.iter(|| serde_structured_parse(black_box(&mut value), black_box(INPUTS)))
     });
 }
 

@@ -5,7 +5,7 @@ use owo_colors::{
 };
 use std::iter::Peekable;
 
-pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
+pub fn parse_json(input: &str) -> Result<Json<'_>, ParseError> {
     let mut json = Json::Null; // Start with a Null value
     json.parse_replace(input)?;
     Ok(json)
@@ -520,7 +520,7 @@ where
 }
 
 // skip whitespaces and return the number of characters skipped
-fn skip_whitespace<'a, I>(chars: &mut Peekable<I>)
+fn skip_whitespace<I>(chars: &mut Peekable<I>)
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -684,7 +684,7 @@ impl Json<'_> {
                     return write_syntax(f, "{}", styles);
                 };
 
-                write_syntax(f, "{", &styles)?;
+                write_syntax(f, "{", styles)?;
                 write!(f, "\n{:indent$}", "", indent = (indent + 2))?;
                 write_key(f, key, styles)?;
                 write_syntax(f, ":", styles)?;
