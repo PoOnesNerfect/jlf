@@ -14,24 +14,27 @@ pub fn parse_json<'a>(input: &'a str) -> Result<Json<'a>, ParseError> {
 #[derive(Clone)]
 pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
-    Object(Vec<(&'a str, Json<'a>)>),
+    Object(JsonObject<'a>),
     Array(Vec<Json<'a>>),
     String(&'a str),
     Value(&'a str),
     Null,
-    NullPrevObject(Vec<(&'a str, Json<'a>)>),
+    NullPrevObject(JsonObject<'a>),
     NullPrevArray(Vec<Json<'a>>),
 }
 
 impl<'a> Json<'a> {
     pub fn get(&self, key: &str) -> &Json {
         match self {
-            Json::Object(obj) => obj
-                .iter()
-                .find(|(k, _)| k == &key)
-                .map(|(_, v)| v)
-                .unwrap_or(&Json::Null),
+            Json::Object(obj) => obj.get(key),
             _ => &Json::Null,
+        }
+    }
+
+    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json> {
+        match self {
+            Json::Object(obj) => obj.get_mut(key),
+            _ => None,
         }
     }
 
@@ -39,6 +42,13 @@ impl<'a> Json<'a> {
         match self {
             Json::Array(arr) => arr.get(index).unwrap_or(&Json::Null),
             _ => &Json::Null,
+        }
+    }
+
+    pub fn get_i_mut(&'a mut self, index: usize) -> Option<&'a mut Json> {
+        match self {
+            Json::Array(arr) => arr.get_mut(index),
+            _ => None,
         }
     }
 
@@ -52,7 +62,7 @@ impl<'a> Json<'a> {
     pub fn is_empty(&self) -> bool {
         match self {
             Json::Object(obj) => obj.is_empty(),
-            Json::Array(arr) => arr.is_empty(),
+            Json::Array(arr) => arr.is_empty() || arr.iter().all(Json::is_null),
             Json::String(s) => s.is_empty(),
             Json::Value(_) => false,
             Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
@@ -75,14 +85,14 @@ impl<'a> Json<'a> {
         matches!(self, Json::Value(_))
     }
 
-    pub fn as_object(&self) -> Option<&Vec<(&'a str, Json<'a>)>> {
+    pub fn as_object(&self) -> Option<&JsonObject<'a>> {
         match self {
             Json::Object(obj) => Some(obj),
             _ => None,
         }
     }
 
-    pub fn as_object_mut(&mut self) -> Option<&mut Vec<(&'a str, Json<'a>)>> {
+    pub fn as_object_mut(&mut self) -> Option<&mut JsonObject<'a>> {
         match self {
             Json::Object(obj) => Some(obj),
             _ => None,
@@ -139,15 +149,15 @@ impl<'a> Json<'a> {
         match chars.peek().map(|&(_, c)| c) {
             Some('{') => {
                 if let Json::Object(obj) = self {
-                    parse_object_in_place(obj, chars, input)?;
+                    obj.parse_object_in_place(chars, input)?;
                 } else {
                     let this = self.replace(Json::Null);
                     if let Json::NullPrevObject(mut obj) = this {
-                        parse_object_in_place(&mut obj, chars, input)?;
+                        obj.parse_object_in_place(chars, input)?;
                         *self = Json::Object(obj);
                     } else {
-                        let mut obj = Vec::new();
-                        parse_object_in_place(&mut obj, chars, input)?;
+                        let mut obj = JsonObject(Vec::new());
+                        obj.parse_object_in_place(chars, input)?;
                         *self = Json::Object(obj);
                     }
                 }
@@ -223,95 +233,158 @@ impl<'a> Json<'a> {
     }
 }
 
-fn parse_object_in_place<'a, I>(
-    pairs: &mut Vec<(&'a str, Json<'a>)>,
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<(), ParseError>
-where
-    I: Iterator<Item = (usize, char)>,
-{
-    // Consume the opening '{'
-    let Some((_, '{')) = chars.next() else {
-        return Err(ParseError {
-            message: "Object doesn't have a starting brace",
-            value: input.to_owned(),
-            index: 0,
-        });
-    };
+#[derive(Clone)]
+pub struct JsonObject<'a>(pub Vec<(&'a str, Json<'a>)>);
 
-    skip_whitespace(chars);
-    if let Some((_, '}')) = chars.peek() {
-        chars.next(); // Consume the closing '}'
-
-        // Set values to Json::Null for keys not found in the input
-        for (_, value) in pairs.iter_mut() {
-            value.replace_with_null();
-        }
-
-        return Ok(());
+impl<'a> JsonObject<'a> {
+    pub fn get(&self, key: &str) -> &Json {
+        self.0
+            .iter()
+            .find(|(k, _)| k == &key)
+            .map(|(_, v)| v)
+            .unwrap_or(&Json::Null)
     }
 
-    let mut count = 0;
+    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json> {
+        self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
+    }
 
-    loop {
-        let Ok(Json::String(key)) = parse_string(chars, input) else {
+    pub fn insert(&mut self, key: &'a str, value: Json<'a>) {
+        if let Some((_, v)) = self.0.iter_mut().find(|(k, _)| k == &key) {
+            *v = value;
+        } else {
+            self.0.push((key, value));
+        }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<Json<'a>> {
+        if let Some((_, val)) = self.0.iter_mut().find(|(k, _)| k == &key) {
+            Some(val.replace(Json::Null))
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        if self.0.is_empty() {
+            return true;
+        }
+
+        self.0.iter().all(|(_, v)| v.is_null())
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<(&'a str, Json<'a>)> {
+        self.0.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<(&'a str, Json<'a>)> {
+        self.0.iter_mut()
+    }
+
+    pub fn parse_insert(&mut self, key: &'a str, input: &'a str) -> Result<(), ParseError> {
+        if let Some((old_key, value)) = self.0.iter_mut().find(|(k, _)| k == &key) {
+            *old_key = key;
+            value.parse_replace(input)?;
+        } else {
+            let mut new_value = Json::Null;
+            new_value.parse_replace(input)?;
+
+            self.0.push((key, new_value));
+        }
+
+        Ok(())
+    }
+
+    fn parse_object_in_place<I>(
+        &mut self,
+        chars: &mut Peekable<I>,
+        input: &'a str,
+    ) -> Result<(), ParseError>
+    where
+        I: Iterator<Item = (usize, char)>,
+    {
+        // Consume the opening '{'
+        let Some((_, '{')) = chars.next() else {
             return Err(ParseError {
-                message: "Unexpected char in object",
+                message: "Object doesn't have a starting brace",
                 value: input.to_owned(),
-                index: chars
-                    .peek()
-                    .map(|&(i, _)| i - 1)
-                    .unwrap_or_else(|| input.len() - 1),
+                index: 0,
             });
         };
 
         skip_whitespace(chars);
-        if chars.next().map(|(_, c)| c) != Some(':') {
-            return Err(ParseError {
-                message: "Expected colon ':' after key in object",
-                value: input.to_owned(),
-                // Use the index right after the key, which should be the current position
-                index: chars
-                    .peek()
-                    .map(|&(i, _)| i - 1)
-                    .unwrap_or_else(|| input.len() - 1),
-            });
-        }
+        if let Some((_, '}')) = chars.peek() {
+            chars.next(); // Consume the closing '}'
 
-        skip_whitespace(chars);
-        if let Some((old_key, value)) = pairs.get_mut(count) {
-            *old_key = key;
-            value.parse_value_in_place(chars, input)?;
-        } else {
-            let mut new_value = Json::Null;
-            new_value.parse_value_in_place(chars, input)?;
-            pairs.push((key, new_value));
-        }
-
-        count += 1;
-
-        skip_whitespace(chars);
-        match chars.peek().map(|&(_, c)| c) {
-            Some(',') => {
-                chars.next();
-                skip_whitespace(chars);
-            } // Consume and continue
-            Some('}') => {
-                chars.next(); // Consume the closing '}'
-
-                for (_, value) in pairs.iter_mut().skip(count) {
-                    value.replace_with_null();
-                }
-
-                return Ok(());
+            // Set values to Json::Null for keys not found in the input
+            for (_, value) in self.iter_mut() {
+                value.replace_with_null();
             }
-            _ => {
+
+            return Ok(());
+        }
+
+        let mut count = 0;
+
+        loop {
+            let Ok(Json::String(key)) = parse_string(chars, input) else {
                 return Err(ParseError {
-                    message: "Expected comma or closing brace '}' in object",
+                    message: "Unexpected char in object",
                     value: input.to_owned(),
-                    index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
-                })
+                    index: chars
+                        .peek()
+                        .map(|&(i, _)| i - 1)
+                        .unwrap_or_else(|| input.len() - 1),
+                });
+            };
+
+            skip_whitespace(chars);
+            if chars.next().map(|(_, c)| c) != Some(':') {
+                return Err(ParseError {
+                    message: "Expected colon ':' after key in object",
+                    value: input.to_owned(),
+                    // Use the index right after the key, which should be the current position
+                    index: chars
+                        .peek()
+                        .map(|&(i, _)| i - 1)
+                        .unwrap_or_else(|| input.len() - 1),
+                });
+            }
+
+            skip_whitespace(chars);
+            if let Some((old_key, value)) = self.0.get_mut(count) {
+                *old_key = key;
+                value.parse_value_in_place(chars, input)?;
+            } else {
+                let mut new_value = Json::Null;
+                new_value.parse_value_in_place(chars, input)?;
+                self.0.push((key, new_value));
+            }
+
+            count += 1;
+
+            skip_whitespace(chars);
+            match chars.peek().map(|&(_, c)| c) {
+                Some(',') => {
+                    chars.next();
+                    skip_whitespace(chars);
+                } // Consume and continue
+                Some('}') => {
+                    chars.next(); // Consume the closing '}'
+
+                    for (_, value) in self.iter_mut().skip(count) {
+                        value.replace_with_null();
+                    }
+
+                    return Ok(());
+                }
+                _ => {
+                    return Err(ParseError {
+                        message: "Expected comma or closing brace '}' in object",
+                        value: input.to_owned(),
+                        index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
+                    })
+                }
             }
         }
     }
@@ -550,7 +623,7 @@ impl Json<'_> {
             Json::Object(obj) => {
                 write_syntax(f, "{", styles)?;
 
-                for (key, value) in obj.iter().take(obj.len().saturating_sub(1)) {
+                for (key, value) in obj.iter().take(obj.0.len().saturating_sub(1)) {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
                         write_syntax(f, ":", styles)?;
@@ -559,7 +632,7 @@ impl Json<'_> {
                     }
                 }
 
-                if let Some((key, value)) = obj.last() {
+                if let Some((key, value)) = obj.0.last() {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
                         write_syntax(f, ":", styles)?;

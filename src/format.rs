@@ -1,6 +1,7 @@
 use core::fmt;
 use owo_colors::AnsiColors;
 use smallvec::SmallVec;
+use std::num::ParseIntError;
 
 use crate::{
     colors::{parse_color, ParseColorError},
@@ -72,7 +73,7 @@ fn parse2(
             let mut names = SmallVec::new();
             for name in name_part.split('|') {
                 if !name.is_empty() {
-                    names.push(name.to_owned());
+                    names.push(parse_name(name)?);
                 }
             }
 
@@ -107,9 +108,38 @@ impl Formatter {
 #[derive(Debug, Clone)]
 pub enum Piece {
     Literal(String),
-    // (names, format)
-    Arg(SmallVec<[String; 8]>, Format),
+    // (PossibleNames(NestedFields), format)
+    Arg(SmallVec<[SmallVec<[FieldType; 4]>; 4]>, Format),
     Escaped(char),
+}
+
+#[derive(Debug, Clone)]
+pub enum FieldType {
+    Name(String),
+    Index(usize),
+}
+
+// parse a name str into list of possible names and/or index
+// e.g. "field1.field2[0].field3" -> [Name("field1"), Name("field2"), Index(0), Name("field3")]
+fn parse_name(name: &str) -> Result<SmallVec<[FieldType; 4]>, FormatError> {
+    let mut args = SmallVec::new();
+    for part in name.split('.') {
+        if let Some((name, index)) = part.split_once('[') {
+            args.push(FieldType::Name(name.to_owned()));
+            if index.ends_with(']') {
+                let index = index
+                    .trim_end_matches(']')
+                    .parse()
+                    .toss_parse_index_with(|| index.to_owned())?;
+                args.push(FieldType::Index(index));
+            } else {
+                return Err(FormatError::IndexBracket);
+            }
+        } else {
+            args.push(FieldType::Name(part.to_owned()));
+        }
+    }
+    Ok(args)
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -274,8 +304,25 @@ impl fmt::Display for FormatterWithJson<'_> {
                     }
 
                     let mut val = &Json::Null;
-                    for name in names.iter() {
-                        val = self.json.get(name);
+                    for args in names.iter() {
+                        let mut args = args.iter();
+                        if let Some(FieldType::Name(name)) = args.next() {
+                            val = self.json.get(name);
+                        } else {
+                            continue;
+                        }
+
+                        for arg in args {
+                            match arg {
+                                FieldType::Name(name) => {
+                                    val = val.get(name);
+                                }
+                                FieldType::Index(index) => {
+                                    val = val.get_i(*index);
+                                }
+                            }
+                        }
+
                         if !val.is_null() {
                             break;
                         }
@@ -412,4 +459,11 @@ pub enum FormatError {
     UnknownCharEscape(char),
     #[error("Closing brace not found in format string")]
     ClosingBrace,
+    #[error("Index closing bracket not found")]
+    IndexBracket,
+    #[error("Failed to parse index in format string '{value}'")]
+    ParseIndex {
+        source: ParseIntError,
+        value: String,
+    },
 }
