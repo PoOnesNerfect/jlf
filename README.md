@@ -63,6 +63,8 @@ You can provide styles to the values by providing styles after the `:`.
 cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
 ```
 
+`level` is a special type of styling that will color the level based on the level (debug = green, info = cyan).
+
 If you have multiple styles, you can separate them with `,`.
 
 You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.

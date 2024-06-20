@@ -18,15 +18,12 @@ pub struct Args {
     /// Disable color output. If output is not a terminal, this is always true
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
     no_color: bool,
-    /// Display log in a compact format
+    /// Display log with data in a compact format
     #[arg(short = 'c', long = "compact", default_value_t = false)]
     compact: bool,
-    /// If log line is not valid JSON, ignore it instead of reporting error
-    #[arg(short = 'l', long = "lenient", default_value_t = false)]
-    lenient: bool,
-    /// If log line is not valid JSON, print it as is instead of reporting error
-    #[arg(short = 'L', long = "super-lenient", default_value_t = false)]
-    super_lenient: bool,
+    /// If log line is not valid JSON, then report it and exit, instead of printing the line as is
+    #[arg(short = 's', long = "strict", default_value_t = false)]
+    strict: bool,
 }
 
 pub fn run() -> Result<(), color_eyre::Report> {
@@ -36,8 +33,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         format_string,
         no_color,
         compact,
-        lenient,
-        super_lenient,
+        strict,
     } = Args::parse();
 
     let stdin = io::stdin();
@@ -50,33 +46,33 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let mut buf = stdin.lock();
         let mut line = String::new();
+        let mut json = Json::default();
 
         loop {
             if buf.read_line(&mut line)? == 0 {
                 break;
             }
 
-            let json = match parse_json(&line) {
-                Ok(json) => json,
-                Err(e) => {
-                    if super_lenient {
-                        stdout.write_fmt(format_args!("{line}\n"))?;
-                        continue;
-                    }
-                    if lenient {
-                        continue;
-                    }
+            // keep reference to bypass borrow checker
+            // this is safe because we know that line always exists.
+            // And, when the line gets cleared, the str slices in json are no longer used.
+            let line_ref = unsafe { &*(&line as *const String) };
+
+            if let Err(e) = json.parse_replace(line_ref) {
+                if strict {
                     if no_color {
                         stdout.write_fmt(format_args!("{}\n", e))?;
                     } else {
                         stdout.write_fmt(format_args!("{}\n", e.red()))?;
                     }
-                    continue;
+                    return Ok(());
                 }
-            };
+
+                stdout.write_fmt(format_args!("{line}\n"))?;
+                continue;
+            }
 
             let fmt = formatter.with_json(&json);
-
             stdout.write_fmt(format_args!("{fmt}\n"))?;
 
             // clear line to avoid appending

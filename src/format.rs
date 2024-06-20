@@ -419,12 +419,12 @@ impl fmt::Display for FormatterWithJson<'_> {
                                     "DEBUG" | "debug" => write!(
                                         f,
                                         "{}",
-                                        val.style((*style).color(AnsiColors::Cyan))
+                                        val.style((*style).color(AnsiColors::Green))
                                     )?,
                                     "INFO" | "info" => write!(
                                         f,
                                         " {}",
-                                        val.style((*style).color(AnsiColors::Green))
+                                        val.style((*style).color(AnsiColors::Cyan))
                                     )?,
                                     "WARN" | "warn" => write!(
                                         f,

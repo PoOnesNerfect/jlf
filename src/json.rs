@@ -6,24 +6,31 @@ use owo_colors::{
 use std::iter::Peekable;
 
 pub fn parse_json(input: &str) -> Result<Json<'_>, ParseError> {
-    let mut json = Json::Null; // Start with a Null value
+    let mut json = Json::default();
     json.parse_replace(input)?;
     Ok(json)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum Json<'a> {
     // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
     Object(JsonObject<'a>),
     Array(Vec<Json<'a>>),
     String(&'a str),
     Value(&'a str),
+    #[default]
     Null,
     NullPrevObject(JsonObject<'a>),
     NullPrevArray(Vec<Json<'a>>),
 }
 
 impl<'a> Json<'a> {
+    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError> {
+        let mut chars = input.char_indices().peekable();
+        self.parse_value_in_place(&mut chars, input)?;
+        Ok(())
+    }
+
     pub fn get(&self, key: &str) -> &Json {
         match self {
             Json::Object(obj) => obj.get(key),
@@ -130,12 +137,6 @@ impl<'a> Json<'a> {
     // Replace self with a new value and return the previous value
     pub fn replace(&mut self, value: Json<'a>) -> Json<'a> {
         std::mem::replace(self, value)
-    }
-
-    pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError> {
-        let mut chars = input.char_indices().peekable();
-        self.parse_value_in_place(&mut chars, input)?;
-        Ok(())
     }
 
     fn parse_value_in_place<I>(
