@@ -1,9 +1,9 @@
 [package]
 name = "jlf"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
-description = "simple CLI for viewing json logs"
+description = "JSON Log Formatter CLI"
 categories = ["command-line-interface"]
 keywords = ["json", "log", "jl", "format"]
 documentation = "https://docs.rs/jlf"
@@ -15,21 +15,20 @@ rust-version = "1.56"
 path = "src/lib.rs"
 name = "jlf"
 
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.4.18", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6.2"
 owo-colors = { version = "4.0.0", features = ["alloc", "supports-colors"] }
-smallvec = "1.13.1"
-thiserror = "1.0.56"
+smallvec = "1.13.2"
+thiserror = "1.0.61"
 tosserror = "0.1.2"
 
 [dev-dependencies]
-criterion = { version = "0.4", features = ["html_reports"] }
-serde = { version = "1.0.196", features = ["derive"] }
-serde_json = "1.0.113"
+criterion = { version = "0.5", features = ["html_reports"] }
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0.117"
 
 [[bench]]
 name = "parse_json"

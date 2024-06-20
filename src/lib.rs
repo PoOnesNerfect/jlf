@@ -48,8 +48,14 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let formatter = parse_formatter(&format_string, no_color, compact)?;
 
-        for line in stdin.lock().lines() {
-            let line = line?;
+        let mut buf = stdin.lock();
+        let mut line = String::new();
+
+        loop {
+            if buf.read_line(&mut line)? == 0 {
+                break;
+            }
+
             let json = match parse_json(&line) {
                 Ok(json) => json,
                 Err(e) => {
@@ -72,6 +78,9 @@ pub fn run() -> Result<(), color_eyre::Report> {
             let fmt = formatter.with_json(&json);
 
             stdout.write_fmt(format_args!("{fmt}\n"))?;
+
+            // clear line to avoid appending
+            line.clear();
         }
     }
 
