@@ -224,6 +224,7 @@ pub struct Format {
     pub style: Option<Style>,
     pub compact: bool,
     pub is_json: bool,
+    pub newline: bool,
     pub indent: usize,
     // special type of modifier only applicable to level field, where the style changes based on the level
     pub is_level: bool,
@@ -234,6 +235,7 @@ impl Format {
     fn new(input: Option<&str>, no_color: bool, mut compact: bool) -> Result<Self, FormatError> {
         let mut style = (!no_color).then(Style::new);
         let mut is_json = false;
+        let mut newline = false;
         let mut indent = 0;
         let mut is_level = false;
         let mut markup_styles = MarkupStyles::default();
@@ -243,6 +245,7 @@ impl Format {
                 style,
                 compact,
                 is_json,
+                newline,
                 indent,
                 is_level,
                 markup_styles,
@@ -269,6 +272,10 @@ impl Format {
                     }
                     "json" => {
                         is_json = true;
+                        continue;
+                    }
+                    "newline" => {
+                        newline = true;
                         continue;
                     }
                     "dimmed" => {
@@ -302,7 +309,7 @@ impl Format {
                         style = Some(s.on_color(color));
                     }
                 }
-                "ident" => {
+                "indent" => {
                     let Ok(value) = value.parse::<usize>() else {
                         return Err(FormatError::ParseIndent(value.to_owned()));
                     };
@@ -332,6 +339,7 @@ impl Format {
             style,
             compact,
             is_json,
+            newline,
             indent,
             is_level,
             markup_styles,
@@ -366,21 +374,13 @@ impl fmt::Display for FormatterWithJson<'_> {
                         style,
                         compact,
                         is_json,
+                        newline,
                         is_level,
                         indent,
                         markup_styles: json_styles,
                     } = format;
                     let indent = *indent;
                     let is_level = *is_level;
-
-                    match prev {
-                        None | Some(&Escaped('\n')) | Some(&Escaped('\r')) => {
-                            if indent > 0 {
-                                write!(f, "{:indent$}", "", indent = indent)?;
-                            }
-                        }
-                        _ => {}
-                    }
 
                     let mut val = &Json::Null;
                     for args in names.iter() {
@@ -405,6 +405,20 @@ impl fmt::Display for FormatterWithJson<'_> {
                         if !val.is_null() {
                             break;
                         }
+                    }
+
+                    if *newline && !val.is_null() {
+                        writeln!(f)?;
+                        prev = Some(&Escaped('\n'));
+                    }
+
+                    match prev {
+                        None | Some(&Escaped('\n')) | Some(&Escaped('\r')) => {
+                            if indent > 0 {
+                                write!(f, "{:indent$}", "", indent = indent)?;
+                            }
+                        }
+                        _ => {}
                     }
 
                     if let Some(val) = val.as_str() {

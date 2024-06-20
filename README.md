@@ -55,6 +55,25 @@ Above format is actually the default format.
 
 `level|lvl` means that the cli will look for `level` and `lvl` in the json and use the first one it finds.
 
+### Available attributes
+
+- `dimmed`: make the text dimmed
+- `bold`: make the text bold
+- `fg={color}`: set the text color
+- `{color}`: same as `fg={color}`
+- `bg={color}`: set the background color
+- `indent={n}`: indent the value by `n` spaces
+- `key={color}`: sets the color of the key
+- `value={color}`: sets the color of the value
+- `str={color}`: sets the color of the string data type
+- `syntax={color}`: sets the color of the syntax characters
+- `newline`: if value exists, print the value in a new line
+- `json`: print the json value as json
+- `compact`: print in a single line
+- `level`: color the level based on the level (debug = green, info = cyan)
+
+You can specify multiple attributes by separating them with `,`, like `newline,fg=red,bg=blue`.
+
 ## Styling
 
 You can provide styles to the values by providing styles after the `:`.

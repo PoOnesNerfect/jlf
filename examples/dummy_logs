@@ -98,3 +98,5 @@
 {"timestamp": "2024-02-09T07:24:18.439284", "level": "ERROR", "message": "Cache miss for key: user_preferences", "data": {"user_id": 6938, "session_id": "9YorfWXwFooXqSSf", "ip_address": "145.102.29.14", "action": "view_page", "success": false, "error_code": "ERR_INVALID_INPUT"}}
 {"timestamp": "2024-02-09T07:24:19.439284", "level": "WARN", "message": "Cache miss for key: user_preferences", "data": {"user_id": 2357, "session_id": "y5x7cA2Ls8zD66iP", "ip_address": "67.186.160.198", "action": "view_page", "success": true, "error_code": null}}
 {"timestamp": "2024-02-09T07:24:20.439284", "level": "INFO", "message": "Session expired for user: johndoe", "data": {"user_id": 6929, "session_id": "23KH1DEuYHX0xMiy", "ip_address": "144.84.163.218", "action": "update_profile", "success": false, "error_code": null}}
+{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully"}
+{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": null}

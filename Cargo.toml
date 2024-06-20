@@ -1,6 +1,6 @@
 [package]
 name = "jlf"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
 description = "JSON Log Formatter CLI"
