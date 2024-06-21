@@ -46,6 +46,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let mut buf = stdin.lock();
         let mut line = String::new();
+        let mut stripped;
         let mut json = Json::default();
 
         loop {
@@ -53,22 +54,30 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 break;
             }
 
+            stripped = strip_ansi_escapes::strip_str(&line);
+
             // keep reference to bypass borrow checker
             // this is safe because we know that line always exists.
             // And, when the line gets cleared, the str slices in json are no longer used.
-            let line_ref = unsafe { &*(&line as *const String) };
+            let line_ref = unsafe { &*(&stripped as *const String) };
 
             if let Err(e) = json.parse_replace(line_ref) {
                 if strict {
                     if no_color {
-                        stdout.write_fmt(format_args!("{}\n", e))?;
+                        stdout.write_fmt(format_args!("{:?}\n", e))?;
                     } else {
-                        stdout.write_fmt(format_args!("{}\n", e.red()))?;
+                        stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
                     }
                     return Ok(());
                 }
 
-                stdout.write_fmt(format_args!("{line}\n"))?;
+                if no_color {
+                    stdout.write_fmt(format_args!("{stripped}"))?;
+                } else {
+                    stdout.write_fmt(format_args!("{line}"))?;
+                }
+
+                line.clear();
                 continue;
             }
 

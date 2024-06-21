@@ -26,7 +26,17 @@ pub enum Json<'a> {
 
 impl<'a> Json<'a> {
     pub fn parse_replace(&mut self, input: &'a str) -> Result<(), ParseError> {
-        let mut chars = input.char_indices().peekable();
+        let mut chars = input.trim().char_indices().peekable();
+        if let Some((_, c)) = chars.peek() {
+            if *c != '{' && *c != '[' {
+                return Err(ParseError {
+                    message: "JSON must be an object or array",
+                    value: input.to_owned(),
+                    index: 0,
+                });
+            }
+        }
+
         self.parse_value_in_place(&mut chars, input)?;
         Ok(())
     }
