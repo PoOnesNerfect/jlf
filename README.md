@@ -22,6 +22,16 @@ It will output the logs in a more colorful and readable format:
 
 <img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
 
+**Neat Trick:**
+
+- If the line is not a JSON, it will just print the line as is.
+- It removes all ANSI escape codes when piping to a file.
+
+This means, you can just use `jlf` for non-JSON logs to pipe logs to a file without all the ansi escape codes.
+When you just pipe it to a terminal, it will still style the logs as before.
+
+Neat, right?
+
 ## Installation
 
 ### Cargo
