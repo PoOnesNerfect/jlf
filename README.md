@@ -22,7 +22,7 @@ It will output the logs in a more colorful and readable format:
 
 <img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
 
-**Neat Trick:**
+#### Neat Trick
 
 - If the line is not a JSON, it will just print the line as is.
 - It removes all ANSI escape codes when piping to a file.
@@ -55,15 +55,23 @@ cargo install --path . --locked
 You can optionally provide your custom format of the output line.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body}'
+cat ./examples/dummy_logs | jlf '{#log}{spans|data:newline,json}'
 ```
 
-Above will print the logs with dimmed timestamp, blue level and message as is.
-Above format is actually the default format.
+Supplied format above is the default format, so it will output the same as the default format.
+
+`{#log}` is a function `log`, which is a convenience function that prints the basic log format.
+Currently, function feature is very early and only `log` function is available.
+`log` function is equivalent to the format `{timestamp:dimmed} {level|lvl:level} {message|msg|body}`.
+
+`{spans|data:newline,json}` will print the `spans` or `data` field in a new line and as json.
 
 `{timestamp:dimmed}` means that the cli will look for `timestamp` in the json and print it with `dimmed` dimmed.
 
 `level|lvl` means that the cli will look for `level` and `lvl` in the json and use the first one it finds.
+The style is also called `level`, which is a special style that will color the level based on the level (debug = green, info = cyan).
+
+`{message|msg|body}` means that the cli will look for `message`, `msg`, and `body` in the json and use the first one it finds.
 
 ### Available attributes
 
@@ -84,15 +92,13 @@ Above format is actually the default format.
 
 You can specify multiple attributes by separating them with `,`, like `newline,fg=red,bg=blue`.
 
-## Styling
+### Styling
 
 You can provide styles to the values by providing styles after the `:`.
 
 ```sh
 cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
 ```
-
-`level` is a special type of styling that will color the level based on the level (debug = green, info = cyan).
 
 If you have multiple styles, you can separate them with `,`.
 
