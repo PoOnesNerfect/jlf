@@ -13,7 +13,7 @@ pub use format::{parse_formatter, Formatter};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(default_value = r#"{#log}{spans|data:newline,json}"#)]
+    #[arg(default_value = r#"{#log}{#rest:newline,json}"#)]
     format_string: String,
     /// Disable color output. If output is not a terminal, this is always true
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
@@ -49,11 +49,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         let mut stripped;
         let mut json = Json::default();
 
-        loop {
-            if buf.read_line(&mut line)? == 0 {
-                break;
-            }
-
+        while buf.read_line(&mut line)? > 0 {
             stripped = strip_ansi_escapes::strip_str(&line);
 
             // keep reference to bypass borrow checker
