@@ -1,11 +1,11 @@
 [package]
 name = "jlf"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
-description = "JSON Log Formatter CLI"
+description = "CLI for converting JSON logs to human-readable format"
 categories = ["command-line-interface"]
-keywords = ["json", "log", "jl", "format"]
+keywords = ["json", "log", "jl", "format", "cli"]
 documentation = "https://docs.rs/jlf"
 repository = "https://github.com/poonesnerfect/jlf"
 license = "MIT OR Apache-2.0"

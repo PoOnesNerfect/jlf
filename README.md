@@ -1,5 +1,7 @@
 # jlf
 
+CLI for converting JSON logs to human-readable format.
+
 ```
 $ jlf -h
 
@@ -18,8 +20,6 @@ Options:
   -h, --help         Print help
   -V, --version      Print version
 ```
-
-jlf is a simple cli for formatting json logs.
 
 Given some log file as below:
 
