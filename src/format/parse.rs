@@ -177,9 +177,15 @@ fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, Format
     };
 
     let mut names = SmallVec::new();
-    for name in name_part.split('|') {
-        if !name.is_empty() {
-            names.push(parse_name(name)?);
+
+    // if "", then print the whole json
+    if name_part.is_empty() {
+        names.push(smallvec![FieldType::Name("".to_owned())]);
+    } else {
+        for name in name_part.split('|') {
+            if !name.is_empty() {
+                names.push(parse_name(name)?);
+            }
         }
     }
 

@@ -1,5 +1,26 @@
 # jlf
 
+```
+$ jlf -h
+
+JSON Log Formatter CLI
+
+Usage: jlf [OPTIONS] [FORMAT_STRING]
+
+Arguments:
+  [FORMAT_STRING]  [default: "{#log}{#if spans|data}\\n{spans|data:json}{/if}"]
+
+Options:
+  -n, --no-color     Disable color output. If output is not a terminal, this is always true
+  -c, --compact      Display log with data in a compact format
+  -s, --strict       If log line is not valid JSON, then report it and exit, instead of printing the line as is
+  -t, --take <TAKE>  Take only the first N lines
+  -h, --help         Print help
+  -V, --version      Print version
+```
+
+---
+
 jlf is a simple cli for formatting json logs.
 
 Given some log file as below:
@@ -40,7 +61,7 @@ Neat, right?
 cargo install jlf
 ```
 
-### Manual
+### Manual Installation
 
 You can also clone the repo and install it manually.
 
@@ -55,7 +76,7 @@ cargo install --path . --locked
 You can optionally provide your custom format of the output line.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{#log}{#if spans|data}\n{spans|data:json}{/if}'
+cat ./examples/dummy_logs | jlf '{#log}{#if spans|data}\n{spans|data}{/if}'
 ```
 
 Supplied format above is the default format, so it will output the same as the default format.
@@ -77,6 +98,20 @@ The style is also called `level`, which is a special style that will color the l
 
 `{message|msg|body}` means that the cli will look for `message`, `msg`, and `body` in the json and use the first one it finds.
 
+### Printing the entire JSON
+
+If you want to print the entire JSON line, you can just use `{}`.
+
+```sh
+cat ./examples/dummy_logs | jlf '{}'
+```
+
+You can still provide styles to it.
+
+```sh
+cat ./examples/dummy_logs | jlf '{:compact,fg=green}'
+```
+
 ### Available attributes
 
 - `dimmed`: make the text dimmed
@@ -89,7 +124,7 @@ The style is also called `level`, which is a special style that will color the l
 - `value={color}`: sets the color of the value
 - `str={color}`: sets the color of the string data type
 - `syntax={color}`: sets the color of the syntax characters
-- `json`: print the json value as json
+- `json`: print the json value as json; this is the default and only available format, so you don't have to specify it
 - `compact`: print in a single line
 - `level`: color the level based on the level (debug = green, info = cyan)
 

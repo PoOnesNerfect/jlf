@@ -153,21 +153,36 @@ fn write_arg(
     let is_level = *is_level;
 
     let mut val = &Json::Null;
-    for field in field_options {
-        val = json;
-        for arg in field {
-            match arg {
-                FieldType::Name(name) => {
-                    val = val.get(name);
-                }
-                FieldType::Index(index) => {
-                    val = val.get_i(*index);
-                }
+
+    let mut is_whole = false;
+
+    // if field is a single empty string, then the whole json is used
+    if field_options.len() == 1 && field_options[0].len() == 1 {
+        if let FieldType::Name(name) = &field_options[0][0] {
+            if name.is_empty() {
+                is_whole = true;
+                val = json;
             }
         }
+    }
 
-        if !val.is_null() {
-            break;
+    if !is_whole {
+        for field in field_options {
+            val = json;
+            for arg in field {
+                match arg {
+                    FieldType::Name(name) => {
+                        val = val.get(name);
+                    }
+                    FieldType::Index(index) => {
+                        val = val.get_i(*index);
+                    }
+                }
+            }
+
+            if !val.is_null() {
+                break;
+            }
         }
     }
 
