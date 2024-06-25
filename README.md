@@ -19,8 +19,6 @@ Options:
   -V, --version      Print version
 ```
 
----
-
 jlf is a simple cli for formatting json logs.
 
 Given some log file as below:
@@ -112,6 +110,18 @@ You can still provide styles to it.
 cat ./examples/dummy_logs | jlf '{:compact,fg=green}'
 ```
 
+### Styling
+
+You can provide styles to the values by providing styles after the `:`.
+
+```sh
+cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
+```
+
+If you have multiple styles, you can separate them with `,`, like `fg=red,bg=blue`.
+
+You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
+
 ### Available attributes
 
 - `dimmed`: make the text dimmed
@@ -128,19 +138,7 @@ cat ./examples/dummy_logs | jlf '{:compact,fg=green}'
 - `compact`: print in a single line
 - `level`: color the level based on the level (debug = green, info = cyan)
 
-You can specify multiple attributes by separating them with `,`, like `fg=red,bg=blue`.
-
-### Styling
-
-You can provide styles to the values by providing styles after the `:`.
-
-```sh
-cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
-```
-
-If you have multiple styles, you can separate them with `,`.
-
-You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
+`{color}` is a placeholder for any color value.
 
 ### Available Colors
 
