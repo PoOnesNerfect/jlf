@@ -13,7 +13,7 @@ pub use format::{parse_formatter, Formatter};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(default_value = r#"{#log}{spans|data:newline,json}"#)]
+    #[arg(default_value = r#"{#log}{#if spans|data}\n{spans|data:json}{/if}"#)]
     format_string: String,
     /// Disable color output. If output is not a terminal, this is always true
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
@@ -24,6 +24,9 @@ pub struct Args {
     /// If log line is not valid JSON, then report it and exit, instead of printing the line as is
     #[arg(short = 's', long = "strict", default_value_t = false)]
     strict: bool,
+    /// Take only the first N lines
+    #[arg(short = 't', long = "take")]
+    take: Option<usize>,
 }
 
 pub fn run() -> Result<(), color_eyre::Report> {
@@ -34,6 +37,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         no_color,
         compact,
         strict,
+        take,
     } = Args::parse();
 
     let stdin = io::stdin();
@@ -48,12 +52,9 @@ pub fn run() -> Result<(), color_eyre::Report> {
         let mut line = String::new();
         let mut stripped;
         let mut json = Json::default();
+        let mut taken = 0;
 
-        loop {
-            if buf.read_line(&mut line)? == 0 {
-                break;
-            }
-
+        while buf.read_line(&mut line)? != 0 {
             stripped = strip_ansi_escapes::strip_str(&line);
 
             // keep reference to bypass borrow checker
@@ -86,6 +87,14 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
             // clear line to avoid appending
             line.clear();
+
+            // take only N lines if specified
+            if let Some(take) = take.as_ref() {
+                taken += 1;
+                if taken >= *take {
+                    break;
+                }
+            }
         }
     }
 

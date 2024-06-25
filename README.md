@@ -55,7 +55,7 @@ cargo install --path . --locked
 You can optionally provide your custom format of the output line.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{#log}{spans|data:newline,json}'
+cat ./examples/dummy_logs | jlf '{#log}{#if spans|data}\n{spans|data:json}{/if}'
 ```
 
 Supplied format above is the default format, so it will output the same as the default format.
@@ -64,7 +64,11 @@ Supplied format above is the default format, so it will output the same as the d
 Currently, function feature is very early and only `log` function is available.
 `log` function is equivalent to the format `{timestamp:dimmed} {level|lvl:level} {message|msg|body}`.
 
-`{spans|data:newline,json}` will print the `spans` or `data` field in a new line and as json.
+`{#if spans|data}...{/if}` is a function `if`, which is a conditional function that prints the content inside the block if the field `spans` or `data` exists. More about the function's behavior in [{#if}](#if)
+
+`\n` will print a newline.
+
+`{spans|data:json}` will print the `spans` or `data` field as json.
 
 `{timestamp:dimmed}` means that the cli will look for `timestamp` in the json and print it with `dimmed` dimmed.
 
@@ -85,12 +89,11 @@ The style is also called `level`, which is a special style that will color the l
 - `value={color}`: sets the color of the value
 - `str={color}`: sets the color of the string data type
 - `syntax={color}`: sets the color of the syntax characters
-- `newline`: if value exists, print the value in a new line
 - `json`: print the json value as json
 - `compact`: print in a single line
 - `level`: color the level based on the level (debug = green, info = cyan)
 
-You can specify multiple attributes by separating them with `,`, like `newline,fg=red,bg=blue`.
+You can specify multiple attributes by separating them with `,`, like `fg=red,bg=blue`.
 
 ### Styling
 
@@ -132,6 +135,20 @@ and will print
 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
 ```
 
+### if
+
+You can use `{#if field}...{/if}` to conditionally print the content inside the block if the field exists.
+
+the condition only checks if the field exists (or is null) or not, but not the truthiness of the field.
+
+If the field exists and the value is `false`, it will still print the content inside the block.
+
+```sh
+cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{/if}'
+```
+
+will print `data: { ... }` only if `spans` or `data` field exists.
+
 ## Implementation
 
 ### JSON Parsing
@@ -171,17 +188,17 @@ Below are the optimizations I implemented for the corresponding items above:
 So, how did it perform? That's the only thing that matters.
 
 ```
-custom parse            time:   [987.52 ns 993.59 ns 1.0006 µs]
+custom parse time: [987.52 ns 993.59 ns 1.0006 µs]
 Found 12 outliers among 100 measurements (12.00%)
-  9 (9.00%) high mild
-  3 (3.00%) high severe
+9 (9.00%) high mild
+3 (3.00%) high severe
 
-serde value parse       time:   [2.8045 µs 2.8357 µs 2.8729 µs]
+serde value parse time: [2.8045 µs 2.8357 µs 2.8729 µs]
 Found 8 outliers among 100 measurements (8.00%)
-  4 (4.00%) high mild
-  4 (4.00%) high severe
+4 (4.00%) high mild
+4 (4.00%) high severe
 
-serde structured parse  time:   [712.16 ns 714.93 ns 717.54 ns]
+serde structured parse time: [712.16 ns 714.93 ns 717.54 ns]
 ```
 
 First section is the custom parse, second is the parsing into `serde_json::Value` parse and third is deserializing into a structured rust object.
@@ -190,3 +207,6 @@ The time is how long it took to deserialize a single line of json log.
 
 As we can see, our custom parser is about 3x faster than the `serde_json::Value` parsing.
 Yes, it is still slower than the structured parsing, but our parser is still pretty darn fast for parsing a dynamic JSON data.
+
+```
+```
