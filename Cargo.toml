@@ -1,6 +1,6 @@
 [package]
 name = "jlf"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
 description = "CLI for converting JSON logs to human-readable format"

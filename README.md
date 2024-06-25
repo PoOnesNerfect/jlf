@@ -1,6 +1,50 @@
 # jlf
 
-CLI for converting JSON logs to human-readable format.
+[![Crates.io][crates-badge]][crates-url]
+[![MIT licensed][mit-badge]][mit-url]
+
+[crates-badge]: https://img.shields.io/crates/v/jlf.svg
+[crates-url]: https://crates.io/crates/jlf
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/PoOnesNerfect/jlf/blob/main/LICENSE
+
+```sh
+cat ./examples/dummy_logs | jlf
+```
+
+Given some log file as below:
+
+[./examples/dummy_logs](https://github.com/PoOnesNerfect/jlf/blob/main/examples/dummy_logs)
+
+```sh
+{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "action": "login", "success": false, "error_code": null}}
+{"timestamp": "2024-02-09T07:22:42.439284", "level": "ERROR", "message": "Database connection established", "data": {"user_id": 8466, "session_id": "ZMOXKPna3GbzWz2N", "ip_address": "213.135.167.95", "action": "logout", "success": true, "error_code": null}}
+...
+```
+
+It will output a more colorful and readable log like below:
+
+<img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
+
+## Installation
+
+### Cargo
+
+```sh
+cargo install jlf
+```
+
+### Manual Installation
+
+You can also clone the repo and install it manually.
+
+```sh
+git clone https://github.com/PoOnesNerfect/jlf.git
+cd jlf
+cargo install --path . --locked
+```
+
+## CLI Options
 
 ```
 $ jlf -h
@@ -19,54 +63,6 @@ Options:
   -t, --take <TAKE>  Take only the first N lines
   -h, --help         Print help
   -V, --version      Print version
-```
-
-Given some log file as below:
-
-[./examples/dummy_logs](https://github.com/PoOnesNerfect/jlf/blob/main/examples/dummy_logs)
-
-```sh
-{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "action": "login", "success": false, "error_code": null}}
-{"timestamp": "2024-02-09T07:22:42.439284", "level": "ERROR", "message": "Database connection established", "data": {"user_id": 8466, "session_id": "ZMOXKPna3GbzWz2N", "ip_address": "213.135.167.95", "action": "logout", "success": true, "error_code": null}}
-...
-```
-
-You can format it using `jlf` as below:
-
-```sh
-cat ./examples/dummy_logs | jlf
-```
-
-It will output the logs in a more colorful and readable format:
-
-<img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
-
-#### Neat Trick
-
-- If the line is not a JSON, it will just print the line as is.
-- It removes all ANSI escape codes when piping to a file.
-
-This means, you can just use `jlf` for non-JSON logs to pipe logs to a file without all the ansi escape codes.
-When you just pipe it to a terminal, it will still style the logs as before.
-
-Neat, right?
-
-## Installation
-
-### Cargo
-
-```sh
-cargo install jlf
-```
-
-### Manual Installation
-
-You can also clone the repo and install it manually.
-
-```sh
-git clone https://github.com/PoOnesNerfect/jlf.git
-cd jlf
-cargo install --path . --locked
 ```
 
 ## Custom Formatting
@@ -181,6 +177,16 @@ cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{/if}'
 ```
 
 will print `data: { ... }` only if `spans` or `data` field exists.
+
+## Neat Trick
+
+- If the line is not a JSON, it will just print the line as is.
+- It removes all ANSI escape codes when piping to a file.
+
+This means, you can just use `jlf` for non-JSON logs to pipe logs to a file without all the ansi escape codes.
+When you just pipe it to a terminal, it will still style the logs as before.
+
+Neat, right?
 
 ## Implementation
 
