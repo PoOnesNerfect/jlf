@@ -168,6 +168,19 @@ fn crunch_cond(
         (content, Cond::If)
     } else if let Some(content) = content.strip_prefix("key ") {
         (content, Cond::Key)
+    } else if let Some(content) = content.strip_prefix("config ") {
+        let b = if content == "compact" {
+            compact
+        } else if content == "no_color" {
+            no_color
+        } else {
+            return Err(FormatError::UnsupportedConfig {
+                config: content.to_owned(),
+            });
+        };
+        pieces.push(Piece::CondStart(Cond::IfConfig(b), 0));
+
+        return Ok(());
     } else {
         return Err(FormatError::UnsupportedFunction {
             func: content.to_owned(),
@@ -435,6 +448,8 @@ pub enum FormatError {
     },
     #[error("Unsupported function '{func}'")]
     UnsupportedFunction { func: String },
+    #[error("Unsupported config value in formatter '{config}'")]
+    UnsupportedConfig { config: String },
     #[error("Variable doesn't exist: {variable}")]
     InvalidVariable { variable: String },
 }

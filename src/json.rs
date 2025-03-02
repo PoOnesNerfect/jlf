@@ -620,42 +620,46 @@ impl Json<'_> {
     ) -> Result<(), fmt::Error> {
         match self {
             Json::Object(obj) => {
-                write_syntax(f, "{", styles)?;
-
-                for (key, value) in obj.iter().take(obj.0.len().saturating_sub(1)) {
-                    if !value.is_null() {
-                        write_key(f, key, styles)?;
-                        write_syntax(f, ":", styles)?;
-                        value.fmt_compact(f, styles)?;
-                        write_syntax(f, ",", styles)?;
-                    }
+                if obj.is_empty() {
+                    return write_syntax(f, "{}", styles);
                 }
 
-                if let Some((key, value)) = obj.0.last() {
-                    if !value.is_null() {
-                        write_key(f, key, styles)?;
-                        write_syntax(f, ":", styles)?;
-                        value.fmt_compact(f, styles)?;
-                    }
+                let mut non_nulls = obj.iter().filter(|(_, v)| !v.is_null());
+                let Some((key, value)) = non_nulls.next() else {
+                    return write_syntax(f, "{}", styles);
+                };
+
+                write_syntax(f, "{", styles)?;
+                write_key(f, key, styles)?;
+                write_syntax(f, ":", styles)?;
+                value.fmt_compact(f, styles)?;
+
+                for (key, value) in non_nulls {
+                    write_syntax(f, ",", styles)?;
+                    write_key(f, key, styles)?;
+                    write_syntax(f, ":", styles)?;
+                    value.fmt_compact(f, styles)?;
                 }
 
                 write_syntax(f, "}", styles)
             }
             Json::Array(arr) => {
+                if arr.is_empty() {
+                    return write_syntax(f, "[]", styles);
+                }
+
+                let mut non_nulls = arr.iter().filter(|v| !v.is_null());
+                let Some(value) = non_nulls.next() else {
+                    return write_syntax(f, "[]", styles);
+                };
+
                 write_syntax(f, "[", styles)?;
+                value.fmt_compact(f, styles)?;
 
-                for value in arr.iter().take(arr.len().saturating_sub(1)) {
-                    if !value.is_null() {
-                        value.fmt_compact(f, styles)?;
-                        write_syntax(f, ",", styles)?;
-                    }
+                for value in non_nulls {
+                    write_syntax(f, ",", styles)?;
+                    value.fmt_compact(f, styles)?;
                 }
-                if let Some(value) = arr.last() {
-                    if !value.is_null() {
-                        value.fmt_compact(f, styles)?;
-                    }
-                }
-
                 write_syntax(f, "]", styles)
             }
             Json::String(v) => write_str(f, v, styles),

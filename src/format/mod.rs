@@ -44,6 +44,7 @@ pub enum Piece {
 pub enum Cond {
     If,
     Key,
+    IfConfig(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +155,10 @@ fn write_piece(
 }
 
 fn test_cond(cond: Cond, args: &[Arg], i: usize, json: &Json<'_>) -> bool {
+    if let Cond::IfConfig(b) = cond {
+        return b;
+    }
+
     let (field_options, _) = &args[i];
     let mut val = &Json::Null;
     for field in field_options {
@@ -196,6 +201,7 @@ fn test_cond(cond: Cond, args: &[Arg], i: usize, json: &Json<'_>) -> bool {
                 unreachable!("all cases checked")
             }
         }
+        _ => unreachable!("checked above"),
     }
 }
 

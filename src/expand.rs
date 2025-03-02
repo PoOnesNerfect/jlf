@@ -109,6 +109,8 @@ fn write_cond(
         (content, "key")
     } else if let Some(content) = content.strip_prefix("if ") {
         (content, "if")
+    } else if let Some(content) = content.strip_prefix("config ") {
+        (content, "config")
     } else {
         panic!("Unsupported conditional #{content}");
     };
@@ -168,8 +170,8 @@ fn write_field(
     content: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
-    let mut iter = content.split('|').peekable();
-    while let Some(field) = iter.next() {
+    let mut iter = content.split('|');
+    if let Some(field) = iter.next() {
         if let Some(key) = field.strip_prefix('&') {
             let val = get_variable(variables, key)
                 .unwrap()
@@ -179,9 +181,18 @@ fn write_field(
         } else {
             f.write_str(field)?;
         }
+    }
 
-        if iter.peek().is_some() {
-            f.write_char('|')?;
+    for field in iter {
+        f.write_char('|')?;
+        if let Some(key) = field.strip_prefix('&') {
+            let val = get_variable(variables, key)
+                .unwrap()
+                .trim_start_matches('{')
+                .trim_end_matches('}');
+            write_field(f, val, variables)?;
+        } else {
+            f.write_str(field)?;
         }
     }
 

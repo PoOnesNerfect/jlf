@@ -168,7 +168,8 @@ fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
     let mut variables = vec![
         (
             "output".to_owned(),
-            r#"{#key &log_fields}{&log}\n{/key}{&data_log}"#.to_owned(),
+            r#"{#key &log_fields}{&log}{#config compact} {:else}\n{/config}{/key}{&data_log}"#
+                .to_owned(),
         ),
         (
             "log_fields".to_owned(),
