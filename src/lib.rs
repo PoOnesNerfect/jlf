@@ -1,6 +1,7 @@
+use std::io::{self, BufRead, IsTerminal, Write};
+
 use clap::Parser;
 use owo_colors::OwoColorize;
-use std::io::{self, BufRead, IsTerminal, Write};
 
 pub mod colors;
 
@@ -21,7 +22,8 @@ pub struct Args {
     /// Display log with data in a compact format
     #[arg(short = 'c', long = "compact", default_value_t = false)]
     compact: bool,
-    /// If log line is not valid JSON, then report it and exit, instead of printing the line as is
+    /// If log line is not valid JSON, then report it and exit, instead of
+    /// printing the line as is
     #[arg(short = 's', long = "strict", default_value_t = false)]
     strict: bool,
     /// Take only the first N lines
@@ -59,7 +61,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
             // keep reference to bypass borrow checker
             // this is safe because we know that line always exists.
-            // And, when the line gets cleared, the str slices in json are no longer used.
+            // And, when the line gets cleared, the str slices in json are no
+            // longer used.
             let line_ref = unsafe { &*(&stripped as *const String) };
 
             if let Err(e) = json.parse_replace(line_ref) {

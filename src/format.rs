@@ -1,9 +1,10 @@
-use crate::{json::MarkupStyles, Json};
 use core::fmt;
+
 use owo_colors::AnsiColors;
+pub use owo_colors::{OwoColorize as Colorize, Style};
 use smallvec::SmallVec;
 
-pub use owo_colors::{OwoColorize as Colorize, Style};
+use crate::{json::MarkupStyles, Json};
 
 mod parse;
 pub use parse::parse_formatter;
@@ -51,7 +52,8 @@ pub struct Format {
     pub compact: bool,
     pub is_json: bool,
     pub indent: usize,
-    // special type of modifier only applicable to level field, where the style changes based on the level
+    // special type of modifier only applicable to level field, where the style
+    // changes based on the level
     pub is_level: bool,
     pub markup_styles: MarkupStyles,
 }
@@ -138,7 +140,8 @@ fn write_piece(
                 }
 
                 if should_run {
-                    piece_i = write_piece(f, pieces, piece_i, args, json, prev)?;
+                    piece_i =
+                        write_piece(f, pieces, piece_i, args, json, prev)?;
                 } else {
                     piece_i += 1;
                 }
@@ -213,18 +216,26 @@ fn write_arg(
                         "{}",
                         val.style((*style).color(AnsiColors::Cyan).dimmed())
                     )?,
-                    "DEBUG" | "debug" => {
-                        write!(f, "{}", val.style((*style).color(AnsiColors::Green)))?
-                    }
-                    "INFO" | "info" => {
-                        write!(f, " {}", val.style((*style).color(AnsiColors::Cyan)))?
-                    }
-                    "WARN" | "warn" => {
-                        write!(f, " {}", val.style((*style).color(AnsiColors::Yellow)))?
-                    }
-                    "ERROR" | "error" => {
-                        write!(f, "{}", val.style((*style).color(AnsiColors::Red)))?
-                    }
+                    "DEBUG" | "debug" => write!(
+                        f,
+                        "{}",
+                        val.style((*style).color(AnsiColors::Green))
+                    )?,
+                    "INFO" | "info" => write!(
+                        f,
+                        " {}",
+                        val.style((*style).color(AnsiColors::Cyan))
+                    )?,
+                    "WARN" | "warn" => write!(
+                        f,
+                        " {}",
+                        val.style((*style).color(AnsiColors::Yellow))
+                    )?,
+                    "ERROR" | "error" => write!(
+                        f,
+                        "{}",
+                        val.style((*style).color(AnsiColors::Red))
+                    )?,
                     _ => write!(f, "{}", val.style(*style))?,
                 }
             } else {
@@ -251,7 +262,11 @@ fn write_arg(
             }
             (true, false) => {
                 if style.is_some() {
-                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
+                    write!(
+                        f,
+                        "{:?}",
+                        val.indented(indent).styled(*json_styles)
+                    )?;
                 } else {
                     write!(f, "{:?}", val.indented(indent))?;
                 }
@@ -265,7 +280,11 @@ fn write_arg(
             }
             (false, false) => {
                 if style.is_some() {
-                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
+                    write!(
+                        f,
+                        "{:?}",
+                        val.indented(indent).styled(*json_styles)
+                    )?;
                 } else {
                     write!(f, "{:?}", val.indented(indent))?;
                 }

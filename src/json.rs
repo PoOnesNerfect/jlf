@@ -1,9 +1,10 @@
 use core::fmt;
+use std::iter::Peekable;
+
 use owo_colors::{
     colors::{Blue, BrightWhite, Green, White},
     OwoColorize, Style,
 };
-use std::iter::Peekable;
 
 pub fn parse_json(input: &str) -> Result<Json<'_>, ParseError> {
     let mut json = Json::default();
@@ -13,7 +14,8 @@ pub fn parse_json(input: &str) -> Result<Json<'_>, ParseError> {
 
 #[derive(Clone, Default)]
 pub enum Json<'a> {
-    // first arg is the key value pairs, second is a list of keys used as cache for parse_replace
+    // first arg is the key value pairs, second is a list of keys used as
+    // cache for parse_replace
     Object(JsonObject<'a>),
     Array(Vec<Json<'a>>),
     String(&'a str),
@@ -82,25 +84,19 @@ impl<'a> Json<'a> {
             Json::Array(arr) => arr.is_empty() || arr.iter().all(Json::is_null),
             Json::String(s) => s.is_empty(),
             Json::Value(_) => false,
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => {
+                true
+            }
         }
     }
 
-    pub fn is_object(&self) -> bool {
-        matches!(self, Json::Object(_))
-    }
+    pub fn is_object(&self) -> bool { matches!(self, Json::Object(_)) }
 
-    pub fn is_array(&self) -> bool {
-        matches!(self, Json::Array(_))
-    }
+    pub fn is_array(&self) -> bool { matches!(self, Json::Array(_)) }
 
-    pub fn is_str(&self) -> bool {
-        matches!(self, Json::String(_))
-    }
+    pub fn is_str(&self) -> bool { matches!(self, Json::String(_)) }
 
-    pub fn is_value(&self) -> bool {
-        matches!(self, Json::Value(_))
-    }
+    pub fn is_value(&self) -> bool { matches!(self, Json::Value(_)) }
 
     pub fn as_object(&self) -> Option<&JsonObject<'a>> {
         match self {
@@ -237,7 +233,8 @@ impl<'a> Json<'a> {
             *self = Json::NullPrevObject(obj);
         } else if let Json::Array(arr) = prev {
             *self = Json::NullPrevArray(arr);
-        } else if matches!(prev, Json::NullPrevObject(_)) || matches!(prev, Json::NullPrevArray(_))
+        } else if matches!(prev, Json::NullPrevObject(_))
+            || matches!(prev, Json::NullPrevArray(_))
         {
             *self = prev;
         }
@@ -292,8 +289,14 @@ impl<'a> JsonObject<'a> {
         self.0.iter_mut()
     }
 
-    pub fn parse_insert(&mut self, key: &'a str, input: &'a str) -> Result<(), ParseError> {
-        if let Some((old_key, value)) = self.0.iter_mut().find(|(k, _)| k == &key) {
+    pub fn parse_insert(
+        &mut self,
+        key: &'a str,
+        input: &'a str,
+    ) -> Result<(), ParseError> {
+        if let Some((old_key, value)) =
+            self.0.iter_mut().find(|(k, _)| k == &key)
+        {
             *old_key = key;
             value.parse_replace(input)?;
         } else {
@@ -354,7 +357,8 @@ impl<'a> JsonObject<'a> {
                 return Err(ParseError {
                     message: "Expected colon ':' after key in object",
                     value: input.to_owned(),
-                    // Use the index right after the key, which should be the current position
+                    // Use the index right after the key, which should be the
+                    // current position
                     index: chars
                         .peek()
                         .map(|&(i, _)| i - 1)
@@ -391,9 +395,13 @@ impl<'a> JsonObject<'a> {
                 }
                 _ => {
                     return Err(ParseError {
-                        message: "Expected comma or closing brace '}' in object",
+                        message: "Expected comma or closing brace '}' in \
+                                  object",
                         value: input.to_owned(),
-                        index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
+                        index: chars
+                            .peek()
+                            .map(|&(i, _)| i)
+                            .unwrap_or_else(|| input.len()),
                     })
                 }
             }
@@ -464,7 +472,10 @@ where
     }
 }
 
-fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_string<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -494,11 +505,15 @@ where
     })
 }
 
-fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_null<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index =
+        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     if chars.next().map(|(_, c)| c) == Some('n')
         && chars.next().map(|(_, c)| c) == Some('u')
         && chars.next().map(|(_, c)| c) == Some('l')
@@ -515,11 +530,15 @@ where
     }
 }
 
-fn parse_raw_value<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_raw_value<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index =
+        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     while let Some(&(i, c)) = chars.peek() {
         if c == ',' || c == ']' || c == '}' {
             return Ok(Json::Value(&input[start_index..i]));
@@ -569,9 +588,7 @@ pub struct StyledJson<'a> {
 }
 
 impl StyledJson<'_> {
-    pub fn indented(self, indent: usize) -> Self {
-        Self { indent, ..self }
-    }
+    pub fn indented(self, indent: usize) -> Self { Self { indent, ..self } }
 
     pub fn styled(self, styles: MarkupStyles) -> Self {
         Self {
@@ -582,7 +599,10 @@ impl StyledJson<'_> {
 }
 
 impl<'a> fmt::Display for StyledJson<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.json.fmt_compact(f, &self.styles)
     }
 }
@@ -613,13 +633,19 @@ impl Default for MarkupStyles {
 }
 
 impl<'a> fmt::Display for Json<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.fmt_compact(f, &None)
     }
 }
 
 impl<'a> fmt::Debug for Json<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.fmt_pretty(f, 0, &None)
     }
 }
@@ -634,7 +660,9 @@ impl Json<'_> {
             Json::Object(obj) => {
                 write_syntax(f, "{", styles)?;
 
-                for (key, value) in obj.iter().take(obj.0.len().saturating_sub(1)) {
+                for (key, value) in
+                    obj.iter().take(obj.0.len().saturating_sub(1))
+                {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
                         write_syntax(f, ":", styles)?;
@@ -801,7 +829,8 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Create a snippet from the input, showing up to 10 characters before and after the error index
+        // Create a snippet from the input, showing up to 10 characters before
+        // and after the error index
         let start = self.index.saturating_sub(15);
         let end = (self.index + 10).min(self.value.len());
         let snippet = &self.value[start..end];
@@ -825,7 +854,7 @@ impl std::fmt::Debug for ParseError {
             self.message,
             self.index,
             snippet,
-            "^",                        // Caret pointing to the error location
+            "^", // Caret pointing to the error location
             width = caret_position + 1, // Correct alignment for the caret
         )
     }
@@ -854,9 +883,13 @@ mod tests {
             }
         }
 
-        let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
+        let arr =
+            parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
         println!("Array: {:#?}", arr);
-        assert_eq!(arr.get_i(2).get("obj").as_value(), Some("\"inside array\""));
+        assert_eq!(
+            arr.get_i(2).get("obj").as_value(),
+            Some("\"inside array\"")
+        );
     }
 
     #[test]

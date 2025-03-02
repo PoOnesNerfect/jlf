@@ -1,11 +1,13 @@
+use std::num::ParseIntError;
+
+use owo_colors::Style;
+use smallvec::{smallvec, SmallVec};
+
 use super::{Arg, Field, FieldType, Format, Formatter, Piece};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
 };
-use owo_colors::Style;
-use smallvec::{smallvec, SmallVec};
-use std::num::ParseIntError;
 
 // Example log format
 // '{#log}{#if spans|data}\n{spans|data:json}{/if}'
@@ -17,19 +19,37 @@ pub fn parse_formatter(
     let mut pieces = Vec::new();
     let mut args = Vec::new();
 
-    let mut chunks = input.split('\\');
+    let mut parse_impl = |input: &str| {
+        let mut chunks = input.split('\\');
 
-    if let Some(chunk) = chunks.next() {
-        parse_chunk(&mut pieces, &mut args, chunk, no_color, compact)?;
-    }
+        if let Some(chunk) = chunks.next() {
+            parse_chunk(&mut pieces, &mut args, chunk, no_color, compact)?;
+        }
 
-    for chunk in chunks {
-        let (escaped, rest) = chunk.split_at(1);
-        pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
-        parse_chunk(&mut pieces, &mut args, rest, no_color, compact)?;
+        for chunk in chunks {
+            let (escaped, rest) = chunk.split_at(1);
+            pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
+            parse_chunk(&mut pieces, &mut args, rest, no_color, compact)?;
+        }
+
+        Ok(())
+    };
+
+    if let Some(expanded) = expand_variables(input)? {
+        parse_impl(&expanded)?;
+    } else {
+        parse_impl(input)?;
     }
 
     Ok(Formatter { pieces, args })
+}
+
+fn expand_variables(input: &str) -> Result<Option<String>, FormatError> {
+    // if previous chunk ends with '\',
+    let mut should_escape = false;
+    for chunk in input.split('&') {}
+
+    Ok(None)
 }
 
 fn parse_escaped(c: char) -> Result<Piece, FormatError> {
@@ -42,6 +62,8 @@ fn parse_escaped(c: char) -> Result<Piece, FormatError> {
         '{' => Ok(Piece::Escaped('{')),
         '}' => Ok(Piece::Escaped('}')),
         '\\' => Ok(Piece::Escaped('\\')),
+        // escaped for variable references
+        '&' => Ok(Piece::Escaped('&')),
         _ => Err(FormatError::UnknownCharEscape(c)),
     }
 }
@@ -112,6 +134,10 @@ fn parse_func(
     Ok(())
 }
 
+// expand to log formatter
+// `{#if timestamp|level|lvl|severity|message|msg|body|fields.
+// message}{timestamp:dimmed} {level|lvl:level}
+// {message|msg|body|fields.message}{/if}`
 fn parse_func_log(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
@@ -119,7 +145,24 @@ fn parse_func_log(
     compact: bool,
 ) -> Result<(), FormatError> {
     // default log format
-    let timestamp = smallvec![smallvec![FieldType::Name("timestamp".to_owned())]];
+    let if_cond = smallvec![
+        smallvec![FieldType::Name("timestamp".to_owned())],
+        smallvec![FieldType::Name("level".to_owned())],
+        smallvec![FieldType::Name("lvl".to_owned())],
+        smallvec![FieldType::Name("severity".to_owned())],
+        smallvec![FieldType::Name("message".to_owned())],
+        smallvec![FieldType::Name("msg".to_owned())],
+        smallvec![FieldType::Name("body".to_owned())],
+        smallvec![
+            FieldType::Name("fields".to_owned()),
+            FieldType::Name("message".to_owned())
+        ],
+    ];
+    args.push((if_cond, Format::default()));
+    pieces.push(Piece::IfStart(args.len() - 1));
+
+    let timestamp =
+        smallvec![smallvec![FieldType::Name("timestamp".to_owned())]];
     let timestamp_fmt = parse_format(Some("dimmed"), no_color, compact)?;
     args.push((timestamp, timestamp_fmt));
     pieces.push(Piece::Arg(args.len() - 1));
@@ -149,6 +192,8 @@ fn parse_func_log(
     args.push((message, message_fmt));
     pieces.push(Piece::Arg(args.len() - 1));
 
+    pieces.push(Piece::IfEnd);
+
     Ok(())
 }
 
@@ -174,7 +219,10 @@ fn parse_func_else(
     Ok(())
 }
 
-fn parse_func_end(pieces: &mut Vec<Piece>, content: &str) -> Result<(), FormatError> {
+fn parse_func_end(
+    pieces: &mut Vec<Piece>,
+    content: &str,
+) -> Result<(), FormatError> {
     if content == "if" {
         pieces.push(Piece::IfEnd);
     }
@@ -197,12 +245,18 @@ fn parse_field(
     Ok(())
 }
 
-fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, FormatError> {
+fn parse_arg(
+    content: &str,
+    no_color: bool,
+    compact: bool,
+) -> Result<Arg, FormatError> {
     let content = content.trim();
 
     // param is a field
     let (name_part, format) = match content.split_once(':') {
-        Some((name, styles)) => (name, parse_format(Some(styles), no_color, compact)?),
+        Some((name, styles)) => {
+            (name, parse_format(Some(styles), no_color, compact)?)
+        }
         None => (content, parse_format(None, no_color, compact)?),
     };
 
@@ -221,7 +275,8 @@ fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, Format
 }
 
 // parse a name str into list of possible names and/or index
-// e.g. "field1.field2[0].field3" -> [Name("field1"), Name("field2"), Index(0), Name("field3")]
+// e.g. "field1.field2[0].field3" -> [Name("field1"), Name("field2"), Index(0),
+// Name("field3")]
 fn parse_name(name: &str) -> Result<Field, FormatError> {
     let mut args = SmallVec::new();
     for part in name.split('.') {
@@ -275,7 +330,8 @@ pub fn parse_format(
             (name, value)
         } else {
             match part {
-                // special type of modifier only applicable to level field, where the style changes based on the level
+                // special type of modifier only applicable to level field,
+                // where the style changes based on the level
                 "level" => {
                     is_level = true;
                     continue;
@@ -361,7 +417,9 @@ use tosserror::Toss;
 #[derive(Debug, Error, Toss)]
 pub enum FormatError {
     #[error("Failed to parse color")]
-    ParseColor { source: ParseColorError },
+    ParseColor {
+        source: ParseColorError,
+    },
     #[error("Invalid indent value in format string '{0}'")]
     ParseIndent(String),
     #[error("Invalid modifier in format string '{0}'")]
