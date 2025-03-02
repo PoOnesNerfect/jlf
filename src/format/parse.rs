@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 use owo_colors::Style;
 use smallvec::{smallvec, SmallVec};
 
-use super::{Arg, Cond, Field, FieldType, Format, Formatter, Piece};
+use super::{Arg, Cond, Field, FieldOptions, FieldType, Format, Formatter, Piece};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
@@ -85,24 +85,18 @@ fn crunch_chunk(
 
             // '&' means a variable and needs to be expanded
             if let Some(key) = content.strip_prefix('&') {
-                // if there's a formatting like `{&var:dimmed}`, crunch as field
-                if key.contains(':') {
-                    crunch_variable(pieces, args, key, no_color, compact, variables)?;
-                } else {
-                    let value = get_variable(variables, key)?;
-                    crunch_input(pieces, args, value, no_color, compact, variables)?;
-                }
+                crunch_variable(pieces, args, key, no_color, compact, variables)?;
             } else if let Some(content) = content.strip_prefix('#') {
                 // '#' means param is a conditional
                 crunch_cond(pieces, args, content, no_color, compact, variables)?;
             } else if let Some(content) = content.strip_prefix(':') {
                 // ':' means `else` of conditional
                 crunch_cond_else(pieces, args, content, no_color, compact, variables)?;
-            } else if let Some(content) = content.strip_prefix('/') {
+            } else if content.starts_with('/') {
                 // '/' means end of conditional
-                crunch_cond_end(pieces, content)?;
+                crunch_cond_end(pieces)?;
             } else {
-                crunch_field(pieces, args, content, no_color, compact)?;
+                crunch_arg(pieces, args, content, no_color, compact, variables)?;
             }
 
             let literal = &part[end + 1..];
@@ -115,6 +109,50 @@ fn crunch_chunk(
     }
 
     Ok(())
+}
+
+#[inline]
+fn crunch_variable(
+    pieces: &mut Vec<Piece>,
+    args: &mut Vec<Arg>,
+    key: &str,
+    no_color: bool,
+    compact: bool,
+    variables: &[(String, String)],
+) -> Result<(), FormatError> {
+    let key = key.trim();
+
+    // if there's a formatting like `{&var:dimmed}`, crunch as field
+    if let Some((key, styles)) = key.split_once(':') {
+        let format = parse_format(Some(styles), no_color, compact)?;
+        let name_part = get_variable(variables, key)?
+            .trim_start_matches('{')
+            .trim_end_matches('}');
+
+        let mut field_options = SmallVec::new();
+        crunch_field_options(name_part, &mut field_options, variables)?;
+
+        args.push((field_options, format));
+        pieces.push(Piece::Arg(args.len() - 1));
+    } else {
+        let value = get_variable(variables, key)?;
+        crunch_input(pieces, args, value, no_color, compact, variables)?;
+    }
+
+    Ok(())
+}
+
+#[inline]
+pub fn get_variable<'a>(
+    variables: &'a [(String, String)],
+    key: &str,
+) -> Result<&'a str, FormatError> {
+    variables
+        .iter()
+        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+        .ok_or_else(|| FormatError::InvalidVariable {
+            variable: key.to_owned(),
+        })
 }
 
 #[inline]
@@ -136,14 +174,10 @@ fn crunch_cond(
         });
     };
 
-    let content = content
-        .strip_prefix('&')
-        .map(|k| get_variable(variables, k))
-        .transpose()?
-        .unwrap_or(content);
+    let mut field_options = FieldOptions::new();
+    crunch_field_options(content, &mut field_options, variables)?;
 
-    let arg = parse_arg(content, no_color, compact)?;
-    args.push(arg);
+    args.push((field_options, parse_format(None, no_color, compact)?));
     pieces.push(Piece::CondStart(cond, args.len() - 1));
 
     Ok(())
@@ -171,45 +205,31 @@ fn crunch_cond_else(
         });
     };
 
-    let content = content
-        .strip_prefix('&')
-        .map(|k| get_variable(variables, k))
-        .transpose()?
-        .unwrap_or(content);
+    let mut field_options = FieldOptions::new();
+    crunch_field_options(content, &mut field_options, variables)?;
 
-    let arg = parse_arg(content, no_color, compact)?;
-    args.push(arg);
+    args.push((field_options, parse_format(None, no_color, compact)?));
     pieces.push(Piece::ElseCond(cond, args.len() - 1));
 
     Ok(())
 }
 
 #[inline]
-fn crunch_cond_end(pieces: &mut Vec<Piece>, content: &str) -> Result<(), FormatError> {
-    if content == "if" {
-        pieces.push(Piece::CondEnd);
-    }
+fn crunch_cond_end(pieces: &mut Vec<Piece>) -> Result<(), FormatError> {
+    pieces.push(Piece::CondEnd);
 
     Ok(())
 }
 
 #[inline]
-fn crunch_field(
+fn crunch_arg(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     content: &str,
     no_color: bool,
     compact: bool,
+    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
-    let arg = parse_arg(content, no_color, compact)?;
-
-    args.push(arg);
-    pieces.push(Piece::Arg(args.len() - 1));
-
-    Ok(())
-}
-
-fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, FormatError> {
     let content = content.trim();
 
     // param is a field
@@ -218,52 +238,35 @@ fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, Format
         None => (content, parse_format(None, no_color, compact)?),
     };
 
-    let mut names = SmallVec::new();
+    let mut fields = FieldOptions::new();
+    crunch_field_options(name_part, &mut fields, variables)?;
 
-    // if "", then print the whole json
-    if name_part.is_empty() {
-        names.push(smallvec![FieldType::Name("".to_owned())]);
-    } else {
-        for name in name_part.split('|') {
-            names.push(parse_name(name)?);
-        }
-    }
+    args.push((fields, format));
+    pieces.push(Piece::Arg(args.len() - 1));
 
-    Ok((names, format))
+    Ok(())
 }
 
-#[inline]
-fn crunch_variable(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    key: &str,
-    no_color: bool,
-    compact: bool,
+fn crunch_field_options(
+    content: &str,
+    field_options: &mut FieldOptions,
     variables: &[(String, String)],
 ) -> Result<(), FormatError> {
-    let key = key.trim();
-
-    // if there's a formatting like `{&var:dimmed}`, crunch as field
-    if let Some((key, styles)) = key.split_once(':') {
-        let format = parse_format(Some(styles), no_color, compact)?;
-        let name_part = get_variable(variables, key)?;
-
-        let mut names = SmallVec::new();
-
-        // if "", then print the whole json
-        if name_part.is_empty() {
-            names.push(smallvec![FieldType::Name("".to_owned())]);
-        } else {
-            for name in name_part.split('|') {
-                names.push(parse_name(name)?);
+    // if "", then print the whole json
+    if content.is_empty() {
+        field_options.push(smallvec![FieldType::Name("".to_owned())]);
+    } else {
+        for field in content.split('|') {
+            if let Some(key) = field.strip_prefix('&') {
+                let val = get_variable(variables, key)
+                    .unwrap()
+                    .trim_start_matches('{')
+                    .trim_end_matches('}');
+                crunch_field_options(val, field_options, variables)?;
+            } else {
+                field_options.push(parse_name(field)?);
             }
         }
-
-        args.push((names, format));
-        pieces.push(Piece::Arg(args.len() - 1));
-    } else {
-        let value = get_variable(variables, key)?;
-        crunch_input(pieces, args, value, no_color, compact, variables)?;
     }
 
     Ok(())
@@ -404,16 +407,6 @@ pub fn parse_format(
         is_level,
         markup_styles,
     })
-}
-
-#[inline]
-fn get_variable<'a>(variables: &'a [(String, String)], key: &str) -> Result<&'a str, FormatError> {
-    variables
-        .iter()
-        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
-        .ok_or_else(|| FormatError::InvalidVariable {
-            variable: key.to_owned(),
-        })
 }
 
 use thiserror::Error;

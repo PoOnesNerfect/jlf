@@ -100,4 +100,7 @@
 {"timestamp": "2024-02-09T07:24:20.439284", "level": "INFO", "message": "Session expired for user: johndoe", "data": {"user_id": 6929, "session_id": "23KH1DEuYHX0xMiy", "ip_address": "144.84.163.218", "action": "update_profile", "success": false, "error_code": null}}
 {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully"}
 {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": null}
+{"level": "DEBUG", "message": "User logged in successfully", "data": null}
+{"data1": {"field1": 123, "field2": "hello"},"data2": "world"}
+{"data1": {"field1": 123, "field2": "hello"},"data2": "world"}
 {"data1": {"field1": 123, "field2": "hello"},"data2": "world"}

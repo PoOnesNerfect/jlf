@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 use crate::{json::MarkupStyles, Json};
 
-mod parse;
+pub mod parse;
 pub use parse::parse_formatter;
 
 type Arg = (FieldOptions, Format);
@@ -28,7 +28,7 @@ impl Formatter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     Literal(String),
     // arg index
@@ -77,11 +77,9 @@ impl fmt::Display for FormatterWithJson<'_> {
             json,
         } = self;
 
-        let mut prev = None;
-
         let mut piece_i = 0;
         while piece_i < pieces.len() {
-            piece_i = write_piece(f, pieces, piece_i, args, json, &mut prev)?;
+            piece_i = write_piece(f, pieces, piece_i, args, json, false)?;
         }
 
         Ok(())
@@ -94,40 +92,58 @@ fn write_piece(
     mut piece_i: usize,
     args: &Vec<Arg>,
     json: &Json<'_>,
-    prev: &mut Option<&Piece>,
+    skip: bool,
 ) -> Result<usize, fmt::Error> {
     use Piece::*;
 
     match &pieces[piece_i] {
-        Literal(literal) => write!(f, "{}", literal)?,
-        Escaped(c) => write!(f, "{}", c)?,
-        Arg(i) => write_arg(f, &args[*i], json, prev)?,
+        Literal(literal) => {
+            if !skip {
+                write!(f, "{}", literal)?
+            }
+        }
+        Escaped(c) => {
+            if !skip {
+                write!(f, "{}", c)?
+            }
+        }
+        Arg(i) => {
+            if !skip {
+                write_arg(f, &args[*i], json)?
+            }
+        }
         CondStart(cond, i) => {
-            let mut should_run = test_cond(*cond, args, *i, json);
-            let mut else_found = false;
+            let cond_matched = test_cond(*cond, args, *i, json);
+            let mut should_run = cond_matched;
+            let mut else_cond_matched = false;
 
             piece_i += 1;
             while piece_i < pieces.len() {
                 if let Piece::ElseCond(cond, i) = pieces[piece_i] {
-                    should_run = !should_run && !else_found && test_cond(cond, args, i, json);
+                    if !cond_matched && !else_cond_matched {
+                        should_run = test_cond(cond, args, i, json);
+                        else_cond_matched = true;
+                    } else {
+                        should_run = false;
+                    }
 
                     piece_i += 1;
-                    continue;
                 } else if let Piece::Else = pieces[piece_i] {
-                    should_run = !should_run && !else_found;
-                    else_found = true;
+                    if !should_run && !else_cond_matched {
+                        should_run = true;
+                        else_cond_matched = true;
+                    } else {
+                        should_run = false;
+                    }
 
                     piece_i += 1;
-                    continue;
-                } else if let Piece::CondEnd = pieces[piece_i] {
+                }
+
+                if let Piece::CondEnd = pieces[piece_i] {
                     break;
                 }
 
-                if should_run {
-                    piece_i = write_piece(f, pieces, piece_i, args, json, prev)?;
-                } else {
-                    piece_i += 1;
-                }
+                piece_i = write_piece(f, pieces, piece_i, args, json, skip || !should_run)?;
             }
         }
         // Handled in the IfStart case above
@@ -187,10 +203,7 @@ fn write_arg(
     f: &mut fmt::Formatter<'_>,
     (field_options, format): &(FieldOptions, Format),
     json: &Json<'_>,
-    prev: &mut Option<&Piece>,
 ) -> fmt::Result {
-    use Piece::*;
-
     let Format {
         style,
         compact,
@@ -227,13 +240,8 @@ fn write_arg(
         }
     }
 
-    match prev {
-        None | Some(&Escaped('\n')) | Some(&Escaped('\r')) => {
-            if indent > 0 {
-                write!(f, "{:indent$}", "", indent = indent)?;
-            }
-        }
-        _ => {}
+    if indent > 0 {
+        write!(f, "{:indent$}", "", indent = indent)?;
     }
 
     if let Some(val) = val.as_str() {

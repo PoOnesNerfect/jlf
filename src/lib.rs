@@ -11,6 +11,8 @@ pub use json::{parse_json, Json, ParseError};
 mod format;
 pub use format::{parse_formatter, Formatter};
 
+mod expand;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
@@ -42,6 +44,11 @@ pub struct Args {
 enum Command {
     /// Print the format string with variables expanded
     Expand {
+        #[command(flatten)]
+        format: FormatArgs,
+    },
+    /// List all variables
+    List {
         /// Variable as a Key-Value pair; can be passed multiple times.
         #[arg(short = 'v', long = "variable")]
         variables: Option<Vec<String>>,
@@ -71,11 +78,23 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
     if let Some(command) = command {
         match command {
-            Command::Expand { variables } => {
+            Command::Expand {
+                format:
+                    FormatArgs {
+                        format_string,
+                        variables,
+                    },
+            } => {
                 let variables = get_variables(variables);
-                // let formatter = parse_formatter(&format_string, no_color,
-                // compact, &variables)?; println!("{formatter}"
-                // );
+
+                println!("{}", expand::ExpandedFormat(format_string, variables));
+            }
+            Command::List { variables } => {
+                let variables = get_variables(variables);
+                let width = variables.iter().map(|(k, _)| k.len()).max().unwrap();
+                for (k, v) in variables {
+                    println!("{:width$} = {v:?}", k.bold(), width = width);
+                }
             }
         }
 
@@ -149,27 +168,33 @@ fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
     let mut variables = vec![
         (
             "output".to_owned(),
-            "{#key &log_fields}{&log}\n{/key}{&data_log}".to_owned(),
+            r#"{#key &log_fields}{&log}\n{/key}{&data_log}"#.to_owned(),
         ),
         (
             "log_fields".to_owned(),
-            "{&timestamp}|{&level}|{&message}".to_owned(),
+            "{&timestamp|&level|&message}".to_owned(),
         ),
         (
             "log".to_owned(),
             "{&timestamp_log}{&level_log}{&message_log}".to_owned(),
         ),
-        ("timestamp_log".to_owned(), "{&timestamp:dimmed}".to_owned()),
-        ("timestamp".to_owned(), "timestamp".to_owned()),
-        ("level_log".to_owned(), "{&level:level}".to_owned()),
-        ("level".to_owned(), "level|lvl|severity".to_owned()),
+        (
+            "timestamp_log".to_owned(),
+            "{#key &timestamp}{&timestamp:dimmed} {/key}".to_owned(),
+        ),
+        ("timestamp".to_owned(), "{timestamp}".to_owned()),
+        (
+            "level_log".to_owned(),
+            "{#key &level}{&level:level} {/key}".to_owned(),
+        ),
+        ("level".to_owned(), "{level|lvl|severity}".to_owned()),
         ("message_log".to_owned(), "{&message}".to_owned()),
         (
             "message".to_owned(),
-            "message|msg|body|fields.message".to_owned(),
+            "{message|msg|body|fields.message}".to_owned(),
         ),
         ("data_log".to_owned(), "{&data:json}".to_owned()),
-        ("data".to_owned(), "spans|data|".to_owned()),
+        ("data".to_owned(), "{spans|data|}".to_owned()),
     ];
 
     if let Some(args) = args {
