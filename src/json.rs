@@ -50,7 +50,7 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json> {
+    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json<'a>> {
         match self {
             Json::Object(obj) => obj.get_mut(key),
             _ => None,
@@ -64,7 +64,7 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_i_mut(&'a mut self, index: usize) -> Option<&'a mut Json> {
+    pub fn get_i_mut(&'a mut self, index: usize) -> Option<&'a mut Json<'a>> {
         match self {
             Json::Array(arr) => arr.get_mut(index),
             _ => None,
@@ -84,9 +84,7 @@ impl<'a> Json<'a> {
             Json::Array(arr) => arr.is_empty() || arr.iter().all(Json::is_null),
             Json::String(s) => s.is_empty(),
             Json::Value(_) => false,
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => {
-                true
-            }
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
         }
     }
 
@@ -141,9 +139,7 @@ impl<'a> Json<'a> {
     }
 
     // Replace self with a new value and return the previous value
-    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> {
-        std::mem::replace(self, value)
-    }
+    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> { std::mem::replace(self, value) }
 
     fn parse_value_in_place<I>(
         &mut self,
@@ -233,8 +229,7 @@ impl<'a> Json<'a> {
             *self = Json::NullPrevObject(obj);
         } else if let Json::Array(arr) = prev {
             *self = Json::NullPrevArray(arr);
-        } else if matches!(prev, Json::NullPrevObject(_))
-            || matches!(prev, Json::NullPrevArray(_))
+        } else if matches!(prev, Json::NullPrevObject(_)) || matches!(prev, Json::NullPrevArray(_))
         {
             *self = prev;
         }
@@ -253,7 +248,7 @@ impl<'a> JsonObject<'a> {
             .unwrap_or(&Json::Null)
     }
 
-    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json> {
+    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json<'a>> {
         self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
@@ -281,22 +276,12 @@ impl<'a> JsonObject<'a> {
         self.0.iter().all(|(_, v)| v.is_null())
     }
 
-    pub fn iter(&self) -> std::slice::Iter<(&'a str, Json<'a>)> {
-        self.0.iter()
-    }
+    pub fn iter(&self) -> std::slice::Iter<(&'a str, Json<'a>)> { self.0.iter() }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<(&'a str, Json<'a>)> {
-        self.0.iter_mut()
-    }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<(&'a str, Json<'a>)> { self.0.iter_mut() }
 
-    pub fn parse_insert(
-        &mut self,
-        key: &'a str,
-        input: &'a str,
-    ) -> Result<(), ParseError> {
-        if let Some((old_key, value)) =
-            self.0.iter_mut().find(|(k, _)| k == &key)
-        {
+    pub fn parse_insert(&mut self, key: &'a str, input: &'a str) -> Result<(), ParseError> {
+        if let Some((old_key, value)) = self.0.iter_mut().find(|(k, _)| k == &key) {
             *old_key = key;
             value.parse_replace(input)?;
         } else {
@@ -398,10 +383,7 @@ impl<'a> JsonObject<'a> {
                         message: "Expected comma or closing brace '}' in \
                                   object",
                         value: input.to_owned(),
-                        index: chars
-                            .peek()
-                            .map(|&(i, _)| i)
-                            .unwrap_or_else(|| input.len()),
+                        index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
                     })
                 }
             }
@@ -472,10 +454,7 @@ where
     }
 }
 
-fn parse_string<'a, I>(
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<Json<'a>, ParseError>
+fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -505,15 +484,11 @@ where
     })
 }
 
-fn parse_null<'a, I>(
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<Json<'a>, ParseError>
+fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index =
-        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     if chars.next().map(|(_, c)| c) == Some('n')
         && chars.next().map(|(_, c)| c) == Some('u')
         && chars.next().map(|(_, c)| c) == Some('l')
@@ -530,15 +505,11 @@ where
     }
 }
 
-fn parse_raw_value<'a, I>(
-    chars: &mut Peekable<I>,
-    input: &'a str,
-) -> Result<Json<'a>, ParseError>
+fn parse_raw_value<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index =
-        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     while let Some(&(i, c)) = chars.peek() {
         if c == ',' || c == ']' || c == '}' {
             return Ok(Json::Value(&input[start_index..i]));
@@ -598,11 +569,8 @@ impl StyledJson<'_> {
     }
 }
 
-impl<'a> fmt::Display for StyledJson<'a> {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> Result<(), std::fmt::Error> {
+impl fmt::Display for StyledJson<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         self.json.fmt_compact(f, &self.styles)
     }
 }
@@ -613,7 +581,7 @@ impl fmt::Debug for StyledJson<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MarkupStyles {
     pub key: Style,
     pub value: Style,
@@ -632,20 +600,14 @@ impl Default for MarkupStyles {
     }
 }
 
-impl<'a> fmt::Display for Json<'a> {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> Result<(), std::fmt::Error> {
+impl fmt::Display for Json<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         self.fmt_compact(f, &None)
     }
 }
 
-impl<'a> fmt::Debug for Json<'a> {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> Result<(), std::fmt::Error> {
+impl fmt::Debug for Json<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         self.fmt_pretty(f, 0, &None)
     }
 }
@@ -660,9 +622,7 @@ impl Json<'_> {
             Json::Object(obj) => {
                 write_syntax(f, "{", styles)?;
 
-                for (key, value) in
-                    obj.iter().take(obj.0.len().saturating_sub(1))
-                {
+                for (key, value) in obj.iter().take(obj.0.len().saturating_sub(1)) {
                     if !value.is_null() {
                         write_key(f, key, styles)?;
                         write_syntax(f, ":", styles)?;
@@ -854,7 +814,7 @@ impl std::fmt::Debug for ParseError {
             self.message,
             self.index,
             snippet,
-            "^", // Caret pointing to the error location
+            "^",                        // Caret pointing to the error location
             width = caret_position + 1, // Correct alignment for the caret
         )
     }
@@ -883,13 +843,9 @@ mod tests {
             }
         }
 
-        let arr =
-            parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
+        let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
         println!("Array: {:#?}", arr);
-        assert_eq!(
-            arr.get_i(2).get("obj").as_value(),
-            Some("\"inside array\"")
-        );
+        assert_eq!(arr.get_i(2).get("obj").as_value(), Some("\"inside array\""));
     }
 
     #[test]

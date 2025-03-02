@@ -34,10 +34,16 @@ pub enum Piece {
     // arg index
     Arg(usize),
     Escaped(char),
-    IfStart(usize),
-    ElseIf(usize),
+    CondStart(Cond, usize),
+    ElseCond(Cond, usize),
     Else,
-    IfEnd,
+    CondEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cond {
+    If,
+    Key,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +64,7 @@ pub struct Format {
     pub markup_styles: MarkupStyles,
 }
 
+// used for displaying the formatted log to output
 pub struct FormatterWithJson<'a> {
     formatter: &'a Formatter,
     json: &'a Json<'a>,
@@ -95,37 +102,14 @@ fn write_piece(
         Literal(literal) => write!(f, "{}", literal)?,
         Escaped(c) => write!(f, "{}", c)?,
         Arg(i) => write_arg(f, &args[*i], json, prev)?,
-        IfStart(i) => {
-            let field_exists = |i: usize| {
-                let (field_options, _) = &args[i];
-                let mut val = &Json::Null;
-                for field in field_options {
-                    val = json;
-                    for arg in field {
-                        match arg {
-                            FieldType::Name(name) => {
-                                val = val.get(name);
-                            }
-                            FieldType::Index(index) => {
-                                val = val.get_i(*index);
-                            }
-                        }
-                    }
-
-                    if !val.is_null() {
-                        break;
-                    }
-                }
-                !val.is_null()
-            };
-
-            let mut should_run = field_exists(*i);
+        CondStart(cond, i) => {
+            let mut should_run = test_cond(*cond, args, *i, json);
             let mut else_found = false;
 
             piece_i += 1;
             while piece_i < pieces.len() {
-                if let Piece::ElseIf(i) = pieces[piece_i] {
-                    should_run = !should_run && !else_found && field_exists(i);
+                if let Piece::ElseCond(cond, i) = pieces[piece_i] {
+                    should_run = !should_run && !else_found && test_cond(cond, args, i, json);
 
                     piece_i += 1;
                     continue;
@@ -135,23 +119,68 @@ fn write_piece(
 
                     piece_i += 1;
                     continue;
-                } else if let Piece::IfEnd = pieces[piece_i] {
+                } else if let Piece::CondEnd = pieces[piece_i] {
                     break;
                 }
 
                 if should_run {
-                    piece_i =
-                        write_piece(f, pieces, piece_i, args, json, prev)?;
+                    piece_i = write_piece(f, pieces, piece_i, args, json, prev)?;
                 } else {
                     piece_i += 1;
                 }
             }
         }
         // Handled in the IfStart case above
-        ElseIf(_) | Else | IfEnd => {}
+        ElseCond(..) | Else | CondEnd => {}
     }
 
     Ok(piece_i + 1)
+}
+
+fn test_cond(cond: Cond, args: &[Arg], i: usize, json: &Json<'_>) -> bool {
+    let (field_options, _) = &args[i];
+    let mut val = &Json::Null;
+    for field in field_options {
+        val = json;
+        for arg in field {
+            match arg {
+                FieldType::Name(name) => {
+                    val = val.get(name);
+                }
+                FieldType::Index(index) => {
+                    val = val.get_i(*index);
+                }
+            }
+        }
+
+        if !val.is_null() {
+            break;
+        }
+    }
+
+    if val.is_null() {
+        return false;
+    }
+
+    match cond {
+        Cond::Key => true,
+        Cond::If => {
+            if val.is_array() || val.is_object() {
+                true
+            } else if let Some(val) = val.as_str() {
+                !val.is_empty()
+            } else if let Some(val) = val.as_value() {
+                !(val == "false"
+                    || val == "0"
+                    || val == "-0"
+                    || val == "0n"
+                    || val == "undefined"
+                    || val == "NaN")
+            } else {
+                unreachable!("all cases checked")
+            }
+        }
+    }
 }
 
 fn write_arg(
@@ -216,26 +245,18 @@ fn write_arg(
                         "{}",
                         val.style((*style).color(AnsiColors::Cyan).dimmed())
                     )?,
-                    "DEBUG" | "debug" => write!(
-                        f,
-                        "{}",
-                        val.style((*style).color(AnsiColors::Green))
-                    )?,
-                    "INFO" | "info" => write!(
-                        f,
-                        " {}",
-                        val.style((*style).color(AnsiColors::Cyan))
-                    )?,
-                    "WARN" | "warn" => write!(
-                        f,
-                        " {}",
-                        val.style((*style).color(AnsiColors::Yellow))
-                    )?,
-                    "ERROR" | "error" => write!(
-                        f,
-                        "{}",
-                        val.style((*style).color(AnsiColors::Red))
-                    )?,
+                    "DEBUG" | "debug" => {
+                        write!(f, "{}", val.style((*style).color(AnsiColors::Green)))?
+                    }
+                    "INFO" | "info" => {
+                        write!(f, " {}", val.style((*style).color(AnsiColors::Cyan)))?
+                    }
+                    "WARN" | "warn" => {
+                        write!(f, " {}", val.style((*style).color(AnsiColors::Yellow)))?
+                    }
+                    "ERROR" | "error" => {
+                        write!(f, "{}", val.style((*style).color(AnsiColors::Red)))?
+                    }
                     _ => write!(f, "{}", val.style(*style))?,
                 }
             } else {
@@ -262,11 +283,7 @@ fn write_arg(
             }
             (true, false) => {
                 if style.is_some() {
-                    write!(
-                        f,
-                        "{:?}",
-                        val.indented(indent).styled(*json_styles)
-                    )?;
+                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                 } else {
                     write!(f, "{:?}", val.indented(indent))?;
                 }
@@ -280,11 +297,7 @@ fn write_arg(
             }
             (false, false) => {
                 if style.is_some() {
-                    write!(
-                        f,
-                        "{:?}",
-                        val.indented(indent).styled(*json_styles)
-                    )?;
+                    write!(f, "{:?}", val.indented(indent).styled(*json_styles))?;
                 } else {
                     write!(f, "{:?}", val.indented(indent))?;
                 }

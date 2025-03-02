@@ -114,9 +114,7 @@ fn serde_structured_parse_bench(c: &mut Criterion) {
     let mut value = serde_json::from_str(INPUTS[0]).unwrap();
 
     c.bench_function("serde structured parse", |b| {
-        b.iter(|| {
-            serde_structured_parse(black_box(&mut value), black_box(INPUTS))
-        })
+        b.iter(|| serde_structured_parse(black_box(&mut value), black_box(INPUTS)))
     });
 }
 

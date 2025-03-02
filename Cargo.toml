@@ -9,7 +9,6 @@ keywords = ["json", "log", "jl", "format", "cli"]
 documentation = "https://docs.rs/jlf"
 repository = "https://github.com/poonesnerfect/jlf"
 license = "MIT OR Apache-2.0"
-rust-version = "1.56"
 
 [lib]
 path = "src/lib.rs"

@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 use owo_colors::Style;
 use smallvec::{smallvec, SmallVec};
 
-use super::{Arg, Field, FieldType, Format, Formatter, Piece};
+use super::{Arg, Cond, Field, FieldType, Format, Formatter, Piece};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
@@ -15,43 +15,40 @@ pub fn parse_formatter(
     input: &str,
     no_color: bool,
     compact: bool,
+    variables: &[(String, String)],
 ) -> Result<Formatter, FormatError> {
     let mut pieces = Vec::new();
     let mut args = Vec::new();
 
-    let mut parse_impl = |input: &str| {
-        let mut chunks = input.split('\\');
-
-        if let Some(chunk) = chunks.next() {
-            parse_chunk(&mut pieces, &mut args, chunk, no_color, compact)?;
-        }
-
-        for chunk in chunks {
-            let (escaped, rest) = chunk.split_at(1);
-            pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
-            parse_chunk(&mut pieces, &mut args, rest, no_color, compact)?;
-        }
-
-        Ok(())
-    };
-
-    if let Some(expanded) = expand_variables(input)? {
-        parse_impl(&expanded)?;
-    } else {
-        parse_impl(input)?;
-    }
+    crunch_input(&mut pieces, &mut args, input, no_color, compact, variables)?;
 
     Ok(Formatter { pieces, args })
 }
 
-fn expand_variables(input: &str) -> Result<Option<String>, FormatError> {
-    // if previous chunk ends with '\',
-    let mut should_escape = false;
-    for chunk in input.split('&') {}
+fn crunch_input(
+    pieces: &mut Vec<Piece>,
+    args: &mut Vec<Arg>,
+    input: &str,
+    no_color: bool,
+    compact: bool,
+    variables: &[(String, String)],
+) -> Result<(), FormatError> {
+    let mut chunks = input.split('\\');
 
-    Ok(None)
+    if let Some(chunk) = chunks.next() {
+        crunch_chunk(pieces, args, chunk, no_color, compact, variables)?;
+    }
+
+    for chunk in chunks {
+        let (escaped, rest) = chunk.split_at(1);
+        pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
+        crunch_chunk(pieces, args, rest, no_color, compact, variables)?;
+    }
+
+    Ok(())
 }
 
+#[inline]
 fn parse_escaped(c: char) -> Result<Piece, FormatError> {
     match c {
         'n' => Ok(Piece::Escaped('\n')),
@@ -62,18 +59,17 @@ fn parse_escaped(c: char) -> Result<Piece, FormatError> {
         '{' => Ok(Piece::Escaped('{')),
         '}' => Ok(Piece::Escaped('}')),
         '\\' => Ok(Piece::Escaped('\\')),
-        // escaped for variable references
-        '&' => Ok(Piece::Escaped('&')),
         _ => Err(FormatError::UnknownCharEscape(c)),
     }
 }
 
-fn parse_chunk(
+fn crunch_chunk(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     chunk: &str,
     no_color: bool,
     compact: bool,
+    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let mut parts = chunk.split('{');
 
@@ -85,19 +81,28 @@ fn parse_chunk(
 
     for part in parts {
         if let Some(end) = part.find('}') {
-            let param = &part[..end];
+            let content = &part[..end];
 
-            // '#' means param is a function
-            if let Some(content) = param.strip_prefix('#') {
-                parse_func(pieces, args, content, no_color, compact)?;
-            } else if let Some(content) = param.strip_prefix(':') {
-                // ':' means `else` of an `if` function
-                parse_func_else(pieces, args, content, no_color, compact)?;
-            } else if let Some(content) = param.strip_prefix('/') {
-                // '/' means end of function
-                parse_func_end(pieces, content)?;
+            // '&' means a variable and needs to be expanded
+            if let Some(key) = content.strip_prefix('&') {
+                // if there's a formatting like `{&var:dimmed}`, crunch as field
+                if key.contains(':') {
+                    crunch_variable(pieces, args, key, no_color, compact, variables)?;
+                } else {
+                    let value = get_variable(variables, key)?;
+                    crunch_input(pieces, args, value, no_color, compact, variables)?;
+                }
+            } else if let Some(content) = content.strip_prefix('#') {
+                // '#' means param is a conditional
+                crunch_cond(pieces, args, content, no_color, compact, variables)?;
+            } else if let Some(content) = content.strip_prefix(':') {
+                // ':' means `else` of conditional
+                crunch_cond_else(pieces, args, content, no_color, compact, variables)?;
+            } else if let Some(content) = content.strip_prefix('/') {
+                // '/' means end of conditional
+                crunch_cond_end(pieces, content)?;
             } else {
-                parse_field(pieces, args, param, no_color, compact)?;
+                crunch_field(pieces, args, content, no_color, compact)?;
             }
 
             let literal = &part[end + 1..];
@@ -112,125 +117,84 @@ fn parse_chunk(
     Ok(())
 }
 
-fn parse_func(
+#[inline]
+fn crunch_cond(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     content: &str,
     no_color: bool,
     compact: bool,
+    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
-    if content == "log" {
-        parse_func_log(pieces, args, no_color, compact)?;
-    } else if let Some(content) = content.strip_prefix("if ") {
-        let arg = parse_arg(content, no_color, compact)?;
-        args.push(arg);
-        pieces.push(Piece::IfStart(args.len() - 1));
+    let (content, cond) = if let Some(content) = content.strip_prefix("if ") {
+        (content, Cond::If)
+    } else if let Some(content) = content.strip_prefix("key ") {
+        (content, Cond::Key)
     } else {
         return Err(FormatError::UnsupportedFunction {
             func: content.to_owned(),
         });
-    }
+    };
+
+    let content = content
+        .strip_prefix('&')
+        .map(|k| get_variable(variables, k))
+        .transpose()?
+        .unwrap_or(content);
+
+    let arg = parse_arg(content, no_color, compact)?;
+    args.push(arg);
+    pieces.push(Piece::CondStart(cond, args.len() - 1));
 
     Ok(())
 }
 
-// expand to log formatter
-// `{#if timestamp|level|lvl|severity|message|msg|body|fields.
-// message}{timestamp:dimmed} {level|lvl:level}
-// {message|msg|body|fields.message}{/if}`
-fn parse_func_log(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    no_color: bool,
-    compact: bool,
-) -> Result<(), FormatError> {
-    // default log format
-    let if_cond = smallvec![
-        smallvec![FieldType::Name("timestamp".to_owned())],
-        smallvec![FieldType::Name("level".to_owned())],
-        smallvec![FieldType::Name("lvl".to_owned())],
-        smallvec![FieldType::Name("severity".to_owned())],
-        smallvec![FieldType::Name("message".to_owned())],
-        smallvec![FieldType::Name("msg".to_owned())],
-        smallvec![FieldType::Name("body".to_owned())],
-        smallvec![
-            FieldType::Name("fields".to_owned()),
-            FieldType::Name("message".to_owned())
-        ],
-    ];
-    args.push((if_cond, Format::default()));
-    pieces.push(Piece::IfStart(args.len() - 1));
-
-    let timestamp =
-        smallvec![smallvec![FieldType::Name("timestamp".to_owned())]];
-    let timestamp_fmt = parse_format(Some("dimmed"), no_color, compact)?;
-    args.push((timestamp, timestamp_fmt));
-    pieces.push(Piece::Arg(args.len() - 1));
-    pieces.push(Piece::Literal(" ".to_owned()));
-
-    let level = smallvec![
-        smallvec![FieldType::Name("level".to_owned())],
-        smallvec![FieldType::Name("lvl".to_owned())],
-        smallvec![FieldType::Name("severity".to_owned())],
-    ];
-    let level_fmt = parse_format(Some("level"), no_color, compact)?;
-    args.push((level, level_fmt));
-    pieces.push(Piece::Arg(args.len() - 1));
-    pieces.push(Piece::Literal(" ".to_owned()));
-
-    let message = smallvec![
-        smallvec![FieldType::Name("message".to_owned())],
-        smallvec![FieldType::Name("msg".to_owned())],
-        smallvec![FieldType::Name("body".to_owned())],
-        // fields.message
-        smallvec![
-            FieldType::Name("fields".to_owned()),
-            FieldType::Name("message".to_owned())
-        ],
-    ];
-    let message_fmt = parse_format(None, no_color, compact)?;
-    args.push((message, message_fmt));
-    pieces.push(Piece::Arg(args.len() - 1));
-
-    pieces.push(Piece::IfEnd);
-
-    Ok(())
-}
-
-fn parse_func_else(
+#[inline]
+fn crunch_cond_else(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     content: &str,
     no_color: bool,
     compact: bool,
+    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
-    if let Some(content) = content.strip_prefix("else if ") {
-        let arg = parse_arg(content, no_color, compact)?;
-        args.push(arg);
-        pieces.push(Piece::ElseIf(args.len() - 1));
+    let (content, cond) = if let Some(content) = content.strip_prefix("else if ") {
+        (content, Cond::If)
+    } else if let Some(content) = content.strip_prefix("else key ") {
+        (content, Cond::Key)
     } else if content == "else" {
         pieces.push(Piece::Else);
+        return Ok(());
     } else {
         return Err(FormatError::UnsupportedFunction {
             func: content.to_owned(),
         });
-    }
+    };
+
+    let content = content
+        .strip_prefix('&')
+        .map(|k| get_variable(variables, k))
+        .transpose()?
+        .unwrap_or(content);
+
+    let arg = parse_arg(content, no_color, compact)?;
+    args.push(arg);
+    pieces.push(Piece::ElseCond(cond, args.len() - 1));
 
     Ok(())
 }
 
-fn parse_func_end(
-    pieces: &mut Vec<Piece>,
-    content: &str,
-) -> Result<(), FormatError> {
+#[inline]
+fn crunch_cond_end(pieces: &mut Vec<Piece>, content: &str) -> Result<(), FormatError> {
     if content == "if" {
-        pieces.push(Piece::IfEnd);
+        pieces.push(Piece::CondEnd);
     }
 
     Ok(())
 }
 
-fn parse_field(
+#[inline]
+fn crunch_field(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     content: &str,
@@ -245,18 +209,12 @@ fn parse_field(
     Ok(())
 }
 
-fn parse_arg(
-    content: &str,
-    no_color: bool,
-    compact: bool,
-) -> Result<Arg, FormatError> {
+fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, FormatError> {
     let content = content.trim();
 
     // param is a field
     let (name_part, format) = match content.split_once(':') {
-        Some((name, styles)) => {
-            (name, parse_format(Some(styles), no_color, compact)?)
-        }
+        Some((name, styles)) => (name, parse_format(Some(styles), no_color, compact)?),
         None => (content, parse_format(None, no_color, compact)?),
     };
 
@@ -272,6 +230,43 @@ fn parse_arg(
     }
 
     Ok((names, format))
+}
+
+#[inline]
+fn crunch_variable(
+    pieces: &mut Vec<Piece>,
+    args: &mut Vec<Arg>,
+    key: &str,
+    no_color: bool,
+    compact: bool,
+    variables: &[(String, String)],
+) -> Result<(), FormatError> {
+    let key = key.trim();
+
+    // if there's a formatting like `{&var:dimmed}`, crunch as field
+    if let Some((key, styles)) = key.split_once(':') {
+        let format = parse_format(Some(styles), no_color, compact)?;
+        let name_part = get_variable(variables, key)?;
+
+        let mut names = SmallVec::new();
+
+        // if "", then print the whole json
+        if name_part.is_empty() {
+            names.push(smallvec![FieldType::Name("".to_owned())]);
+        } else {
+            for name in name_part.split('|') {
+                names.push(parse_name(name)?);
+            }
+        }
+
+        args.push((names, format));
+        pieces.push(Piece::Arg(args.len() - 1));
+    } else {
+        let value = get_variable(variables, key)?;
+        crunch_input(pieces, args, value, no_color, compact, variables)?;
+    }
+
+    Ok(())
 }
 
 // parse a name str into list of possible names and/or index
@@ -411,6 +406,16 @@ pub fn parse_format(
     })
 }
 
+#[inline]
+fn get_variable<'a>(variables: &'a [(String, String)], key: &str) -> Result<&'a str, FormatError> {
+    variables
+        .iter()
+        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+        .ok_or_else(|| FormatError::InvalidVariable {
+            variable: key.to_owned(),
+        })
+}
+
 use thiserror::Error;
 use tosserror::Toss;
 
@@ -437,4 +442,6 @@ pub enum FormatError {
     },
     #[error("Unsupported function '{func}'")]
     UnsupportedFunction { func: String },
+    #[error("Variable doesn't exist: {variable}")]
+    InvalidVariable { variable: String },
 }
