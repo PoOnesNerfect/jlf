@@ -106,6 +106,15 @@ You can still provide styles to it.
 cat ./examples/dummy_logs | jlf '{:compact,fg=green}'
 ```
 
+What if you want to display either `spans` or `data` field, but if neither exists, just display the entire json?
+
+```sh
+cat ./examples/dummy_logs | jlf '{spans|data|:compact,fg=green}'
+```
+
+Notice the `|` at the end of `spans|data|`?
+Empty string is interpreted as the entire json, so we're setting the fallback to printing the entire json.
+
 ### Styling
 
 You can provide styles to the values by providing styles after the `:`.
@@ -155,7 +164,7 @@ cat ./examples/dummy_logs | jlf '{#log}'
 equals
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body}'
+cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body|fields.message}'
 ```
 
 and will print
@@ -168,7 +177,7 @@ and will print
 
 You can use `{#if field}...{/if}` to conditionally print the content inside the block if the field exists.
 
-the condition only checks if the field exists (or is null) or not, but not the truthiness of the field.
+The condition only checks if the field exists and is not null, but not the truthiness of the field.
 
 If the field exists and the value is `false`, it will still print the content inside the block.
 
@@ -177,6 +186,14 @@ cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{/if}'
 ```
 
 will print `data: { ... }` only if `spans` or `data` field exists.
+
+#### else
+
+Additionally, you can provide `{:else if field}` or `{:else}`
+
+```sh
+cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{:else if other.data}other: {fields}{:else}nothing here{/if}'
+```
 
 ## Neat Trick
 

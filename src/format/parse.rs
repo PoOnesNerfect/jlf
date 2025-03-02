@@ -68,6 +68,9 @@ fn parse_chunk(
             // '#' means param is a function
             if let Some(content) = param.strip_prefix('#') {
                 parse_func(pieces, args, content, no_color, compact)?;
+            } else if let Some(content) = param.strip_prefix(':') {
+                // ':' means `else` of an `if` function
+                parse_func_else(pieces, args, content, no_color, compact)?;
             } else if let Some(content) = param.strip_prefix('/') {
                 // '/' means end of function
                 parse_func_end(pieces, content)?;
@@ -136,10 +139,37 @@ fn parse_func_log(
         smallvec![FieldType::Name("message".to_owned())],
         smallvec![FieldType::Name("msg".to_owned())],
         smallvec![FieldType::Name("body".to_owned())],
+        // fields.message
+        smallvec![
+            FieldType::Name("fields".to_owned()),
+            FieldType::Name("message".to_owned())
+        ],
     ];
     let message_fmt = parse_format(None, no_color, compact)?;
     args.push((message, message_fmt));
     pieces.push(Piece::Arg(args.len() - 1));
+
+    Ok(())
+}
+
+fn parse_func_else(
+    pieces: &mut Vec<Piece>,
+    args: &mut Vec<Arg>,
+    content: &str,
+    no_color: bool,
+    compact: bool,
+) -> Result<(), FormatError> {
+    if let Some(content) = content.strip_prefix("else if ") {
+        let arg = parse_arg(content, no_color, compact)?;
+        args.push(arg);
+        pieces.push(Piece::ElseIf(args.len() - 1));
+    } else if content == "else" {
+        pieces.push(Piece::Else);
+    } else {
+        return Err(FormatError::UnsupportedFunction {
+            func: content.to_owned(),
+        });
+    }
 
     Ok(())
 }
@@ -183,9 +213,7 @@ fn parse_arg(content: &str, no_color: bool, compact: bool) -> Result<Arg, Format
         names.push(smallvec![FieldType::Name("".to_owned())]);
     } else {
         for name in name_part.split('|') {
-            if !name.is_empty() {
-                names.push(parse_name(name)?);
-            }
+            names.push(parse_name(name)?);
         }
     }
 

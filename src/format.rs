@@ -34,6 +34,8 @@ pub enum Piece {
     Arg(usize),
     Escaped(char),
     IfStart(usize),
+    ElseIf(usize),
+    Else,
     IfEnd,
 }
 
@@ -92,42 +94,58 @@ fn write_piece(
         Escaped(c) => write!(f, "{}", c)?,
         Arg(i) => write_arg(f, &args[*i], json, prev)?,
         IfStart(i) => {
-            let (field_options, _) = &args[*i];
-            let mut val = &Json::Null;
-            for field in field_options {
-                val = json;
-                for arg in field {
-                    match arg {
-                        FieldType::Name(name) => {
-                            val = val.get(name);
-                        }
-                        FieldType::Index(index) => {
-                            val = val.get_i(*index);
+            let field_exists = |i: usize| {
+                let (field_options, _) = &args[i];
+                let mut val = &Json::Null;
+                for field in field_options {
+                    val = json;
+                    for arg in field {
+                        match arg {
+                            FieldType::Name(name) => {
+                                val = val.get(name);
+                            }
+                            FieldType::Index(index) => {
+                                val = val.get_i(*index);
+                            }
                         }
                     }
-                }
 
-                if !val.is_null() {
-                    break;
+                    if !val.is_null() {
+                        break;
+                    }
                 }
-            }
+                !val.is_null()
+            };
 
-            let exists = !val.is_null();
+            let mut should_run = field_exists(*i);
+            let mut else_found = false;
 
             piece_i += 1;
             while piece_i < pieces.len() {
-                if let Piece::IfEnd = pieces[piece_i] {
+                if let Piece::ElseIf(i) = pieces[piece_i] {
+                    should_run = !should_run && !else_found && field_exists(i);
+
+                    piece_i += 1;
+                    continue;
+                } else if let Piece::Else = pieces[piece_i] {
+                    should_run = !should_run && !else_found;
+                    else_found = true;
+
+                    piece_i += 1;
+                    continue;
+                } else if let Piece::IfEnd = pieces[piece_i] {
                     break;
                 }
 
-                if exists {
+                if should_run {
                     piece_i = write_piece(f, pieces, piece_i, args, json, prev)?;
                 } else {
                     piece_i += 1;
                 }
             }
         }
-        IfEnd => {}
+        // Handled in the IfStart case above
+        ElseIf(_) | Else | IfEnd => {}
     }
 
     Ok(piece_i + 1)
@@ -154,35 +172,26 @@ fn write_arg(
 
     let mut val = &Json::Null;
 
-    let mut is_whole = false;
-
     // if field is a single empty string, then the whole json is used
-    if field_options.len() == 1 && field_options[0].len() == 1 {
-        if let FieldType::Name(name) = &field_options[0][0] {
-            if name.is_empty() {
-                is_whole = true;
-                val = json;
-            }
-        }
-    }
-
-    if !is_whole {
-        for field in field_options {
-            val = json;
-            for arg in field {
-                match arg {
-                    FieldType::Name(name) => {
-                        val = val.get(name);
+    for field in field_options {
+        val = json;
+        for arg in field {
+            match arg {
+                FieldType::Name(name) => {
+                    if name.is_empty() {
+                        val = json;
+                        break;
                     }
-                    FieldType::Index(index) => {
-                        val = val.get_i(*index);
-                    }
+                    val = val.get(name);
+                }
+                FieldType::Index(index) => {
+                    val = val.get_i(*index);
                 }
             }
+        }
 
-            if !val.is_null() {
-                break;
-            }
+        if !val.is_null() {
+            break;
         }
     }
 

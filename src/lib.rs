@@ -13,7 +13,7 @@ pub use format::{parse_formatter, Formatter};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(default_value = r#"{#log}{#if spans|data}\n{spans|data:json}{/if}"#)]
+    #[arg(default_value = r#"{#log}\n{spans|data|:json}"#)]
     format_string: String,
     /// Disable color output. If output is not a terminal, this is always true
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
