@@ -50,7 +50,7 @@ enum Command {
     /// List all variables
     List {
         /// Pass variable as key=value format; can be passed multiple times.
-        #[arg(short = 'v', long = "variable")]
+        #[arg(short = 'v', long = "variable", value_name = "KEY=VALUE")]
         variables: Option<Vec<String>>,
     },
 }
@@ -59,8 +59,8 @@ enum Command {
 struct FormatArgs {
     #[arg(default_value = r#"{&output}"#)]
     format_string: String,
-    /// Pass variable as key=value format; can be passed multiple times.
-    #[arg(short = 'v', long = "variable")]
+    /// Pass variable as KEY=VALUE format; can be passed multiple times.
+    #[arg(short = 'v', long = "variable", value_name = "KEY=VALUE")]
     variables: Option<Vec<String>>,
 }
 
