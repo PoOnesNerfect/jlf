@@ -49,7 +49,7 @@ enum Command {
     },
     /// List all variables
     List {
-        /// Variable as a Key-Value pair; can be passed multiple times.
+        /// Pass variable as key=value format; can be passed multiple times.
         #[arg(short = 'v', long = "variable")]
         variables: Option<Vec<String>>,
     },
@@ -59,7 +59,7 @@ enum Command {
 struct FormatArgs {
     #[arg(default_value = r#"{&output}"#)]
     format_string: String,
-    /// Variable as a Key-Value pair; can be passed multiple times.
+    /// Pass variable as key=value format; can be passed multiple times.
     #[arg(short = 'v', long = "variable")]
     variables: Option<Vec<String>>,
 }
@@ -93,7 +93,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 let variables = get_variables(variables);
                 let width = variables.iter().map(|(k, _)| k.len()).max().unwrap();
                 for (k, v) in variables {
-                    println!("{:width$} = {v:?}", k.bold(), width = width);
+                    println!("{:width$} = {v}", k.bold(), width = width);
                 }
             }
         }

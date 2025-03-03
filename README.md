@@ -49,20 +49,26 @@ cargo install --path . --locked
 ```
 $ jlf -h
 
-JSON Log Formatter CLI
+CLI for converting JSON logs to human-readable format
 
-Usage: jlf [OPTIONS] [FORMAT_STRING]
+Usage: jlf [OPTIONS] [FORMAT_STRING] [COMMAND]
+
+Commands:
+  expand  Print the format string with variables expanded
+  list    List all variables
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [FORMAT_STRING]  [default: "{#log}{#if spans|data}\\n{spans|data:json}{/if}"]
+  [FORMAT_STRING]  [default: {&output}]
 
 Options:
-  -n, --no-color     Disable color output. If output is not a terminal, this is always true
-  -c, --compact      Display log with data in a compact format
-  -s, --strict       If log line is not valid JSON, then report it and exit, instead of printing the line as is
-  -t, --take <TAKE>  Take only the first N lines
-  -h, --help         Print help
-  -V, --version      Print version
+  -v, --variable <VARIABLES>  Variable as a key=value pair; can be passed multiple times
+  -n, --no-color              Disable color output. If output is not a terminal, this is always true
+  -c, --compact               Display log with data in a compact format
+  -s, --strict                If log line is not valid JSON, then report it and exit, instead of printing the line as is
+  -t, --take <TAKE>           Take only the first N lines
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
 
 ## Custom Formatting
