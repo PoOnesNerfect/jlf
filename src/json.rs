@@ -893,7 +893,7 @@ impl std::fmt::Debug for ParseError {
 
         write!(
             f,
-            "{} at index {}:\n'{}'\n{:>width$}",
+            "{} at index {}:\n`{}`\n{:>width$}",
             self.message,
             self.index,
             snippet,

@@ -150,7 +150,6 @@ cat ./examples/dummy_logs | jlf -s
 
 <img width="700" alt="Screenshot 2025-03-03 at 11 20 49 PM" src="https://github.com/user-attachments/assets/640cea33-3197-4e78-b452-37883a2243c6" />
 
-
 ## Custom Formatting
 
 You can optionally provide your custom format of the output line.
