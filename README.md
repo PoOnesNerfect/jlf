@@ -50,29 +50,33 @@ cargo install --path . --locked
 
 <!--toc:start-->
 
-- [jlf](#jlf)
-  - [Basic Example](#basic-example)
-  - [Installation](#installation)
-    - [Cargo](#cargo)
-    - [Manual Installation](#manual-installation)
-  - [Table of Contents](#table-of-contents)
-  - [CLI Options](#cli-options)
-  - [Basic Usage](#basic-usage)
-  - [Custom Formatting](#custom-formatting)
-    - [Printing the entire JSON](#printing-the-entire-json)
-    - [Styling](#styling)
-    - [Available attributes](#available-attributes)
-    - [Available Colors](#available-colors)
-  - [Functions](#functions)
-    - [log](#log)
-    - [if](#if)
-      - [else](#else)
-  - [Neat Trick](#neat-trick)
-  - [Implementation](#implementation)
-    - [JSON Parsing](#json-parsing)
-      - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
-      - [Optimizations](#optimizations)
-      - [Benchmarks](#benchmarks)
+- [Basic Example](#basic-example)
+- [Installation](#installation)
+  - [Cargo](#cargo)
+  - [Manual Installation](#manual-installation)
+- [Table of Contents](#table-of-contents)
+- [CLI Options](#cli-options)
+- [Usage](#usage)
+  - [Compact Format](#compact-format)
+  - [No Color](#no-color)
+  - [Strict](#strict)
+- [Custom Formatting](#custom-formatting)
+  - [Accessing Fields](#accessing-fields)
+  - [Styling Fields](#styling-fields)
+    - [Available Styles](#available-styles)
+  - [Conditionals](#conditionals)
+    - [{#if cond1}{:else if cond2}{:else}{/if}](#if-cond1else-if-cond2elseif)
+    - [{#key field1}{:else key field2}{:else}{/key}](#key-field1else-key-field2elsekey)
+    - [{#config config1}{:else}{/config}](#config-config1elseconfig)
+  - [Variables](#variables)
+    - [Storing Variables](#storing-variables)
+- [Config File](#config-file)
+- [Neat Trick](#neat-trick)
+- [Implementation](#implementation)
+  - [JSON Parsing](#json-parsing)
+    - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
+    - [Optimizations](#optimizations)
+    - [Benchmarks](#benchmarks)
 
 <!--toc:end-->
 
@@ -362,9 +366,9 @@ cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else config strict
 
 ### Variables
 
-**variable** is a key=value pair, where `key` is a string, and `value` is a format string.
+**variable** are key=value pairs, where `key` is a string, and `value` is a format string.
 
-You can reference a variable in the format string or in another variable with `{&variable}`.
+You can reference a variable in the format string or in another variable as `{&variable}`.
 
 Here is the list of all default variables:
 
