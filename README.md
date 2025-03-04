@@ -8,9 +8,37 @@
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [mit-url]: https://github.com/PoOnesNerfect/jlf/blob/main/LICENSE
 
+CLI for piping JSON Logs into human readble logs.
+
 ```sh
 cat ./examples/dummy_logs | jlf
 ```
+
+<!--toc:start-->
+
+- [jlf](#jlf)
+  - [Installation](#installation)
+    - [Cargo](#cargo)
+    - [Manual Installation](#manual-installation)
+  - [CLI Options](#cli-options)
+  - [Basic Usage](#basic-usage)
+  - [Custom Formatting](#custom-formatting)
+    - [Printing the entire JSON](#printing-the-entire-json)
+    - [Styling](#styling)
+    - [Available attributes](#available-attributes)
+    - [Available Colors](#available-colors)
+  - [Functions](#functions)
+    - [log](#log)
+    - [if](#if)
+      - [else](#else)
+  - [Neat Trick](#neat-trick)
+  - [Implementation](#implementation)
+    - [JSON Parsing](#json-parsing)
+      - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
+      - [Optimizations](#optimizations)
+      - [Benchmarks](#benchmarks)
+
+<!--toc:end-->
 
 Given some log file as below:
 
@@ -29,6 +57,10 @@ It will output a more colorful and readable log like below:
 ## Installation
 
 ### Cargo
+
+**cargo** is a rust's package manager.
+
+To install **cargo**, visit [Install Rust - Rust Programming Language](https://www.rust-lang.org/tools/install)
 
 ```sh
 cargo install jlf
@@ -51,25 +83,27 @@ $ jlf -h
 
 CLI for converting JSON logs to human-readable format
 
-Usage: jlf [OPTIONS] [FORMAT_STRING] [COMMAND]
+Usage: jlf [OPTIONS] [FORMAT] [COMMAND]
 
 Commands:
-  expand  Print the format string with variables expanded
+  expand  Print variable with its inner variables expanded. If no variable is specified, the default format string will be used
   list    List all variables
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [FORMAT_STRING]  [default: {&output}]
+  [FORMAT]  Formatter to use to format json log. [default: {&output}]
 
 Options:
-  -v, --variable <VARIABLES>  Variable as a key=value pair; can be passed multiple times
+  -v, --variable <KEY=VALUE>  Pass variable as KEY=VALUE format; can be passed multiple times
   -n, --no-color              Disable color output. If output is not a terminal, this is always true
-  -c, --compact               Display log with data in a compact format
+  -c, --compact               Display log in a compact format
   -s, --strict                If log line is not valid JSON, then report it and exit, instead of printing the line as is
   -t, --take <TAKE>           Take only the first N lines
   -h, --help                  Print help
   -V, --version               Print version
 ```
+
+## Basic Usage
 
 ## Custom Formatting
 
