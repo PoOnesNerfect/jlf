@@ -8,51 +8,21 @@
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [mit-url]: https://github.com/PoOnesNerfect/jlf/blob/main/LICENSE
 
-CLI for piping JSON Logs into human readble logs.
+**jlf** is a CLI that converts hard-to-read JSON logs into colorful human-readable logs.
+
+Simply pipe your JSON logs with `jlf`.
 
 ```sh
 cat ./examples/dummy_logs | jlf
 ```
 
-<!--toc:start-->
+### Example
 
-- [jlf](#jlf)
-  - [Installation](#installation)
-    - [Cargo](#cargo)
-    - [Manual Installation](#manual-installation)
-  - [CLI Options](#cli-options)
-  - [Basic Usage](#basic-usage)
-  - [Custom Formatting](#custom-formatting)
-    - [Printing the entire JSON](#printing-the-entire-json)
-    - [Styling](#styling)
-    - [Available attributes](#available-attributes)
-    - [Available Colors](#available-colors)
-  - [Functions](#functions)
-    - [log](#log)
-    - [if](#if)
-      - [else](#else)
-  - [Neat Trick](#neat-trick)
-  - [Implementation](#implementation)
-    - [JSON Parsing](#json-parsing)
-      - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
-      - [Optimizations](#optimizations)
-      - [Benchmarks](#benchmarks)
+**left**: `cat ./examples/dummy_logs`
 
-<!--toc:end-->
+**right**: `cat ./examples/dummy_logs | jlf`
 
-Given some log file as below:
-
-[./examples/dummy_logs](https://github.com/PoOnesNerfect/jlf/blob/main/examples/dummy_logs)
-
-```sh
-{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "action": "login", "success": false, "error_code": null}}
-{"timestamp": "2024-02-09T07:22:42.439284", "level": "ERROR", "message": "Database connection established", "data": {"user_id": 8466, "session_id": "ZMOXKPna3GbzWz2N", "ip_address": "213.135.167.95", "action": "logout", "success": true, "error_code": null}}
-...
-```
-
-It will output a more colorful and readable log like below:
-
-<img width="700" alt="Screenshot 2024-02-09 at 12 23 12 PM" src="https://github.com/PoOnesNerfect/jlf/assets/32286177/6dc89e20-4769-465d-8904-c3f51a35d6db">
+<img width="1631" alt="Screenshot 2025-03-03 at 9 45 38 PM" src="https://github.com/user-attachments/assets/95b027e1-d005-48d7-a3c9-72b3b1be51b8" />
 
 ## Installation
 
@@ -75,6 +45,34 @@ git clone https://github.com/PoOnesNerfect/jlf.git
 cd jlf
 cargo install --path . --locked
 ```
+
+## Table of Contents
+
+<!--toc:start-->
+
+- [Basic Usage](#basic-usage)
+- [Installation](#installation)
+  - [Cargo](#cargo)
+  - [Manual Installation](#manual-installation)
+- [Table of Contents](#table-of-contents)
+- [CLI Options](#cli-options)
+- [Custom Formatting](#custom-formatting)
+  - [Printing the entire JSON](#printing-the-entire-json)
+  - [Styling](#styling)
+  - [Available attributes](#available-attributes)
+  - [Available Colors](#available-colors)
+- [Functions](#functions)
+  - [log](#log)
+  - [if](#if)
+    - [else](#else)
+- [Neat Trick](#neat-trick)
+- [Implementation](#implementation)
+  - [JSON Parsing](#json-parsing)
+    - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
+    - [Optimizations](#optimizations)
+    - [Benchmarks](#benchmarks)
+
+<!--toc:end-->
 
 ## CLI Options
 
@@ -102,8 +100,6 @@ Options:
   -h, --help                  Print help
   -V, --version               Print version
 ```
-
-## Basic Usage
 
 ## Custom Formatting
 
