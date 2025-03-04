@@ -71,6 +71,80 @@ impl<'a> Json<'a> {
         }
     }
 
+    pub fn remove(&mut self, key: &str) -> Option<Json<'a>> {
+        match self {
+            Json::Object(obj) => obj.remove(key),
+            _ => None,
+        }
+    }
+
+    pub fn remove_i(&mut self, index: usize) -> Option<Json<'a>> {
+        match self {
+            Json::Array(arr) => arr.get_mut(index).map(|e| e.replace(Json::Null)),
+            _ => None,
+        }
+    }
+
+    /// Looks up a value by a JSON Pointer.
+    ///
+    /// JSON Pointer defines a string syntax for identifying a specific value
+    /// within a JavaScript Object Notation (JSON) document.
+    ///
+    /// A Pointer is a Unicode string with the reference tokens separated by
+    /// `/`. Inside tokens `/` is replaced by `~1` and `~` is replaced by
+    /// `~0`. The addressed value is returned and if there is no such value
+    /// `None` is returned.
+    ///
+    /// For more information read [RFC6901](https://tools.ietf.org/html/rfc6901).
+    pub fn pointer(&self, pointer: &str) -> Option<&Json> {
+        if pointer.is_empty() {
+            return Some(self);
+        }
+        if !pointer.starts_with('/') {
+            return None;
+        }
+        pointer
+            .split('/')
+            .skip(1)
+            .map(|x| x.replace("~1", "/").replace("~0", "~"))
+            .try_fold(self, |target, token| match target {
+                Json::Object(map) => map.try_get(&token),
+                Json::Array(list) => parse_index(&token).and_then(|x| list.get(x)),
+                _ => None,
+            })
+    }
+
+    /// Looks up a value by a JSON Pointer and returns a mutable reference to
+    /// that value.
+    ///
+    /// JSON Pointer defines a string syntax for identifying a specific value
+    /// within a JavaScript Object Notation (JSON) document.
+    ///
+    /// A Pointer is a Unicode string with the reference tokens separated by
+    /// `/`. Inside tokens `/` is replaced by `~1` and `~` is replaced by
+    /// `~0`. The addressed value is returned and if there is no such value
+    /// `None` is returned.
+    ///
+    /// For more information read [RFC6901](https://tools.ietf.org/html/rfc6901).
+    pub fn pointer_mut(&'a mut self, pointer: &str) -> Option<&'a mut Json<'a>> {
+        if pointer.is_empty() {
+            return Some(self);
+        }
+        if !pointer.starts_with('/') {
+            return None;
+        }
+
+        pointer
+            .split('/')
+            .skip(1)
+            .map(|x| x.replace("~1", "/").replace("~0", "~"))
+            .try_fold(self, |target, token| match target {
+                Json::Object(map) => map.get_mut(&token),
+                Json::Array(list) => parse_index(&token).and_then(move |x| list.get_mut(x)),
+                _ => None,
+            })
+    }
+
     pub fn is_null(&self) -> bool {
         matches!(
             self,
@@ -236,20 +310,18 @@ impl<'a> Json<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct JsonObject<'a>(pub Vec<(&'a str, Json<'a>)>);
 
 impl<'a> JsonObject<'a> {
-    pub fn get(&self, key: &str) -> &Json {
-        self.0
-            .iter()
-            .find(|(k, _)| k == &key)
-            .map(|(_, v)| v)
-            .unwrap_or(&Json::Null)
-    }
+    pub fn get(&self, key: &str) -> &Json { self.try_get(key).unwrap_or(&Json::Null) }
 
     pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json<'a>> {
         self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
+    }
+
+    pub fn try_get(&self, key: &str) -> Option<&Json> {
+        self.0.iter().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
     pub fn insert(&mut self, key: &'a str, value: Json<'a>) {
@@ -783,6 +855,13 @@ fn write_syntax(
     } else {
         write!(f, "{}", syntax)
     }
+}
+
+fn parse_index(s: &str) -> Option<usize> {
+    if s.starts_with('+') || (s.starts_with('0') && s.len() != 1) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 pub struct ParseError {

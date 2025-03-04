@@ -1,48 +1,45 @@
 use std::num::ParseIntError;
 
 use owo_colors::Style;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 
-use super::{Arg, Cond, Field, FieldOptions, FieldType, Format, Formatter, Piece};
+use super::{Arg, Cond, Field, FieldOptions, FieldType, Format, Piece};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
 };
 
-// Example log format
-// '{#log}{#if spans|data}\n{spans|data:json}{/if}'
-pub fn parse_formatter(
-    input: &str,
-    no_color: bool,
-    compact: bool,
-    variables: &[(String, String)],
-) -> Result<Formatter, FormatError> {
-    let mut pieces = Vec::new();
-    let mut args = Vec::new();
-
-    crunch_input(&mut pieces, &mut args, input, no_color, compact, variables)?;
-
-    Ok(Formatter { pieces, args })
-}
-
-fn crunch_input(
+pub(super) fn crunch_input(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     input: &str,
     no_color: bool,
     compact: bool,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let mut chunks = input.split('\\');
 
     if let Some(chunk) = chunks.next() {
-        crunch_chunk(pieces, args, chunk, no_color, compact, variables)?;
+        crunch_chunk(pieces, args, chunk, no_color, compact)?;
     }
 
+    let mut prev_was_backslash = false;
+
     for chunk in chunks {
-        let (escaped, rest) = chunk.split_at(1);
-        pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
-        crunch_chunk(pieces, args, rest, no_color, compact, variables)?;
+        if !chunk.is_empty() {
+            if prev_was_backslash {
+                crunch_chunk(pieces, args, chunk, no_color, compact)?;
+            } else {
+                let (escaped, rest) = chunk.split_at(1);
+                pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
+                if !rest.is_empty() {
+                    crunch_chunk(pieces, args, rest, no_color, compact)?;
+                }
+            }
+            prev_was_backslash = false;
+        } else {
+            pieces.push(parse_escaped('\\')?);
+            prev_was_backslash = true;
+        }
     }
 
     Ok(())
@@ -69,7 +66,6 @@ fn crunch_chunk(
     chunk: &str,
     no_color: bool,
     compact: bool,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let mut parts = chunk.split('{');
 
@@ -83,20 +79,17 @@ fn crunch_chunk(
         if let Some(end) = part.find('}') {
             let content = &part[..end];
 
-            // '&' means a variable and needs to be expanded
-            if let Some(key) = content.strip_prefix('&') {
-                crunch_variable(pieces, args, key, no_color, compact, variables)?;
-            } else if let Some(content) = content.strip_prefix('#') {
-                // '#' means param is a conditional
-                crunch_cond(pieces, args, content, no_color, compact, variables)?;
+            // '#' means param is a conditional
+            if let Some(content) = content.strip_prefix('#') {
+                crunch_cond(pieces, args, content, no_color, compact)?;
             } else if let Some(content) = content.strip_prefix(':') {
                 // ':' means `else` of conditional
-                crunch_cond_else(pieces, args, content, no_color, compact, variables)?;
+                crunch_cond_else(pieces, args, content, no_color, compact)?;
             } else if content.starts_with('/') {
                 // '/' means end of conditional
                 crunch_cond_end(pieces)?;
             } else {
-                crunch_arg(pieces, args, content, no_color, compact, variables)?;
+                crunch_arg(pieces, args, content, no_color, compact)?;
             }
 
             let literal = &part[end + 1..];
@@ -112,57 +105,12 @@ fn crunch_chunk(
 }
 
 #[inline]
-fn crunch_variable(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    key: &str,
-    no_color: bool,
-    compact: bool,
-    variables: &[(String, String)],
-) -> Result<(), FormatError> {
-    let key = key.trim();
-
-    // if there's a formatting like `{&var:dimmed}`, crunch as field
-    if let Some((key, styles)) = key.split_once(':') {
-        let format = parse_format(Some(styles), no_color, compact)?;
-        let name_part = get_variable(variables, key)?
-            .trim_start_matches('{')
-            .trim_end_matches('}');
-
-        let mut field_options = SmallVec::new();
-        crunch_field_options(name_part, &mut field_options, variables)?;
-
-        args.push((field_options, format));
-        pieces.push(Piece::Arg(args.len() - 1));
-    } else {
-        let value = get_variable(variables, key)?;
-        crunch_input(pieces, args, value, no_color, compact, variables)?;
-    }
-
-    Ok(())
-}
-
-#[inline]
-pub fn get_variable<'a>(
-    variables: &'a [(String, String)],
-    key: &str,
-) -> Result<&'a str, FormatError> {
-    variables
-        .iter()
-        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
-        .ok_or_else(|| FormatError::InvalidVariable {
-            variable: key.to_owned(),
-        })
-}
-
-#[inline]
 fn crunch_cond(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
     content: &str,
     no_color: bool,
     compact: bool,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let (content, cond) = if let Some(content) = content.strip_prefix("if ") {
         (content, Cond::If)
@@ -182,13 +130,13 @@ fn crunch_cond(
 
         return Ok(());
     } else {
-        return Err(FormatError::UnsupportedFunction {
-            func: content.to_owned(),
+        return Err(FormatError::UnsupportedConditional {
+            cond: format!("#{content}"),
         });
     };
 
     let mut field_options = FieldOptions::new();
-    crunch_field_options(content, &mut field_options, variables)?;
+    crunch_field_options(content, &mut field_options)?;
 
     args.push((field_options, parse_format(None, no_color, compact)?));
     pieces.push(Piece::CondStart(cond, args.len() - 1));
@@ -203,7 +151,6 @@ fn crunch_cond_else(
     content: &str,
     no_color: bool,
     compact: bool,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let (content, cond) = if let Some(content) = content.strip_prefix("else if ") {
         (content, Cond::If)
@@ -213,13 +160,13 @@ fn crunch_cond_else(
         pieces.push(Piece::Else);
         return Ok(());
     } else {
-        return Err(FormatError::UnsupportedFunction {
-            func: content.to_owned(),
+        return Err(FormatError::UnsupportedConditional {
+            cond: format!(":{content}"),
         });
     };
 
     let mut field_options = FieldOptions::new();
-    crunch_field_options(content, &mut field_options, variables)?;
+    crunch_field_options(content, &mut field_options)?;
 
     args.push((field_options, parse_format(None, no_color, compact)?));
     pieces.push(Piece::ElseCond(cond, args.len() - 1));
@@ -241,7 +188,6 @@ fn crunch_arg(
     content: &str,
     no_color: bool,
     compact: bool,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
     let content = content.trim();
 
@@ -252,7 +198,7 @@ fn crunch_arg(
     };
 
     let mut fields = FieldOptions::new();
-    crunch_field_options(name_part, &mut fields, variables)?;
+    crunch_field_options(name_part, &mut fields)?;
 
     args.push((fields, format));
     pieces.push(Piece::Arg(args.len() - 1));
@@ -263,21 +209,13 @@ fn crunch_arg(
 fn crunch_field_options(
     content: &str,
     field_options: &mut FieldOptions,
-    variables: &[(String, String)],
 ) -> Result<(), FormatError> {
-    // if "", then print the whole json
     if content.is_empty() {
-        field_options.push(smallvec![FieldType::Name("".to_owned())]);
+        return Ok(());
     } else {
         for field in content.split('|') {
-            if let Some(key) = field.strip_prefix('&') {
-                let val = get_variable(variables, key)
-                    .unwrap()
-                    .trim_start_matches('{')
-                    .trim_end_matches('}');
-                crunch_field_options(val, field_options, variables)?;
-            } else {
-                field_options.push(parse_name(field)?);
+            if !field.is_empty() {
+                field_options.push(parse_field(field)?);
             }
         }
     }
@@ -285,11 +223,19 @@ fn crunch_field_options(
     Ok(())
 }
 
-// parse a name str into list of possible names and/or index
+// parse a field str into list of possible names and/or index
 // e.g. "field1.field2[0].field3" -> [Name("field1"), Name("field2"), Index(0),
 // Name("field3")]
-fn parse_name(name: &str) -> Result<Field, FormatError> {
+fn parse_field(name: &str) -> Result<Field, FormatError> {
+    // field is whole or rest
+    if name == "." {
+        return Ok(Field::Whole);
+    } else if name == ".." {
+        return Ok(Field::Rest);
+    }
+
     let mut args = SmallVec::new();
+
     for part in name.split('.') {
         if let Some((name, index)) = part.split_once('[') {
             args.push(FieldType::Name(name.to_owned()));
@@ -307,7 +253,7 @@ fn parse_name(name: &str) -> Result<Field, FormatError> {
         }
     }
 
-    Ok(args)
+    Ok(Field::Names(args))
 }
 
 pub fn parse_format(
@@ -446,10 +392,8 @@ pub enum FormatError {
         source: ParseIntError,
         value: String,
     },
-    #[error("Unsupported function '{func}'")]
-    UnsupportedFunction { func: String },
+    #[error("Unsupported conitional '{cond}'")]
+    UnsupportedConditional { cond: String },
     #[error("Unsupported config value in formatter '{config}'")]
     UnsupportedConfig { config: String },
-    #[error("Variable doesn't exist: {variable}")]
-    InvalidVariable { variable: String },
 }

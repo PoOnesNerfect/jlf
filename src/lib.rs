@@ -9,30 +9,35 @@ mod json;
 pub use json::{parse_json, Json, ParseError};
 
 mod format;
-pub use format::{parse_formatter, Formatter};
+pub use format::{FormattedLog, Formatter};
 
+mod config;
 mod expand;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[command(flatten)]
-    format: FormatArgs,
+    /// Formatter to use to format json log.
+    #[arg(default_value = r#"{&output}"#)]
+    format_string: String,
 
-    /// Disable color output. If output is not a terminal, this is always true
+    #[command(flatten)]
+    variables: Variables,
+
+    /// Disable color output. If output is not a terminal, this is always true.
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
     no_color: bool,
 
-    /// Display log with data in a compact format
+    /// Display log in a compact format.
     #[arg(short = 'c', long = "compact", default_value_t = false)]
     compact: bool,
 
     /// If log line is not valid JSON, then report it and exit, instead of
-    /// printing the line as is
+    /// printing the line as is.
     #[arg(short = 's', long = "strict", default_value_t = false)]
     strict: bool,
 
-    /// Take only the first N lines
+    /// Take only the first N lines.
     #[arg(short = 't', long = "take")]
     take: Option<usize>,
 
@@ -42,23 +47,24 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Print the format string with variables expanded
+    /// Print variable with its variables expanded.
+    /// If no variable is specified, the default format string will be used.
     Expand {
+        /// Variable to expand
+        variable: Option<String>,
+
         #[command(flatten)]
-        format: FormatArgs,
+        variables: Variables,
     },
     /// List all variables
     List {
-        /// Pass variable as key=value format; can be passed multiple times.
-        #[arg(short = 'v', long = "variable", value_name = "KEY=VALUE")]
-        variables: Option<Vec<String>>,
+        #[command(flatten)]
+        variables: Variables,
     },
 }
 
 #[derive(Debug, clap::Args)]
-struct FormatArgs {
-    #[arg(default_value = r#"{&output}"#)]
-    format_string: String,
+struct Variables {
     /// Pass variable as KEY=VALUE format; can be passed multiple times.
     #[arg(short = 'v', long = "variable", value_name = "KEY=VALUE")]
     variables: Option<Vec<String>>,
@@ -68,7 +74,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
     color_eyre::install()?;
 
     let Args {
-        format,
+        format_string,
+        variables,
         no_color,
         compact,
         strict,
@@ -76,21 +83,23 @@ pub fn run() -> Result<(), color_eyre::Report> {
         command,
     } = Args::parse();
 
+    let config = config::get_config()?;
+
     if let Some(command) = command {
         match command {
             Command::Expand {
-                format:
-                    FormatArgs {
-                        format_string,
-                        variables,
-                    },
+                variable,
+                variables: Variables { variables },
             } => {
                 let variables = get_variables(variables);
+                let format = variable
+                    .map(|e| format!("{{&{e}}}"))
+                    .unwrap_or(format_string);
 
-                println!("{}", expand::ExpandedFormat(format_string, variables));
+                println!("{}", expand::expanded_format(&format, &variables));
             }
             Command::List { variables } => {
-                let variables = get_variables(variables);
+                let variables = get_variables(variables.variables);
                 let width = variables.iter().map(|(k, _)| k.len()).max().unwrap();
                 for (k, v) in variables {
                     println!("{:width$} = {v}", k.bold(), width = width);
@@ -107,13 +116,22 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let no_color = no_color || !stdout.is_terminal();
 
-        let variables = get_variables(format.variables);
-        let formatter = parse_formatter(&format.format_string, no_color, compact, &variables)?;
+        let variables = get_variables(variables.variables);
+        let expanded = expand::expanded_format(&format_string, &variables);
+        let formatter = Formatter::new(&expanded, no_color, compact)?;
 
         let mut buf = stdin.lock();
+
+        // input line red from stdin
         let mut line = String::new();
+
+        // ansi stripped line
         let mut stripped;
-        let mut json = Json::default();
+
+        // json data to use and re-use
+        let mut json = Json::Null;
+
+        // how many lines have we taken?
         let mut taken = 0;
 
         while buf.read_line(&mut line)? != 0 {
@@ -125,30 +143,29 @@ pub fn run() -> Result<(), color_eyre::Report> {
             // longer used.
             let line_ref = unsafe { &*(&stripped as *const String) };
 
-            if let Err(e) = json.parse_replace(line_ref) {
-                if strict {
-                    if no_color {
-                        stdout.write_fmt(format_args!("{:?}\n", e))?;
-                    } else {
-                        stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
+            match json.parse_replace(line_ref) {
+                Ok(()) => {
+                    let log = formatter.with_json_log(&json);
+                    writeln!(stdout, "{log}")?;
+                }
+                Err(e) => {
+                    if strict {
+                        if no_color {
+                            stdout.write_fmt(format_args!("{:?}\n", e))?;
+                        } else {
+                            stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                }
 
-                if no_color {
-                    stdout.write_fmt(format_args!("{stripped}"))?;
-                } else {
-                    stdout.write_fmt(format_args!("{line}"))?;
+                    if no_color {
+                        stdout.write_fmt(format_args!("{stripped}"))?;
+                    } else {
+                        stdout.write_fmt(format_args!("{line}"))?;
+                    }
                 }
-
-                line.clear();
-                continue;
             }
 
-            let fmt = formatter.with_json(&json);
-            stdout.write_fmt(format_args!("{fmt}\n"))?;
-
-            // clear line to avoid appending
             line.clear();
 
             // take only N lines if specified
@@ -168,8 +185,7 @@ fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
     let mut variables = vec![
         (
             "output".to_owned(),
-            r#"{#key &log_fields}{&log}{#config compact} {:else}\n{/config}{/key}{&data_log}"#
-                .to_owned(),
+            r#"{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"#.to_owned(),
         ),
         (
             "log_fields".to_owned(),
@@ -194,8 +210,12 @@ fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
             "message".to_owned(),
             "{message|msg|body|fields.message}".to_owned(),
         ),
+        (
+            "new_line".to_owned(),
+            r#"{#config compact} {:else}\n{/config}"#.to_owned(),
+        ),
         ("data_log".to_owned(), "{&data:json}".to_owned()),
-        ("data".to_owned(), "{spans|data|}".to_owned()),
+        ("data".to_owned(), "{..}".to_owned()),
     ];
 
     if let Some(args) = args {

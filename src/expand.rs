@@ -1,10 +1,22 @@
 use std::fmt::{self, Write};
 
-use crate::format::parse::get_variable;
+use color_eyre::eyre::{eyre, Result};
 
-pub struct ExpandedFormat(pub String, pub Vec<(String, String)>);
+pub fn expanded_format(format: &str, variables: &[(String, String)]) -> String {
+    ExpandedFormat(format, variables).to_string()
+}
 
-impl fmt::Display for ExpandedFormat {
+#[inline]
+pub fn get_variable<'a>(variables: &'a [(String, String)], key: &str) -> Result<&'a str> {
+    variables
+        .iter()
+        .find_map(|(k, v)| (k == key).then_some(v.as_str()))
+        .ok_or_else(|| eyre!("Variable doesn't exist: {key}"))
+}
+
+pub struct ExpandedFormat<'a>(pub &'a str, pub &'a [(String, String)]);
+
+impl fmt::Display for ExpandedFormat<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(format_string, variables) = self;
 
@@ -14,6 +26,7 @@ impl fmt::Display for ExpandedFormat {
     }
 }
 
+#[inline]
 fn write_input(
     f: &mut fmt::Formatter<'_>,
     input: &str,
@@ -26,9 +39,15 @@ fn write_input(
     }
 
     for chunk in chunks {
-        let (escaped, rest) = chunk.split_at(1);
-        f.write_fmt(format_args!("\\{escaped}"))?;
-        write_chunk(f, rest, variables)?;
+        if !chunk.is_empty() {
+            let (escaped, rest) = chunk.split_at(1);
+            f.write_fmt(format_args!("\\{escaped}"))?;
+            if !rest.is_empty() {
+                write_chunk(f, rest, variables)?;
+            }
+        } else {
+            f.write_str("\\\\")?;
+        }
     }
 
     Ok(())
@@ -64,9 +83,10 @@ fn write_chunk(
                 write_arg(f, content, variables)?;
             }
 
-            let literal = &part[end + 1..];
-            if !literal.is_empty() {
-                f.write_str(literal)?;
+            if let Some(literal) = &part.get(end + 1..) {
+                if !literal.is_empty() {
+                    f.write_str(literal)?;
+                }
             }
         } else {
             panic!("Missing closing brace");
@@ -81,16 +101,18 @@ fn write_variable(
     key: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
-    // if there's a formatting like `{&var:dimmed}`, crunch as field
+    // if there's a formatting like `{&var:dimmed}`, it must be a field
     if let Some((key, style)) = key.split_once(':') {
-        let value = get_variable(variables, key)
-            .unwrap()
-            .trim_start_matches('{')
-            .trim_end_matches('}');
-
-        f.write_char('{')?;
-        write_field(f, value, variables)?;
-        f.write_fmt(format_args!(":{style}}}"))?;
+        let field = get_variable_field(variables, key);
+        if !field.is_empty() {
+            let mut e = String::new();
+            let written = write_field(&mut e, field, variables)?;
+            if written {
+                f.write_char('{')?;
+                f.write_str(&e)?;
+                f.write_fmt(format_args!(":{style}}}"))?;
+            }
+        }
     } else {
         let value = get_variable(variables, key).unwrap();
         write_input(f, value, variables)?;
@@ -155,46 +177,69 @@ fn write_arg(
         .map(|(c, s)| (c, Some(s)))
         .unwrap_or((content, None));
 
-    f.write_char('{')?;
-    write_field(f, content, variables)?;
-    if let Some(style) = style {
-        f.write_fmt(format_args!(":{style}"))?;
+    let mut e = String::new();
+    write_field(&mut e, content, variables)?;
+
+    if !e.is_empty() {
+        f.write_char('{')?;
+        f.write_str(&e)?;
+        if let Some(style) = style {
+            f.write_fmt(format_args!(":{style}"))?;
+        }
+        f.write_char('}')?;
     }
-    f.write_char('}')?;
 
     Ok(())
 }
 
+// Tries to write the parsed field.
+// In case where parsed fields were empty strings,
+// it returns `false`.
 fn write_field(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     content: &str,
     variables: &[(String, String)],
-) -> fmt::Result {
-    let mut iter = content.split('|');
-    if let Some(field) = iter.next() {
+) -> Result<bool, fmt::Error> {
+    let mut written = false;
+    let mut prev_written = false;
+
+    for field in content.split('|') {
+        if prev_written {
+            f.write_char('|')?;
+        }
+
         if let Some(key) = field.strip_prefix('&') {
-            let val = get_variable(variables, key)
-                .unwrap()
-                .trim_start_matches('{')
-                .trim_end_matches('}');
-            write_field(f, val, variables)?;
-        } else {
+            let val = get_variable_field(variables, key);
+            if !val.is_empty() {
+                prev_written = write_field(f, val, variables)?;
+                written |= prev_written;
+            } else {
+                prev_written = false;
+            }
+        } else if !field.is_empty() {
             f.write_str(field)?;
+            prev_written = true;
+            written = true;
+        } else {
+            prev_written = false;
+            written |= prev_written;
         }
     }
 
-    for field in iter {
-        f.write_char('|')?;
-        if let Some(key) = field.strip_prefix('&') {
-            let val = get_variable(variables, key)
-                .unwrap()
-                .trim_start_matches('{')
-                .trim_end_matches('}');
-            write_field(f, val, variables)?;
-        } else {
-            f.write_str(field)?;
-        }
+    Ok(written)
+}
+
+fn get_variable_field<'a>(variables: &'a [(String, String)], key: &str) -> &'a str {
+    let var = get_variable(variables, key).unwrap();
+    if var.is_empty() {
+        return var;
     }
 
-    Ok(())
+    let ret = var
+        .strip_prefix('{')
+        .and_then(|e| e.strip_suffix('}'))
+        .ok_or_else(|| eyre!("variable ({key}) expected to be a field, but found plain text: {var}\nMake sure to wrap the field with braces '{{{var}}}'"))
+        .unwrap();
+
+    ret
 }

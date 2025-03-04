@@ -22,12 +22,16 @@ color-eyre = "0.6.2"
 owo-colors = { version = "4.0.0", features = ["alloc", "supports-colors"] }
 smallvec = "1.13.2"
 strip-ansi-escapes = "=0.2.0"
-thiserror = "1.0.61"
+thiserror = "2.0"
 tosserror = "0.1.2"
+
+# config handling
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8.19"
+etcetera = "0.9.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
 
 [[bench]]
