@@ -16,7 +16,7 @@ Simply pipe your JSON logs with `jlf`.
 cat ./examples/dummy_logs | jlf
 ```
 
-### Example
+### Basic Example
 
 **left**: `cat ./examples/dummy_logs`
 
@@ -50,27 +50,29 @@ cargo install --path . --locked
 
 <!--toc:start-->
 
-- [Basic Usage](#basic-usage)
-- [Installation](#installation)
-  - [Cargo](#cargo)
-  - [Manual Installation](#manual-installation)
-- [Table of Contents](#table-of-contents)
-- [CLI Options](#cli-options)
-- [Custom Formatting](#custom-formatting)
-  - [Printing the entire JSON](#printing-the-entire-json)
-  - [Styling](#styling)
-  - [Available attributes](#available-attributes)
-  - [Available Colors](#available-colors)
-- [Functions](#functions)
-  - [log](#log)
-  - [if](#if)
-    - [else](#else)
-- [Neat Trick](#neat-trick)
-- [Implementation](#implementation)
-  - [JSON Parsing](#json-parsing)
-    - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
-    - [Optimizations](#optimizations)
-    - [Benchmarks](#benchmarks)
+- [jlf](#jlf)
+  - [Basic Example](#basic-example)
+  - [Installation](#installation)
+    - [Cargo](#cargo)
+    - [Manual Installation](#manual-installation)
+  - [Table of Contents](#table-of-contents)
+  - [CLI Options](#cli-options)
+  - [Basic Usage](#basic-usage)
+  - [Custom Formatting](#custom-formatting)
+    - [Printing the entire JSON](#printing-the-entire-json)
+    - [Styling](#styling)
+    - [Available attributes](#available-attributes)
+    - [Available Colors](#available-colors)
+  - [Functions](#functions)
+    - [log](#log)
+    - [if](#if)
+      - [else](#else)
+  - [Neat Trick](#neat-trick)
+  - [Implementation](#implementation)
+    - [JSON Parsing](#json-parsing)
+      - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
+      - [Optimizations](#optimizations)
+      - [Benchmarks](#benchmarks)
 
 <!--toc:end-->
 
@@ -100,6 +102,20 @@ Options:
   -h, --help                  Print help
   -V, --version               Print version
 ```
+
+## Basic Usage
+
+### Compact Format
+
+By default, **jlf** prints the standard log in the first line, then rest of json data in a pretty format in the following lines.
+
+If you want to print everything in a single line, you can pass the option `-c`/`--compact`.
+
+```sh
+cat ./examples/dummy_logs | jlf -c
+```
+
+<img width="700" alt="Screenshot 2025-03-03 at 11 01 27 PM" src="https://github.com/user-attachments/assets/b6f9ebe3-1f51-4a5e-9127-5b55a5b0e0a6" />
 
 ## Custom Formatting
 
