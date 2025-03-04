@@ -71,8 +71,8 @@ fn write_chunk(
             let content = &part[..end];
 
             // '&' means a variable and needs to be expanded
-            if let Some(key) = content.strip_prefix('&') {
-                write_variable(f, key, variables)?;
+            if content.starts_with('&') {
+                write_variable(f, content, variables)?;
             } else if let Some(content) = content.strip_prefix('#') {
                 write_cond(f, content, variables)?;
             } else if let Some(content) = content.strip_prefix(':') {
@@ -98,23 +98,28 @@ fn write_chunk(
 
 fn write_variable(
     f: &mut fmt::Formatter<'_>,
-    key: &str,
+    content: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
     // if there's a formatting like `{&var:dimmed}`, it must be a field
-    if let Some((key, style)) = key.split_once(':') {
-        let field = get_variable_field(variables, key);
-        if !field.is_empty() {
-            let mut e = String::new();
-            let written = write_field(&mut e, field, variables)?;
-            if written {
-                f.write_char('{')?;
-                f.write_str(&e)?;
-                f.write_fmt(format_args!(":{style}}}"))?;
-            }
+    if let Some((content, style)) = content.split_once(':') {
+        let mut e = String::new();
+        let written = write_field(&mut e, content, variables)?;
+        if written {
+            f.write_char('{')?;
+            f.write_str(&e)?;
+            f.write_fmt(format_args!(":{style}}}"))?;
+        }
+    } else if content.contains('|') {
+        let mut e = String::new();
+        let written = write_field(&mut e, content, variables)?;
+        if written {
+            f.write_char('{')?;
+            f.write_str(&e)?;
+            f.write_char('}')?;
         }
     } else {
-        let value = get_variable(variables, key).unwrap();
+        let value = get_variable(variables, &content[1..]).unwrap();
         write_input(f, value, variables)?;
     }
 
