@@ -39,7 +39,7 @@ impl Formatter {
         Ok(Formatter { pieces, args })
     }
 
-    pub fn with_json_log<'a>(&'a self, json: &'a Json<'a>) -> FormattedLog<'a> {
+    pub fn as_log<'a>(&'a self, json: &'a Json<'a>) -> FormattedLog<'a> {
         FormattedLog {
             formatter: self,
             json,

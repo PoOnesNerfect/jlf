@@ -13,7 +13,11 @@ pub struct FormattedLog<'a> {
 }
 
 impl fmt::Display for FormattedLog<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.write_fmt(f) }
+}
+
+impl FormattedLog<'_> {
+    pub fn write_fmt(&self, f: &mut impl fmt::Write) -> Result<(), fmt::Error> {
         let Self {
             formatter: Formatter { pieces, args },
             json,
@@ -31,7 +35,7 @@ impl fmt::Display for FormattedLog<'_> {
 }
 
 fn write_piece<'a>(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     pieces: &'a Vec<Piece>,
     mut piece_i: usize,
     args: &'a Vec<Arg>,
@@ -103,7 +107,7 @@ fn test_cond<'a>(
     args: &[Arg],
     i: usize,
     json: &'a Json<'a>,
-    used_fields: &mut SmallVec<[&'a Field; 5]>,
+    used_fields: &SmallVec<[&'a Field; 5]>,
 ) -> bool {
     if let Cond::IfConfig(b) = cond {
         return b;
@@ -117,8 +121,15 @@ fn test_cond<'a>(
         match field {
             Field::Whole => return test_cond2(cond, json),
             Field::Rest => {
-                let rest = get_rest(json, used_fields);
-                return test_cond2(cond, &rest);
+                // optimization
+                // for `key` conditional, `rest` always exists
+                // since it's the base object
+                if cond == Cond::Key {
+                    return true;
+                } else {
+                    let rest = get_rest(json, used_fields);
+                    return test_cond2(cond, &rest);
+                }
             }
             Field::Names(names) => {
                 for arg in names {
@@ -170,7 +181,7 @@ fn test_cond2(cond: Cond, json: &Json<'_>) -> bool {
 }
 
 fn write_arg<'a>(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     (field_options, format): &'a (FieldOptions, Format),
     json: &'a Json<'a>,
     used_fields: &mut SmallVec<[&'a Field; 5]>,
@@ -211,7 +222,7 @@ fn write_arg<'a>(
     write_arg2(f, format, val)
 }
 
-fn write_arg2(f: &mut fmt::Formatter<'_>, format: &Format, json: &Json<'_>) -> fmt::Result {
+fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt::Result {
     let Format {
         style,
         compact,
@@ -299,7 +310,7 @@ fn write_arg2(f: &mut fmt::Formatter<'_>, format: &Format, json: &Json<'_>) -> f
     Ok(())
 }
 
-pub fn get_rest<'a>(json: &'a Json<'a>, used_fields: &mut SmallVec<[&'a Field; 5]>) -> Json<'a> {
+pub fn get_rest<'a>(json: &'a Json<'a>, used_fields: &SmallVec<[&'a Field; 5]>) -> Json<'a> {
     let mut rest = json.clone();
 
     for field in used_fields.iter() {

@@ -7,15 +7,15 @@ strict = false
 
 # Default variables
 [variables]
-output = "{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"
-log_fields = "{&timestamp|&level|&message}"
-log = "{&timestamp_log}{&level_log}{&message_log}"
-timestamp_log = "{#key &timestamp}{&timestamp:dimmed} {/key}"
+output = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
+log = "{&timestamp|&level|&message}"
+log_fmt = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
+timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
 timestamp = "{timestamp}"
-level_log = "{#key &level}{&level:level} {/key}"
+level_fmt = "{#key &level}{&level:level} {/key}"
 level = "{level|lvl|severity}"
-message_log = "{&message}"
+message_fmt = "{&message}"
 message = "{message|msg|body|fields.message}"
-new_line = "{#config compact} {:else}\\n{/config}"
-data_log = "{&data:json}"
+new_line = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
+data_fmt = "{&data:json}"
 data = "{..}"

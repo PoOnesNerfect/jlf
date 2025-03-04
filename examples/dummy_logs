@@ -107,3 +107,5 @@
 {"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}
 {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
 {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175}}
+
+{}

@@ -160,25 +160,27 @@ pub fn run() -> Result<(), color_eyre::Report> {
             // longer used.
             let line_ref = unsafe { &*(&stripped as *const String) };
 
-            match json.parse_replace(line_ref) {
-                Ok(()) => {
-                    let log = formatter.with_json_log(&json);
-                    writeln!(stdout, "{log}")?;
-                }
-                Err(e) => {
-                    if strict {
-                        if no_color {
-                            stdout.write_fmt(format_args!("{:?}\n", e))?;
-                        } else {
-                            stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
-                        }
-                        return Ok(());
+            if !line_ref.trim().is_empty() {
+                match json.parse_replace(line_ref) {
+                    Ok(()) => {
+                        let log = formatter.as_log(&json);
+                        writeln!(stdout, "{log}")?;
                     }
+                    Err(e) => {
+                        if strict {
+                            if no_color {
+                                stdout.write_fmt(format_args!("{:?}\n", e))?;
+                            } else {
+                                stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
+                            }
+                            return Ok(());
+                        }
 
-                    if no_color {
-                        stdout.write_fmt(format_args!("{stripped}"))?;
-                    } else {
-                        stdout.write_fmt(format_args!("{line}"))?;
+                        if no_color {
+                            stdout.write_fmt(format_args!("{stripped}"))?;
+                        } else {
+                            stdout.write_fmt(format_args!("{line}"))?;
+                        }
                     }
                 }
             }
@@ -205,36 +207,33 @@ fn get_variables(
     let mut variables = vec![
         (
             "output".to_owned(),
-            r#"{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"#.to_owned(),
+            r#"{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"#.to_owned(),
+        ),
+        ("log".to_owned(), "{&timestamp|&level|&message}".to_owned()),
+        (
+            "log_fmt".to_owned(),
+            "{&timestamp_fmt}{&level_fmt}{&message_fmt}".to_owned(),
         ),
         (
-            "log_fields".to_owned(),
-            "{&timestamp|&level|&message}".to_owned(),
-        ),
-        (
-            "log".to_owned(),
-            "{&timestamp_log}{&level_log}{&message_log}".to_owned(),
-        ),
-        (
-            "timestamp_log".to_owned(),
+            "timestamp_fmt".to_owned(),
             "{#key &timestamp}{&timestamp:dimmed} {/key}".to_owned(),
         ),
         ("timestamp".to_owned(), "{timestamp}".to_owned()),
         (
-            "level_log".to_owned(),
+            "level_fmt".to_owned(),
             "{#key &level}{&level:level} {/key}".to_owned(),
         ),
         ("level".to_owned(), "{level|lvl|severity}".to_owned()),
-        ("message_log".to_owned(), "{&message}".to_owned()),
+        ("message_fmt".to_owned(), "{&message}".to_owned()),
         (
             "message".to_owned(),
             "{message|msg|body|fields.message}".to_owned(),
         ),
         (
             "new_line".to_owned(),
-            r#"{#config compact} {:else}\n{/config}"#.to_owned(),
+            r#"{#key &data}{#config compact} {:else}\n{/config}{/key}"#.to_owned(),
         ),
-        ("data_log".to_owned(), "{&data:json}".to_owned()),
+        ("data_fmt".to_owned(), "{&data:json}".to_owned()),
         ("data".to_owned(), "{..}".to_owned()),
     ];
 
