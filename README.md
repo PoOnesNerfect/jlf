@@ -483,7 +483,7 @@ Instead we can set the variables in the config file.
 
 Priority of config and variables is `Command options` > `jlf.toml`|`.jlf.toml` > `$XDG_CONFIG_HOME/jlf/config.toml`.
 
-Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/readme/.jlf.toml).
+Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
 You can copy this file into your config directory as `jlf/config.toml` or to your workspace as `.jlf.toml` or `jlf.toml`.
 
 _**jlf.toml**_
@@ -508,7 +508,7 @@ data = "{..}"
 
 ## Config File
 
-Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/readme/.jlf.toml).
+Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
 
 Feel free to copy this into your config directory, like `$XDG_CONFIG_HOME/jlf/config.toml`, or your workspace directory as `.jlf.toml` or `jlf.toml`.
 
