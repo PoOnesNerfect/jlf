@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 
 use clap::{Parser, Subcommand};
+use config::ConfigFile;
 use owo_colors::OwoColorize;
 
 pub mod colors;
@@ -17,9 +18,8 @@ mod expand;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    /// Formatter to use to format json log.
-    #[arg(default_value = r#"{&output}"#)]
-    format_string: String,
+    /// Formatter to use to format json log. [default: {&output}]
+    format: Option<String>,
 
     #[command(flatten)]
     variables: Variables,
@@ -47,7 +47,7 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Print variable with its variables expanded.
+    /// Print variable with its inner variables expanded.
     /// If no variable is specified, the default format string will be used.
     Expand {
         /// Variable to expand
@@ -74,7 +74,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     color_eyre::install()?;
 
     let Args {
-        format_string,
+        format,
         variables,
         no_color,
         compact,
@@ -83,7 +83,26 @@ pub fn run() -> Result<(), color_eyre::Report> {
         command,
     } = Args::parse();
 
-    let config = config::get_config()?;
+    let ConfigFile {
+        mut config,
+        variables: config_variables,
+    } = config::get_config()?;
+    if let Some(format) = format {
+        config.format = Some(format);
+    }
+    if compact {
+        config.compact = Some(true);
+    }
+    if no_color {
+        config.no_color = Some(true);
+    }
+    if strict {
+        config.strict = Some(true);
+    }
+    let format = config.format.unwrap_or_else(|| "{&output}".to_owned());
+    let compact = config.compact.unwrap_or(false);
+    let no_color = config.no_color.unwrap_or(false);
+    let strict = config.strict.unwrap_or(false);
 
     if let Some(command) = command {
         match command {
@@ -91,15 +110,13 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 variable,
                 variables: Variables { variables },
             } => {
-                let variables = get_variables(variables);
-                let format = variable
-                    .map(|e| format!("{{&{e}}}"))
-                    .unwrap_or(format_string);
+                let variables = get_variables(config_variables, variables);
+                let format = variable.map(|e| format!("{{&{e}}}")).unwrap_or(format);
 
                 println!("{}", expand::expanded_format(&format, &variables));
             }
             Command::List { variables } => {
-                let variables = get_variables(variables.variables);
+                let variables = get_variables(config_variables, variables.variables);
                 let width = variables.iter().map(|(k, _)| k.len()).max().unwrap();
                 for (k, v) in variables {
                     println!("{:width$} = {v}", k.bold(), width = width);
@@ -116,8 +133,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let no_color = no_color || !stdout.is_terminal();
 
-        let variables = get_variables(variables.variables);
-        let expanded = expand::expanded_format(&format_string, &variables);
+        let variables = get_variables(config_variables, variables.variables);
+        let expanded = expand::expanded_format(&format, &variables);
         let formatter = Formatter::new(&expanded, no_color, compact)?;
 
         let mut buf = stdin.lock();
@@ -181,7 +198,10 @@ pub fn run() -> Result<(), color_eyre::Report> {
     Ok(())
 }
 
-fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
+fn get_variables(
+    from_config: Option<Vec<(String, String)>>,
+    args: Option<Vec<String>>,
+) -> Vec<(String, String)> {
     let mut variables = vec![
         (
             "output".to_owned(),
@@ -217,6 +237,20 @@ fn get_variables(args: Option<Vec<String>>) -> Vec<(String, String)> {
         ("data_log".to_owned(), "{&data:json}".to_owned()),
         ("data".to_owned(), "{..}".to_owned()),
     ];
+
+    if let Some(from_config) = from_config {
+        for (k2, v2) in from_config {
+            let v = variables
+                .iter_mut()
+                .find_map(|(k, v)| (k == &k2).then_some(v));
+
+            if let Some(v) = v {
+                *v = v2;
+            } else {
+                variables.push((k2, v2));
+            }
+        }
+    }
 
     if let Some(args) = args {
         for (key, val) in args.iter().filter_map(|e| e.split_once('=')) {

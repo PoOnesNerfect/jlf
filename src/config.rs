@@ -1,20 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{fmt, fs, path::PathBuf};
 
 use etcetera::{choose_base_strategy, BaseStrategy};
 use serde::Deserialize;
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ConfigFile {
-    pub config: Config,
-    pub variables: Vec<(String, String)>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct Config {
-    pub compact: Option<bool>,
-    pub no_color: Option<bool>,
-    pub strict: Option<bool>,
-}
 
 pub fn get_config() -> color_eyre::Result<ConfigFile> {
     let config_file = config_dir().join("config.toml");
@@ -28,15 +15,123 @@ pub fn get_config() -> color_eyre::Result<ConfigFile> {
     let ws_dir = find_workspace();
     let ws_config_file1 = ws_dir.join("jlf.toml");
     let ws_config_file2 = ws_dir.join(".jlf.toml");
-    if ws_config_file1.exists() {
+    let ws_config = if ws_config_file1.exists() {
         let config_raw = fs::read_to_string(ws_config_file1)?;
-        let ws_config = toml::from_str(&config_raw)?;
+        Some(toml::from_str(&config_raw)?)
     } else if ws_config_file2.exists() {
         let config_raw = fs::read_to_string(ws_config_file2)?;
-        let ws_config = toml::from_str(&config_raw)?;
+        Some(toml::from_str(&config_raw)?)
+    } else {
+        None
+    };
+
+    if let Some(ws_config) = ws_config {
+        config.merge(ws_config);
     }
 
     Ok(config)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ConfigFile {
+    #[serde(default)]
+    pub config: Config,
+    #[serde(default, deserialize_with = "de_map_to_list")]
+    pub variables: Option<Vec<(String, String)>>,
+}
+
+fn de_map_to_list<'de, D>(de: D) -> Result<Option<Vec<(String, String)>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Option<Vec<(String, String)>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            write!(formatter, "A hex encoded OpId")
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_map(Visitor)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut list = map.size_hint().map(Vec::with_capacity).unwrap_or_default();
+
+            while let Some((k, v)) = map.next_entry()? {
+                list.push((k, v));
+            }
+
+            Ok(Some(list))
+        }
+    }
+
+    de.deserialize_any(Visitor)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct Config {
+    pub format: Option<String>,
+    pub compact: Option<bool>,
+    pub no_color: Option<bool>,
+    pub strict: Option<bool>,
+}
+
+impl ConfigFile {
+    fn merge(&mut self, other: Self) {
+        let Self { config, variables } = self;
+        let Self {
+            config: config2,
+            variables: variables2,
+        } = other;
+
+        if let Some(format) = config2.format {
+            config.format = Some(format);
+        }
+        if let Some(compact) = config2.compact {
+            config.compact = Some(compact);
+        }
+        if let Some(no_color) = config2.no_color {
+            config.no_color = Some(no_color);
+        }
+        if let Some(strict) = config2.strict {
+            config.strict = Some(strict);
+        }
+
+        match (variables, variables2) {
+            (_, None) => (),
+            (v1, Some(v2)) => {
+                if let Some(v1) = v1 {
+                    for (k2, v2) in v2 {
+                        let v = v1.iter_mut().find_map(|(k, v)| (k == &k2).then_some(v));
+
+                        if let Some(v) = v {
+                            *v = v2;
+                        } else {
+                            v1.push((k2, v2));
+                        }
+                    }
+                } else {
+                    *v1 = Some(v2);
+                }
+            }
+        }
+    }
 }
 
 fn config_dir() -> PathBuf {

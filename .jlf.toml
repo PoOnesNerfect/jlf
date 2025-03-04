@@ -1,0 +1,21 @@
+# Default config values
+[config]
+format = "{&output}"
+compact = false
+no_color = false
+strict = false
+
+# Default variables
+[variables]
+output = "{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"
+log_fields = "{&timestamp|&level|&message}"
+log = "{&timestamp_log}{&level_log}{&message_log}"
+timestamp_log = "{#key &timestamp}{&timestamp:dimmed} {/key}"
+timestamp = "{timestamp}"
+level_log = "{#key &level}{&level:level} {/key}"
+level = "{level|lvl|severity}"
+message_log = "{&message}"
+message = "{message|msg|body|fields.message}"
+new_line = "{#config compact} {:else}\\n{/config}"
+data_log = "{&data:json}"
+data = "{..}"
