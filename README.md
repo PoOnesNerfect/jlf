@@ -103,7 +103,7 @@ Options:
   -V, --version               Print version
 ```
 
-## Basic Usage
+## Usage
 
 ### Compact Format
 
@@ -155,8 +155,106 @@ cat ./examples/dummy_logs | jlf -s
 You can optionally provide your custom format of the output line.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{#log}{#if spans|data}\n{spans|data}{/if}'
+# Provide custom format. If `data` field exists, print `data` field as `json`; if not, print "`data` field not found".
+cat ./examples/dummy_logs | jlf '{#if data}{data:json}{:else}`data` field not found{/if}'
 ```
+<img width="700" alt="Screenshot 2025-03-03 at 11 32 02 PM" src="https://github.com/user-attachments/assets/a24cee4d-c1af-4dec-801c-88f118566278" />
+
+Isn't it neat? The formatting syntax is very simple and readble, inspired by popular formatting syntax from the likes of rust and svelte.
+
+We'll go over all the formatting rules now: fields, styles, conditionals, and variables.
+
+Especially, `variables` is a new addition in `jlf v0.2.0` which unlocked the power of granular customization.
+
+### Accessing Fields
+
+To print the fields of JSON log, simple write the field name in braces `{field1}`.
+
+```sh
+# Example Line: {"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}
+
+# access the field by writing the field in braces
+cat ./examples/dummy_logs | jlf 'Msg: {message}!' # -> Msg: User logged in successfully!
+
+# if field may not exist, provide fallback fields separated by '|'. It will print the first field that exits.
+cat ./examples/dummy_logs | jlf 'Msg: {msg|body|message}!' # -> Msg: My Body!
+
+# access nested field using '.' as a separator.
+cat ./examples/dummy_logs | jlf 'User {data.user_id} logged in!' # -> User 3175 logged in!
+
+# access array items using '[n]' to index at `n`.
+cat ./examples/dummy_logs | jlf 'My girl friend is {data.friends[1]}.' # -> My girl friend is Jill.
+
+# if the field is an object or array, it will it as pretty json by default.
+cat ./examples/dummy_logs | jlf 'user data: {data}'
+# ->
+# user data: {
+#  "user_id": 3175,
+#  "session_id": "Nsb3P5mZ7971NFIt",
+#  "ip_address": "149.215.200.169",
+#  "friends": [
+#     "Jack",
+#     "Jill"
+#   ]
+# }
+
+# print the entire json by writing `{.}`
+cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{.}'
+# ->
+# user(3175): User logged in successfully
+# {
+#   "message": "User logged in successfully",
+#   "body": "My Body",
+#   "data": {
+#     "user_id": 3175,
+#     "session_id": "Nsb3P5mZ7971NFIt",
+#     "ip_address": "149.215.200.169",
+#     "friends": [
+#       "Jack",
+#       "Jill"
+#     ]
+#   }
+# }
+
+# print only the un-printed fields by writing `{..}`
+cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{..}'
+# ->
+# user(3175): User logged in successfully
+# {
+#   "body": "My Body",
+#   "data": {
+#     "session_id": "Nsb3P5mZ7971NFIt",
+#     "ip_address": "149.215.200.169",
+#     "friends": [
+#       "Jack",
+#       "Jill"
+#     ]
+#   }
+# }
+```
+
+### Styling Fields
+
+You can provide styles to the values by providing styles after the `:`.
+
+```sh
+cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
+```
+
+If you have multiple styles, you can separate them with `,`, like `fg=red,bg=blue`.
+
+You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
+
+<img width="700" alt="Screenshot 2025-03-04 at 12 18 28 AM" src="https://github.com/user-attachments/assets/acc21974-695b-4cf7-ba27-c873f944356d" />
+
+
+### Conditionals
+
+#### {#if cond1}{:else if cond2}{:else}{/if}
+#### {#key field1}{:else key field2}{:else}{/key}
+#### {#config config1}{:else}{/config}
+
+### Variables
 
 Supplied format above is the default format, so it will output the same as the default format.
 
