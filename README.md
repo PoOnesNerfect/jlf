@@ -247,70 +247,9 @@ You can optionally provide the style type before the `=`. If you don't provide i
 
 <img width="700" alt="Screenshot 2025-03-04 at 12 18 28 AM" src="https://github.com/user-attachments/assets/acc21974-695b-4cf7-ba27-c873f944356d" />
 
+`level` is a special style that is only applied to `level` field; it will print in different colors for different levels.
 
-### Conditionals
-
-#### {#if cond1}{:else if cond2}{:else}{/if}
-#### {#key field1}{:else key field2}{:else}{/key}
-#### {#config config1}{:else}{/config}
-
-### Variables
-
-Supplied format above is the default format, so it will output the same as the default format.
-
-`{#log}` is a function `log`, which is a convenience function that prints the basic log format.
-Currently, function feature is very early and only `log` function is available.
-`log` function is equivalent to the format `{timestamp:dimmed} {level|lvl:level} {message|msg|body}`.
-
-`{#if spans|data}...{/if}` is a function `if`, which is a conditional function that prints the content inside the block if the field `spans` or `data` exists. More about the function's behavior in [{#if}](#if)
-
-`\n` will print a newline.
-
-`{spans|data:json}` will print the `spans` or `data` field as json.
-
-`{timestamp:dimmed}` means that the cli will look for `timestamp` in the json and print it with `dimmed` dimmed.
-
-`level|lvl` means that the cli will look for `level` and `lvl` in the json and use the first one it finds.
-The style is also called `level`, which is a special style that will color the level based on the level (debug = green, info = cyan).
-
-`{message|msg|body}` means that the cli will look for `message`, `msg`, and `body` in the json and use the first one it finds.
-
-### Printing the entire JSON
-
-If you want to print the entire JSON line, you can just use `{}`.
-
-```sh
-cat ./examples/dummy_logs | jlf '{}'
-```
-
-You can still provide styles to it.
-
-```sh
-cat ./examples/dummy_logs | jlf '{:compact,fg=green}'
-```
-
-What if you want to display either `spans` or `data` field, but if neither exists, just display the entire json?
-
-```sh
-cat ./examples/dummy_logs | jlf '{spans|data|:compact,fg=green}'
-```
-
-Notice the `|` at the end of `spans|data|`?
-Empty string is interpreted as the entire json, so we're setting the fallback to printing the entire json.
-
-### Styling
-
-You can provide styles to the values by providing styles after the `:`.
-
-```sh
-cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
-```
-
-If you have multiple styles, you can separate them with `,`, like `fg=red,bg=blue`.
-
-You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
-
-### Available attributes
+#### Available Styles
 
 - `dimmed`: make the text dimmed
 - `bold`: make the text bold
@@ -318,65 +257,81 @@ You can optionally provide the style type before the `=`. If you don't provide i
 - `{color}`: same as `fg={color}`
 - `bg={color}`: set the background color
 - `indent={n}`: indent the value by `n` spaces
-- `key={color}`: sets the color of the key
-- `value={color}`: sets the color of the value
-- `str={color}`: sets the color of the string data type
-- `syntax={color}`: sets the color of the syntax characters
+- `key={color}`: sets the color of the key in JSON object
+- `value={color}`: sets the color of the non-string types in JSON object
+- `str={color}`: sets the color of the string data type in JSON object
+- `syntax={color}`: sets the color of the syntax characters in JSON object
 - `json`: print the json value as json; this is the default and only available format, so you don't have to specify it
 - `compact`: print in a single line
-- `level`: color the level based on the level (debug = green, info = cyan)
+- `level`: color the level based on the level (debug = green, info = cyan, etc.)
 
-`{color}` is a placeholder for any color value.
-
-### Available Colors
+In the above list, `{color}` is a placeholder for any color value.
 
 You can view all available colors in [colors.md](https://github.com/PoOnesNerfect/jlf/blob/main/colors.md).
 
-## Functions
+### Conditionals
 
-Functions in jlf start with `#` inside `{}`.
+For conditionals, main conditional starts with `#` like `{#if ..}`, else conditions start with `:` like `{:else ..}`, and ending symbols start with `/` like `{/if}`.
 
-### log
+#### {#if cond1}{:else if cond2}{:else}{/if}
 
-`log` is a convenience function that prints the basic log format.
+**if** condition accepts a single field or multiple fields separated by '|'.
 
-```sh
-cat ./examples/dummy_logs | jlf '{#log}'
-```
-
-equals
+**if** checks for the `truthy`ness of the given field values; one difference with Javascript truthiness is that empty object and array is evaluated to `false`.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:dimmed} {level|lvl:level} {message|msg|body|fields.message}'
+# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
+
+# if field doesn't exist, or is null, it's `false`.
+cat ./examples/dummy_logs | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully!
+
+# empty string is also `false`.
+cat ./examples/dummy_logs | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
+
+# number 0 is also 'false'.
+cat ./examples/dummy_logs | jlf '{#if count}count = {count}{:else}count is zero{/if}' # -> count is zero
+
+# empty object or arrays are also 'false'.
+cat ./examples/dummy_logs | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
+
+# nesting is allowed
+cat ./examples/dummy_logs | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
+
+# if multiple fields are given, it will return `true` if at least one of them is `truthy`.
+cat ./examples/dummy_logs | jlf '{#if msg|body|data.count|message}I'm still here{/if}' # -> I'm still here
 ```
 
-and will print
+#### {#key field1}{:else key field2}{:else}{/key}
+
+**key** condition accepts a single field or multiple fields separated by '|'.
+
+**key** checks the existence of the given field; even when the field value is `falsey`, it will evaluate to `true` if the field exists, and is not null.
 
 ```sh
-2024-02-09T07:22:41.439284 DEBUG User logged in successfully
+# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
+
+# if field doesn't exist, or is null, it's `false`.
+cat ./examples/dummy_logs | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully!
+
+# empty string is also `false`.
+cat ./examples/dummy_logs | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
+
+# number 0 is also 'false'.
+cat ./examples/dummy_logs | jlf '{#if count}count = {count}{:else}count is zero{/if}' # -> count is zero
+
+# empty object or arrays are also 'false'.
+cat ./examples/dummy_logs | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
+
+# nesting is allowed
+cat ./examples/dummy_logs | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
+
+# if multiple fields are given, it will return `true` if at least one of them is `truthy`.
+cat ./examples/dummy_logs | jlf '{#if msg|body|data.count|message}I'm still here{/if}' # -> I'm still here
 ```
 
-### if
+#### {#config config1}{:else}{/config}
 
-You can use `{#if field}...{/if}` to conditionally print the content inside the block if the field exists.
-
-The condition only checks if the field exists and is not null, but not the truthiness of the field.
-
-If the field exists and the value is `false`, it will still print the content inside the block.
-
-```sh
-cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{/if}'
-```
-
-will print `data: { ... }` only if `spans` or `data` field exists.
-
-#### else
-
-Additionally, you can provide `{:else if field}` or `{:else}`
-
-```sh
-cat ./examples/dummy_logs | jlf '{#if spans|data}data: {spans|data:json}{:else if other.data}other: {fields}{:else}nothing here{/if}'
-```
+### Variables
 
 ## Neat Trick
 
