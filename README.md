@@ -372,19 +372,19 @@ You can reference a variable in the format string or in another variable as `{&v
 
 Here is the list of all default variables:
 
-```sh
-output        = {#key &log_fields}{&log}{&new_line}{/key}{&data_log}
-log_fields    = {&timestamp|&level|&message}
-log           = {&timestamp_log}{&level_log}{&message_log}
-timestamp_log = {#key &timestamp}{&timestamp:dimmed} {/key}
-timestamp     = {timestamp}
-level_log     = {#key &level}{&level:level} {/key}
-level         = {level|lvl|severity}
-message_log   = {&message}
-message       = {message|msg|body|fields.message}
-new_line      = {#config compact} {:else}\n{/config}
-data_log      = {&data:json}
-data          = {..}
+```toml
+output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
+log           = "{&timestamp|&level|&message}"
+log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
+timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
+timestamp     = "{timestamp}"
+level_fmt     = "{#key &level}{&level:level} {/key}"
+level         = "{level|lvl|severity}"
+message_fmt   = "{&message}"
+message       = "{message|msg|body|fields.message}"
+new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
+data_fmt      = "{&data:json}"
+data          = "{..}"
 ```
 
 You can see the variables with command `jlf list`.
@@ -395,9 +395,9 @@ When expanded, variable `output` will look like this:
 {#key timestamp|level|lvl|severity|message|msg|body|fields.message}{#key timestamp}{timestamp:dimmed} {/key}{#key level|lvl|severity}{level|lvl|severity:level} {/key}{message|msg|body|fields.message}{#config compact} {:else}\n{/config}{/key}{..:json}
 ```
 
-You can view the expanded variables by calling `jlf expand variable`.
+You can view the expanded variables by calling `jlf expand VARIABLE`.
 
-For example, `jlf expand log_fields` will output `{timestamp|level|lvl|severity|message|msg|body|fields.message}`.
+For example, `jlf expand log` will output `{timestamp|level|lvl|severity|message|msg|body|fields.message}`.
 
 If you don't provide at variable, `jlf expand`, it will print the fully expanded format string.
 
@@ -414,7 +414,7 @@ cat ./examples/dummy_logs | jlf
 # }
 
 # replace variable `message_log`
-cat ./examples/dummy_logs | jlf -v message_log="Message: {&message}"
+cat ./examples/dummy_logs | jlf -v message_fmt="Message: {&message}"
 # ->
 # 2024-02-09T07:22:41.439284 DEBUG Message: User logged in successfully
 # {
@@ -435,7 +435,7 @@ cat ./examples/dummy_logs | jlf -v timestamp=
 # }
 
 # we can pass multiple variables
-cat ./examples/dummy_logs | jlf -v timestamp= -v message_log="Message: {&message}"
+cat ./examples/dummy_logs | jlf -v timestamp= -v message_fmt="Message: {&message}"
 # ->
 # DEBUG Message: User logged in successfully
 # {
@@ -461,7 +461,7 @@ cat ./examples/dummy_logs | jlf -v data="{.}"
 # replace the entire format.
 # default format string is `{&output}`; therefore, replacing variable `output`
 # will replace the format string.
-cat ./examples/dummy_logs | jlf -v output="{&message_log}: {&data_log}"
+cat ./examples/dummy_logs | jlf -v output="{&message_fmt}: {&data_fmt}"
 # User logged in successfully: {
 #   "timestamp": "2024-02-09T07:22:41.439284",
 #   "level": "DEBUG",
@@ -492,18 +492,18 @@ _**jlf.toml**_
 # Default variables
 # Replace or add variables as needed
 [variables]
-output = "{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"
-log_fields = "{&timestamp|&level|&message}"
-log = "{&timestamp_log}{&level_log}{&message_log}"
-timestamp_log = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp = "{timestamp}"
-level_log = "{#key &level}{&level:level} {/key}"
-level = "{level|lvl|severity}"
-message_log = "{&message}"
-message = "{message|msg|body|fields.message}"
-new_line = "{#config compact} {:else}\\n{/config}"
-data_log = "{&data:json}"
-data = "{..}"
+output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
+log           = "{&timestamp|&level|&message}"
+log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
+timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
+timestamp     = "{timestamp}"
+level_fmt     = "{#key &level}{&level:level} {/key}"
+level         = "{level|lvl|severity}"
+message_fmt   = "{&message}"
+message       = "{message|msg|body|fields.message}"
+new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
+data_fmt      = "{&data:json}"
+data          = "{..}"
 ```
 
 ## Config File
@@ -517,25 +517,25 @@ _**jlf.toml**_
 ```toml
 # Default config values
 [config]
-format = "{&output}"
-compact = false
+format   = "{&output}"
+compact  = false
 no_color = false
-strict = false
+strict   = false
 
 # Default variables
 [variables]
-output = "{#key &log_fields}{&log}{&new_line}{/key}{&data_log}"
-log_fields = "{&timestamp|&level|&message}"
-log = "{&timestamp_log}{&level_log}{&message_log}"
-timestamp_log = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp = "{timestamp}"
-level_log = "{#key &level}{&level:level} {/key}"
-level = "{level|lvl|severity}"
-message_log = "{&message}"
-message = "{message|msg|body|fields.message}"
-new_line = "{#config compact} {:else}\\n{/config}"
-data_log = "{&data:json}"
-data = "{..}"
+output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
+log           = "{&timestamp|&level|&message}"
+log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
+timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
+timestamp     = "{timestamp}"
+level_fmt     = "{#key &level}{&level:level} {/key}"
+level         = "{level|lvl|severity}"
+message_fmt   = "{&message}"
+message       = "{message|msg|body|fields.message}"
+new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
+data_fmt      = "{&data:json}"
+data          = "{..}"
 ```
 
 ## Neat Trick
@@ -588,7 +588,7 @@ Below are the optimizations I implemented for the corresponding items above:
 
 So, how did it perform? That's the only thing that matters.
 
-````
+```
 custom parse time: [987.52 ns 993.59 ns 1.0006 µs]
 Found 12 outliers among 100 measurements (12.00%)
 9 (9.00%) high mild
@@ -600,16 +600,11 @@ Found 8 outliers among 100 measurements (8.00%)
 4 (4.00%) high severe
 
 serde structured parse time: [712.16 ns 714.93 ns 717.54 ns]
-
 ```
+
 First section is the custom parse, second is the parsing into `serde_json::Value` parse and third is deserializing into a structured rust object.
 
 The time is how long it took to deserialize a single line of json log.
 
 As we can see, our custom parser is about 3x faster than the `serde_json::Value` parsing.
 Yes, it is still slower than the structured parsing, but our parser is still pretty darn fast for parsing a dynamic JSON data.
-```
-
-```
-```
-````
