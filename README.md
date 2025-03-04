@@ -117,6 +117,40 @@ cat ./examples/dummy_logs | jlf -c
 
 <img width="700" alt="Screenshot 2025-03-03 at 11 01 27 PM" src="https://github.com/user-attachments/assets/b6f9ebe3-1f51-4a5e-9127-5b55a5b0e0a6" />
 
+### No Color
+
+By default, **jlf** prints in pretty colors.
+
+However, when you pipe logs into a file, **jlf** will automatically write with no colors, so the file isn't corrupted with ANSI characters.
+
+For any reason, if you would like to print with no colors to the terminal, you can pass the option `-n`/`--no-color`.
+
+```sh
+# writing into a file will remove all ANSI characters automatically
+cat ./examples/dummy_logs | jlf > pretty_logs
+
+# pass `-n` to print to terminal with no colors
+cat ./examples/dummy_logs | jlf -n
+```
+
+<img width="700" alt="Screenshot 2025-03-03 at 11 07 47 PM" src="https://github.com/user-attachments/assets/7bebd267-6bca-4fe2-9102-e4dbc8416a44" />
+
+### Strict
+
+When **jlf** encounters log lines that are not valid JSON, it will simply pass the line through without any transformation.
+
+However, if you would rather like to exit with an error when encountered an invalid JSON or a non-JSON line, pass the option `-s`/`--strict`.
+
+It will even print out a snippet of where the JSON is invalid.
+
+```sh
+# pass `-s` to exit when non-JSON is found
+cat ./examples/dummy_logs | jlf -s
+```
+
+<img width="700" alt="Screenshot 2025-03-03 at 11 20 49 PM" src="https://github.com/user-attachments/assets/640cea33-3197-4e78-b452-37883a2243c6" />
+
+
 ## Custom Formatting
 
 You can optionally provide your custom format of the output line.
