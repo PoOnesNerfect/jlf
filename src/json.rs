@@ -928,7 +928,7 @@ mod tests {
 
         let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
         println!("Array: {:#?}", arr);
-        assert_eq!(arr.get_i(2).get("obj").as_value(), Some("\"inside array\""));
+        assert_eq!(arr.get_i(2).get("obj").as_str(), Some("inside array"));
     }
 
     #[test]
