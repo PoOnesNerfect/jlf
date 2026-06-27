@@ -24,7 +24,11 @@ pub struct Args {
     #[command(flatten)]
     variables: Variables,
 
-    /// Disable color output. If output is not a terminal, this is always true.
+    /// Force color output. If output is a terminal, this defaults to false.
+    #[arg(long = "color", default_value_t = false, overrides_with = "no_color")]
+    color: bool,
+
+    /// Disable color output. If output is not a terminal, this defaults to true.
     #[arg(short = 'n', long = "no-color", default_value_t = false)]
     no_color: bool,
 
@@ -76,6 +80,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     let Args {
         format,
         variables,
+        color,
         no_color,
         compact,
         strict,
@@ -131,7 +136,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     if !stdin.is_terminal() {
         let mut stdout = io::stdout().lock();
 
-        let no_color = no_color || !stdout.is_terminal();
+        let no_color = no_color || !stdout.is_terminal() && !color;
 
         let variables = get_variables(config_variables, variables.variables);
         let expanded = expand::expanded_format(&format, &variables);
