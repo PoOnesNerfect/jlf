@@ -5,6 +5,15 @@ use owo_colors::{
     colors::{Blue, BrightWhite, Green, White},
     OwoColorize, Style,
 };
+use smallvec::SmallVec;
+
+/// A single step of a field path, used to identify which fields have already
+/// been consumed so they can be skipped when rendering the "rest" (`{..}`).
+#[derive(Clone, Copy)]
+pub enum PathToken<'a> {
+    Name(&'a str),
+    Index(usize),
+}
 
 pub fn parse_json(input: &str) -> Result<Json<'_>, ParseError> {
     let mut json = Json::default();
@@ -50,7 +59,7 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json<'a>> {
+    pub fn get_mut<'b>(&'b mut self, key: &str) -> Option<&'b mut Json<'a>> {
         match self {
             Json::Object(obj) => obj.get_mut(key),
             _ => None,
@@ -64,7 +73,7 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_i_mut(&'a mut self, index: usize) -> Option<&'a mut Json<'a>> {
+    pub fn get_i_mut<'b>(&'b mut self, index: usize) -> Option<&'b mut Json<'a>> {
         match self {
             Json::Array(arr) => arr.get_mut(index),
             _ => None,
@@ -126,7 +135,7 @@ impl<'a> Json<'a> {
     /// `None` is returned.
     ///
     /// For more information read [RFC6901](https://tools.ietf.org/html/rfc6901).
-    pub fn pointer_mut(&'a mut self, pointer: &str) -> Option<&'a mut Json<'a>> {
+    pub fn pointer_mut<'b>(&'b mut self, pointer: &str) -> Option<&'b mut Json<'a>> {
         if pointer.is_empty() {
             return Some(self);
         }
@@ -316,7 +325,7 @@ pub struct JsonObject<'a>(pub Vec<(&'a str, Json<'a>)>);
 impl<'a> JsonObject<'a> {
     pub fn get(&self, key: &str) -> &Json { self.try_get(key).unwrap_or(&Json::Null) }
 
-    pub fn get_mut(&'a mut self, key: &str) -> Option<&'a mut Json<'a>> {
+    pub fn get_mut<'b>(&'b mut self, key: &str) -> Option<&'b mut Json<'a>> {
         self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
@@ -807,6 +816,171 @@ impl Json<'_> {
             }
         }
     }
+
+    /// Renders this value the same way as [`Self::fmt_compact`] /
+    /// [`Self::fmt_pretty`], but skips any field paths listed in `excluded`.
+    ///
+    /// This is used for the "rest" field (`{..}`): the fields already consumed
+    /// by earlier args (timestamp, level, message, ...) are skipped while the
+    /// rest of the object is printed. Unlike the previous implementation it
+    /// renders a *filtered view* of the original object instead of deep-cloning
+    /// it and deleting the used fields, so no per-line allocation/clone happens.
+    ///
+    /// `indent` selects the layout: `None` => compact, `Some(n)` => pretty with
+    /// base indentation `n`.
+    pub fn fmt_rest(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        excluded: &[&[PathToken<'_>]],
+        indent: Option<usize>,
+        styles: &Option<MarkupStyles>,
+    ) -> fmt::Result {
+        match self {
+            Json::Object(obj) => {
+                if !obj
+                    .iter()
+                    .any(|(key, value)| !value.is_null() && !is_excluded(excluded, |t| token_matches_key(t, key)))
+                {
+                    return write_syntax(f, "{}", styles);
+                }
+                write_syntax(f, "{", styles)?;
+                let mut first = true;
+                for (key, value) in obj.iter() {
+                    if value.is_null() || is_excluded(excluded, |t| token_matches_key(t, key)) {
+                        continue;
+                    }
+                    if !first {
+                        write_syntax(f, ",", styles)?;
+                    }
+                    first = false;
+                    if let Some(ind) = indent {
+                        write!(f, "\n{:width$}", "", width = ind + 2)?;
+                    }
+                    write_key(f, key, styles)?;
+                    write_syntax(f, ":", styles)?;
+                    if indent.is_some() {
+                        write!(f, " ")?;
+                    }
+                    let child = child_excluded(excluded, |t| token_matches_key(t, key));
+                    write_rest_value(f, value, &child, indent, styles)?;
+                }
+                if let Some(ind) = indent {
+                    if !first {
+                        write!(f, "\n{:width$}", "", width = ind)?;
+                    }
+                }
+                write_syntax(f, "}", styles)
+            }
+            Json::Array(arr) => {
+                if !arr
+                    .iter()
+                    .enumerate()
+                    .any(|(i, value)| !value.is_null() && !is_excluded(excluded, |t| token_matches_index(t, i)))
+                {
+                    return write_syntax(f, "[]", styles);
+                }
+                write_syntax(f, "[", styles)?;
+                let mut first = true;
+                for (i, value) in arr.iter().enumerate() {
+                    if value.is_null() || is_excluded(excluded, |t| token_matches_index(t, i)) {
+                        continue;
+                    }
+                    if !first {
+                        write_syntax(f, ",", styles)?;
+                    }
+                    first = false;
+                    if let Some(ind) = indent {
+                        write!(f, "\n{:width$}", "", width = ind + 2)?;
+                    }
+                    let child = child_excluded(excluded, |t| token_matches_index(t, i));
+                    write_rest_value(f, value, &child, indent, styles)?;
+                }
+                if let Some(ind) = indent {
+                    if !first {
+                        write!(f, "\n{:width$}", "", width = ind)?;
+                    }
+                }
+                write_syntax(f, "]", styles)
+            }
+            _ => match indent {
+                Some(ind) => self.fmt_pretty(f, ind, styles),
+                None => self.fmt_compact(f, styles),
+            },
+        }
+    }
+
+    /// Returns `true` if rendering [`Self::fmt_rest`] with the same `excluded`
+    /// paths would emit at least one field, i.e. the filtered "rest" is not
+    /// empty. Used by the `if` conditional on the rest field.
+    pub fn has_rest_content(&self, excluded: &[&[PathToken<'_>]]) -> bool {
+        match self {
+            Json::Object(obj) => obj.iter().any(|(key, value)| {
+                !value.is_null()
+                    && !is_excluded(excluded, |t| token_matches_key(t, key))
+                    && {
+                        let child = child_excluded(excluded, |t| token_matches_key(t, key));
+                        child.is_empty() || value.has_rest_content(&child)
+                    }
+            }),
+            Json::Array(arr) => arr.iter().enumerate().any(|(i, value)| {
+                !value.is_null()
+                    && !is_excluded(excluded, |t| token_matches_index(t, i))
+                    && {
+                        let child = child_excluded(excluded, |t| token_matches_index(t, i));
+                        child.is_empty() || value.has_rest_content(&child)
+                    }
+            }),
+            _ => !self.is_null(),
+        }
+    }
+}
+
+/// Renders a single child value while rendering the "rest" view. If the child
+/// has no remaining excluded sub-paths it is printed with the normal
+/// (allocation-free) formatters; otherwise filtering continues recursively.
+fn write_rest_value(
+    f: &mut fmt::Formatter<'_>,
+    value: &Json,
+    child_excluded: &[&[PathToken<'_>]],
+    indent: Option<usize>,
+    styles: &Option<MarkupStyles>,
+) -> fmt::Result {
+    let value_indent = indent.map(|i| i + 2);
+    if child_excluded.is_empty() {
+        match value_indent {
+            Some(ind) => value.fmt_pretty(f, ind, styles),
+            None => value.fmt_compact(f, styles),
+        }
+    } else {
+        value.fmt_rest(f, child_excluded, value_indent, styles)
+    }
+}
+
+/// `true` if any excluded path is exactly this field (length 1 and its first
+/// token matches), meaning the field should be omitted entirely.
+fn is_excluded(excluded: &[&[PathToken<'_>]], matches: impl Fn(&PathToken<'_>) -> bool) -> bool {
+    excluded.iter().any(|p| p.len() == 1 && matches(&p[0]))
+}
+
+/// Collects the sub-paths of any excluded path that descends through this field
+/// (length > 1 with a matching first token), with that first token stripped.
+fn child_excluded<'p>(
+    excluded: &[&'p [PathToken<'p>]],
+    matches: impl Fn(&PathToken<'_>) -> bool,
+) -> SmallVec<[&'p [PathToken<'p>]; 4]> {
+    excluded
+        .iter()
+        .filter(|p| p.len() > 1 && matches(&p[0]))
+        .map(|p| &p[1..])
+        .collect()
+}
+
+fn token_matches_key(tok: &PathToken<'_>, key: &str) -> bool {
+    matches!(tok, PathToken::Name(n) if *n == key)
+}
+
+fn token_matches_index(tok: &PathToken<'_>, index: usize) -> bool {
+    matches!(tok, PathToken::Index(i) if *i == index)
 }
 
 fn write_key(

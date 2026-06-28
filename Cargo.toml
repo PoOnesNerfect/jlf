@@ -1,6 +1,6 @@
 [package]
 name = "jlf"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
 description = "CLI for converting JSON logs to human-readable format"
@@ -17,22 +17,22 @@ name = "jlf"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-color-eyre = "0.6.2"
-owo-colors = { version = "4.0.0", features = ["alloc", "supports-colors"] }
-smallvec = "1.13.2"
-strip-ansi-escapes = "=0.2.0"
+clap = { version = "4.6", features = ["derive"] }
+color-eyre = "0.6.5"
+owo-colors = { version = "4.3", features = ["alloc", "supports-colors"] }
+smallvec = "1.15"
+strip-ansi-escapes = "0.2.1"
 thiserror = "2.0"
 tosserror = "0.1.2"
 
 # config handling
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8.19"
-etcetera = "0.9.0"
+toml = "1.1"
+etcetera = "0.11"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-serde_json = "1.0.117"
+criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1.0.150"
 
 [[bench]]
 name = "parse_json"

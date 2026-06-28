@@ -134,9 +134,13 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
     let stdin = io::stdin();
     if !stdin.is_terminal() {
-        let mut stdout = io::stdout().lock();
+        let stdout = io::stdout();
+        let no_color = no_color || (!stdout.is_terminal() && !color);
 
-        let no_color = no_color || !stdout.is_terminal() && !color;
+        // Buffer stdout: the formatter emits many small writes per record, and a
+        // bare StdoutLock is line-buffered (a flush per '\n'). A BufWriter
+        // collapses those into a few large writes.
+        let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
 
         let variables = get_variables(config_variables, variables.variables);
         let expanded = expand::expanded_format(&format, &variables);
@@ -144,47 +148,56 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
         let mut buf = stdin.lock();
 
-        // input line red from stdin
+        // input line read from stdin (allocation reused across iterations)
         let mut line = String::new();
 
-        // ansi stripped line
-        let mut stripped;
-
-        // json data to use and re-use
-        let mut json = Json::Null;
+        // formatted output for one record (allocation reused across iterations)
+        let mut out = String::new();
 
         // how many lines have we taken?
         let mut taken = 0;
 
         while buf.read_line(&mut line)? != 0 {
-            stripped = strip_ansi_escapes::strip_str(&line);
+            // Only run the (allocating) ANSI strip when the line actually
+            // contains an escape byte. JSON logs almost never do, so this skips
+            // a per-line allocation + full-line scan on the common path.
+            let stripped;
+            let input: &str = if line.as_bytes().contains(&0x1b) {
+                stripped = strip_ansi_escapes::strip_str(&line);
+                &stripped
+            } else {
+                &line
+            };
 
-            // keep reference to bypass borrow checker
-            // this is safe because we know that line always exists.
-            // And, when the line gets cleared, the str slices in json are no
-            // longer used.
-            let line_ref = unsafe { &*(&stripped as *const String) };
-
-            if !line_ref.trim().is_empty() {
-                match json.parse_replace(line_ref) {
+            if !input.trim().is_empty() {
+                // `json` is scoped to this iteration so its borrows of `input`
+                // end before the next read; this is what lets us avoid the
+                // previous lifetime-laundering `unsafe` block.
+                let mut json = Json::Null;
+                match json.parse_replace(input) {
                     Ok(()) => {
-                        let log = formatter.as_log(&json);
-                        writeln!(stdout, "{log}")?;
+                        out.clear();
+                        formatter.as_log(&json).write_fmt(&mut out)?;
+                        out.push('\n');
+                        stdout.write_all(out.as_bytes())?;
                     }
                     Err(e) => {
                         if strict {
                             if no_color {
-                                stdout.write_fmt(format_args!("{:?}\n", e))?;
+                                writeln!(stdout, "{:?}", e)?;
                             } else {
-                                stdout.write_fmt(format_args!("{:?}\n", e.red()))?;
+                                writeln!(stdout, "{:?}", e.red())?;
                             }
+                            stdout.flush()?;
                             return Ok(());
                         }
 
+                        // not strict: echo the line unchanged (already includes
+                        // its trailing newline from read_line)
                         if no_color {
-                            stdout.write_fmt(format_args!("{stripped}"))?;
+                            stdout.write_all(input.as_bytes())?;
                         } else {
-                            stdout.write_fmt(format_args!("{line}"))?;
+                            stdout.write_all(line.as_bytes())?;
                         }
                     }
                 }
@@ -200,6 +213,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 }
             }
         }
+
+        stdout.flush()?;
     }
 
     Ok(())

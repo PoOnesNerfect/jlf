@@ -4,6 +4,7 @@ use owo_colors::AnsiColors;
 pub use owo_colors::OwoColorize as Colorize;
 
 use super::*;
+use crate::json::PathToken;
 use crate::Json;
 
 // used for displaying the formatted log to output
@@ -127,8 +128,9 @@ fn test_cond<'a>(
                 if cond == Cond::Key {
                     return true;
                 } else {
-                    let rest = get_rest(json, used_fields);
-                    return test_cond2(cond, &rest);
+                    return with_excluded(used_fields, |excluded| {
+                        json.has_rest_content(excluded)
+                    });
                 }
             }
             Field::Names(names) => {
@@ -196,8 +198,7 @@ fn write_arg<'a>(
                 return write_arg2(f, format, json);
             }
             Field::Rest => {
-                let rest = get_rest(json, used_fields);
-                return write_arg2(f, format, &rest);
+                return write_rest(f, format, json, used_fields);
             }
             Field::Names(names) => {
                 for arg in names {
@@ -310,48 +311,105 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
     Ok(())
 }
 
-pub fn get_rest<'a>(json: &'a Json<'a>, used_fields: &SmallVec<[&'a Field; 5]>) -> Json<'a> {
-    let mut rest = json.clone();
+/// Builds the list of already-consumed field paths (as `PathToken` slices) from
+/// `used_fields`, so they can be skipped when rendering the rest object.
+///
+/// `write_arg` only ever pushes `Field::Names` entries into `used_fields`, so
+/// any other variant is ignored here.
+fn build_excluded<'a>(
+    used_fields: &SmallVec<[&'a Field; 5]>,
+) -> SmallVec<[SmallVec<[PathToken<'a>; 2]>; 5]> {
+    let mut paths = SmallVec::new();
 
     for field in used_fields.iter() {
         if let Field::Names(names) = field {
-            let pointer = field_to_pointer(names);
-
-            // TODO: SAFE?
-            let ref_mut = unsafe { &mut *(&mut rest as *mut Json<'_>) };
-            remove_field(ref_mut, &pointer);
-        } else {
-            // if whole or rest json were used,
-            // there are no fields in rest json.
-            rest = Json::Object(Default::default());
-            break;
+            let tokens = names
+                .iter()
+                .map(|t| match t {
+                    FieldType::Name(name) => PathToken::Name(name.as_str()),
+                    FieldType::Index(index) => PathToken::Index(*index),
+                })
+                .collect();
+            paths.push(tokens);
         }
     }
 
-    rest
+    paths
 }
 
-pub fn field_to_pointer(field: &FieldNames) -> String {
-    let mut ret = String::new();
+/// Builds the excluded-path slice view from `used_fields` and runs `f` with it.
+/// The owned `PathToken` storage lives for the duration of the call.
+fn with_excluded<R>(
+    used_fields: &SmallVec<[&Field; 5]>,
+    f: impl FnOnce(&[&[PathToken]]) -> R,
+) -> R {
+    let paths = build_excluded(used_fields);
+    let excluded: SmallVec<[&[PathToken]; 5]> = paths.iter().map(|p| p.as_slice()).collect();
+    f(&excluded)
+}
 
-    for f in field.iter() {
-        ret.push('/');
-        match f {
-            FieldType::Name(e) => ret.push_str(e),
-            FieldType::Index(e) => ret.push_str(&e.to_string()),
+/// Renders the rest object (`{..}`) as a filtered view of `json`, skipping the
+/// fields already consumed by earlier args. Mirrors the object/array branch of
+/// [`write_arg2`] but never clones the underlying `Json`.
+fn write_rest(
+    f: &mut impl fmt::Write,
+    format: &Format,
+    json: &Json,
+    used_fields: &SmallVec<[&Field; 5]>,
+) -> fmt::Result {
+    // Scalars can't have "rest" fields removed; fall back to the normal path.
+    if !(json.is_object() || json.is_array()) {
+        return write_arg2(f, format, json);
+    }
+
+    let Format {
+        style,
+        compact,
+        indent,
+        markup_styles,
+        ..
+    } = format;
+    let indent = *indent;
+
+    if indent > 0 {
+        write!(f, "{:indent$}", "", indent = indent)?;
+    }
+
+    let styles = style.map(|_| *markup_styles);
+    with_excluded(used_fields, |excluded| {
+        let view = RestView {
+            json,
+            excluded,
+            indent,
+            styles,
         };
-    }
 
-    ret
+        if *compact {
+            write!(f, "{}", view)
+        } else {
+            write!(f, "{:?}", view)
+        }
+    })
 }
 
-fn remove_field<'a>(val: &'a mut Json<'a>, pointer: &str) {
-    if pointer.is_empty() {
-        val.replace(Json::Null);
-        return;
-    }
+/// A `Display`/`Debug` wrapper that renders the rest object while skipping the
+/// `excluded` field paths. `Display` => compact, `Debug` => pretty.
+struct RestView<'a> {
+    json: &'a Json<'a>,
+    excluded: &'a [&'a [PathToken<'a>]],
+    indent: usize,
+    styles: Option<MarkupStyles>,
+}
 
-    if let Some(v) = val.pointer_mut(pointer) {
-        v.replace(Json::Null);
+impl fmt::Display for RestView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.json.fmt_rest(f, self.excluded, None, &self.styles)
+    }
+}
+
+impl fmt::Debug for RestView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.json
+            .fmt_rest(f, self.excluded, Some(self.indent), &self.styles)
     }
 }
