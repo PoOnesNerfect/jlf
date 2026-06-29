@@ -181,3 +181,32 @@ fn input_flag_reads_a_file_without_stdin() {
     std::fs::remove_file(&path).ok();
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "5\n");
 }
+
+/// Records used by the conditional tests: `body` is an empty string and
+/// `data.count` is 0 — both present but falsey.
+const COND: &str = "{\"message\":\"hi\",\"body\":\"\",\"data\":{\"count\":0}}\n";
+
+#[test]
+fn if_or_list_is_true_when_any_field_is_truthy() {
+    // `body` (empty) and `data.count` (0) are present-but-falsey and must not
+    // short-circuit the OR before reaching the truthy `message`.
+    let (out, _) = run(&["{#if body|data.count|message}yes{:else}no{/if}"], COND);
+    assert_eq!(out, "yes\n");
+}
+
+#[test]
+fn if_single_falsey_field_is_false() {
+    assert_eq!(run(&["{#if body}yes{:else}no{/if}"], COND).0, "no\n");
+    assert_eq!(run(&["{#if data.count}yes{:else}no{/if}"], COND).0, "no\n");
+}
+
+#[test]
+fn key_is_true_for_present_but_falsey_field() {
+    // `#key` checks existence, so an empty string still counts.
+    assert_eq!(run(&["{#key body}has{:else}missing{/key}"], COND).0, "has\n");
+}
+
+#[test]
+fn key_or_list_falls_through_to_first_present() {
+    assert_eq!(run(&["{#key msg}m{:else key message}message{/key}"], COND).0, "message\n");
+}

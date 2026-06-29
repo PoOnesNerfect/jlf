@@ -115,44 +115,39 @@ fn test_cond<'a>(
     }
 
     let (field_options, _) = &args[i];
-    let mut val = &Json::Null;
     for field in field_options {
-        val = json;
-
-        match field {
-            Field::Whole => return test_cond2(cond, json),
+        let matched = match field {
+            Field::Whole => test_cond2(cond, json),
             Field::Rest => {
-                // optimization
-                // for `key` conditional, `rest` always exists
-                // since it's the base object
+                // For `key`, `rest` is the base object and always exists. For
+                // `if`, it's truthy only when there are unused fields left.
                 if cond == Cond::Key {
-                    return true;
+                    true
                 } else {
-                    return with_excluded(used_fields, |excluded| {
-                        json.has_rest_content(excluded)
-                    });
+                    with_excluded(used_fields, |excluded| json.has_rest_content(excluded))
                 }
             }
             Field::Names(names) => {
+                let mut val = json;
                 for arg in names {
                     match arg {
-                        FieldType::Name(name) => {
-                            val = val.get(name);
-                        }
-                        FieldType::Index(index) => {
-                            val = val.get_i(*index);
-                        }
+                        FieldType::Name(name) => val = val.get(name),
+                        FieldType::Index(index) => val = val.get_i(*index),
                     }
                 }
+                test_cond2(cond, val)
             }
-        }
+        };
 
-        if !val.is_null() {
-            break;
+        // A fallback list (`a|b|c`) is satisfied as soon as one option is:
+        // `#key` matches the first option that exists, `#if` the first truthy
+        // one. Earlier present-but-falsey options must not short-circuit `#if`.
+        if matched {
+            return true;
         }
     }
 
-    test_cond2(cond, val)
+    false
 }
 
 fn test_cond2(cond: Cond, json: &Json<'_>) -> bool {
