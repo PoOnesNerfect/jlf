@@ -463,6 +463,16 @@ version = "0.3.0"
 dependencies = [
  "clap",
  "color-eyre",
+ "jlf-core",
+ "owo-colors",
+ "strip-ansi-escapes",
+]
+
+[[package]]
+name = "jlf-core"
+version = "0.3.0"
+dependencies = [
+ "color-eyre",
  "criterion",
  "etcetera",
  "owo-colors",
