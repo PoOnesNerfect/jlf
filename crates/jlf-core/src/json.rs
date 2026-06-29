@@ -52,7 +52,7 @@ impl<'a> Json<'a> {
         Ok(())
     }
 
-    pub fn get(&self, key: &str) -> &Json {
+    pub fn get(&self, key: &str) -> &Json<'_> {
         match self {
             Json::Object(obj) => obj.get(key),
             _ => &Json::Null,
@@ -66,7 +66,7 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_i(&self, index: usize) -> &Json {
+    pub fn get_i(&self, index: usize) -> &Json<'_> {
         match self {
             Json::Array(arr) => arr.get(index).unwrap_or(&Json::Null),
             _ => &Json::Null,
@@ -105,7 +105,7 @@ impl<'a> Json<'a> {
     /// `None` is returned.
     ///
     /// For more information read [RFC6901](https://tools.ietf.org/html/rfc6901).
-    pub fn pointer(&self, pointer: &str) -> Option<&Json> {
+    pub fn pointer(&self, pointer: &str) -> Option<&Json<'_>> {
         if pointer.is_empty() {
             return Some(self);
         }
@@ -323,13 +323,13 @@ impl<'a> Json<'a> {
 pub struct JsonObject<'a>(pub Vec<(&'a str, Json<'a>)>);
 
 impl<'a> JsonObject<'a> {
-    pub fn get(&self, key: &str) -> &Json { self.try_get(key).unwrap_or(&Json::Null) }
+    pub fn get(&self, key: &str) -> &Json<'_> { self.try_get(key).unwrap_or(&Json::Null) }
 
     pub fn get_mut<'b>(&'b mut self, key: &str) -> Option<&'b mut Json<'a>> {
         self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
-    pub fn try_get(&self, key: &str) -> Option<&Json> {
+    pub fn try_get(&self, key: &str) -> Option<&Json<'_>> {
         self.0.iter().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
@@ -357,9 +357,9 @@ impl<'a> JsonObject<'a> {
         self.0.iter().all(|(_, v)| v.is_null())
     }
 
-    pub fn iter(&self) -> std::slice::Iter<(&'a str, Json<'a>)> { self.0.iter() }
+    pub fn iter(&self) -> std::slice::Iter<'_, (&'a str, Json<'a>)> { self.0.iter() }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<(&'a str, Json<'a>)> { self.0.iter_mut() }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (&'a str, Json<'a>)> { self.0.iter_mut() }
 
     pub fn parse_insert(&mut self, key: &'a str, input: &'a str) -> Result<(), ParseError> {
         if let Some((old_key, value)) = self.0.iter_mut().find(|(k, _)| k == &key) {
@@ -616,7 +616,7 @@ where
 }
 
 impl Json<'_> {
-    pub fn indented(&self, indent: usize) -> StyledJson {
+    pub fn indented(&self, indent: usize) -> StyledJson<'_> {
         StyledJson {
             json: self,
             indent,
@@ -624,7 +624,7 @@ impl Json<'_> {
         }
     }
 
-    pub fn styled(&self, styles: MarkupStyles) -> StyledJson {
+    pub fn styled(&self, styles: MarkupStyles) -> StyledJson<'_> {
         StyledJson {
             json: self,
             indent: 0,
