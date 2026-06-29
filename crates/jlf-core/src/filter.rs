@@ -90,3 +90,106 @@ impl Filter {
 pub fn matches_all(filters: &[Filter], json: &Json) -> bool {
     filters.iter().all(|f| f.matches(json))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse_json;
+
+    fn matches(token: &str, json: &str) -> bool {
+        let f = Filter::parse(token).expect("token has an operator");
+        f.matches(&parse_json(json).unwrap())
+    }
+
+    #[test]
+    fn parse_returns_none_without_operator() {
+        assert!(Filter::parse("level").is_none());
+        assert!(Filter::parse("ts").is_none());
+    }
+
+    #[test]
+    fn parse_returns_none_with_empty_key() {
+        assert!(Filter::parse("=error").is_none());
+    }
+
+    #[test]
+    fn two_char_ops_win_over_one_char() {
+        // `!=`, `>=`, `<=`, `!~` must be detected before `=`, `>`, `<`, `~`.
+        let r = r#"{"level":"warn","n":5}"#;
+        assert!(matches("level!=error", r));
+        assert!(matches("n>=5", r));
+        assert!(matches("n<=5", r));
+        assert!(matches("level!~err", r));
+    }
+
+    #[test]
+    fn eq_and_ne_are_string_compares() {
+        let r = r#"{"level":"error"}"#;
+        assert!(matches("level=error", r));
+        assert!(!matches("level=warn", r));
+        assert!(matches("level!=warn", r));
+        assert!(!matches("level!=error", r));
+    }
+
+    #[test]
+    fn comma_value_is_or_within_a_field() {
+        let r = r#"{"level":"warn"}"#;
+        assert!(matches("level=error,warn", r));
+        assert!(!matches("level=error,fatal", r));
+        // !=/!~ require ALL listed values to differ
+        assert!(!matches("level!=error,warn", r));
+        assert!(matches("level!=error,fatal", r));
+    }
+
+    #[test]
+    fn numeric_comparisons() {
+        let r = r#"{"latency_ms":510}"#;
+        assert!(matches("latency_ms>500", r));
+        assert!(!matches("latency_ms<500", r));
+        assert!(matches("latency_ms>=510", r));
+        assert!(matches("latency_ms<=510", r));
+        // non-numeric field never satisfies an ordering op
+        assert!(!matches("latency_ms>x", r#"{"latency_ms":"abc"}"#));
+    }
+
+    #[test]
+    fn contains_and_not_contains() {
+        let r = r#"{"msg":"db timeout"}"#;
+        assert!(matches("msg~timeout", r));
+        assert!(!matches("msg~connect", r));
+        assert!(matches("msg!~connect", r));
+        assert!(!matches("msg!~timeout", r));
+    }
+
+    #[test]
+    fn nested_paths_resolve_by_dot() {
+        let r = r#"{"data":{"user":{"id":3175}}}"#;
+        assert!(matches("data.user.id=3175", r));
+        assert!(matches("data.user.id>3000", r));
+    }
+
+    #[test]
+    fn missing_field_only_matches_negations() {
+        let r = r#"{"level":"error"}"#;
+        assert!(matches("absent!=x", r));
+        assert!(matches("absent!~x", r));
+        assert!(!matches("absent=x", r));
+        assert!(!matches("absent~x", r));
+        assert!(!matches("absent>1", r));
+    }
+
+    #[test]
+    fn matches_all_is_and_across_filters() {
+        let json = parse_json(r#"{"level":"error","user":"alice"}"#).unwrap();
+        let fs = [
+            Filter::parse("level=error").unwrap(),
+            Filter::parse("user=alice").unwrap(),
+        ];
+        assert!(matches_all(&fs, &json));
+        let fs2 = [
+            Filter::parse("level=error").unwrap(),
+            Filter::parse("user=bob").unwrap(),
+        ];
+        assert!(!matches_all(&fs2, &json));
+    }
+}
