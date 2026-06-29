@@ -39,9 +39,17 @@ pub struct Args {
     #[arg(short = 's', long = "strict", default_value_t = false)]
     strict: bool,
 
-    /// Take only the first N lines.
+    /// Take only the first N emitted records.
     #[arg(short = 't', long = "take")]
     take: Option<usize>,
+
+    /// Input file(s); repeatable. Defaults to stdin.
+    #[arg(short = 'i', long = "input", value_name = "FILE")]
+    input: Vec<String>,
+
+    /// Fields/columns to show (comma-separated), e.g. -f ts,level,msg.
+    #[arg(short = 'f', long = "fields", value_name = "FIELDS", value_delimiter = ',')]
+    fields: Vec<String>,
 
     /// Redact fields by name; comma-separated globs (e.g. password,token,*.email).
     #[arg(short = 'r', long = "redact", value_name = "FIELDS", value_delimiter = ',')]
@@ -79,25 +87,60 @@ enum Command {
     },
     /// Count lines, or a frequency breakdown of a field's values.
     Count {
+        #[command(flatten)]
+        out: OutFmt,
         /// Optional field to break down by; bare args without `{}` or operators.
         /// Tokens with operators are filters.
         args: Vec<String>,
     },
     /// Numeric summary of a field: count/min/max/mean/p50/p90/p99.
     Stats {
+        #[command(flatten)]
+        out: OutFmt,
         /// The numeric field, optional `by <group>`, and key=value filters.
         args: Vec<String>,
     },
     /// Most frequent values of a field (top N, default 10).
     Top {
+        #[command(flatten)]
+        out: OutFmt,
         /// Field, optional N, and key=value filters.
         args: Vec<String>,
     },
     /// Number of distinct values of a field.
     Uniq {
+        #[command(flatten)]
+        out: OutFmt,
         /// Field and key=value filters.
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, clap::Args)]
+struct OutFmt {
+    /// Output summary as CSV.
+    #[arg(long)]
+    csv: bool,
+    /// Output summary as TSV.
+    #[arg(long)]
+    tsv: bool,
+    /// Output summary as a Markdown table.
+    #[arg(long)]
+    md: bool,
+}
+
+impl OutFmt {
+    fn mode(&self) -> Option<Sep> {
+        if self.csv {
+            Some(Sep::Csv)
+        } else if self.tsv {
+            Some(Sep::Tsv)
+        } else if self.md {
+            Some(Sep::Md)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -118,6 +161,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
         compact,
         strict,
         take,
+        input,
+        fields: fields_flag,
         redact,
         csv,
         tsv,
@@ -129,7 +174,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     // is a filter, a comma-list of plain names is the field/column list.
     let mut format = None;
     let mut filters = Vec::new();
-    let mut fields: Vec<String> = Vec::new();
+    let mut fields: Vec<String> = fields_flag;
     for a in args {
         if a.contains('{') {
             format = Some(a);
@@ -143,7 +188,12 @@ pub fn run() -> Result<(), color_eyre::Report> {
     // Export presets use a dedicated, escaping writer rather than the template.
     if csv || tsv || md {
         let mode = if md { Sep::Md } else if tsv { Sep::Tsv } else { Sep::Csv };
-        return run_export(fields, filters, mode);
+        return run_export(fields, filters, mode, &input);
+    }
+
+    // A bare -f/--fields with no template builds a simple "{a} {b}" template.
+    if format.is_none() && !fields.is_empty() {
+        format = Some(fields.iter().map(|f| format!("{{{f}}}")).collect::<Vec<_>>().join(" "));
     }
 
     let ConfigFile {
@@ -185,112 +235,143 @@ pub fn run() -> Result<(), color_eyre::Report> {
                     println!("{:width$} = {v}", k.bold(), width = width);
                 }
             }
-            Command::Count { args } => return run_count(args),
-            Command::Stats { args } => return run_stats(args),
-            Command::Top { args } => return run_top(args),
-            Command::Uniq { args } => return run_uniq(args),
+            Command::Count { args, out } => return run_count(args, out.mode(), &input),
+            Command::Stats { args, out } => return run_stats(args, out.mode(), &input),
+            Command::Top { args, out } => return run_top(args, out.mode(), &input),
+            Command::Uniq { args, out: _ } => return run_uniq(args, &input),
         }
 
         return Ok(());
     }
 
-    let stdin = io::stdin();
-    if !stdin.is_terminal() {
-        let stdout = io::stdout();
-        let no_color = match color {
-            ColorWhen::Always => false,
-            ColorWhen::Never => true,
-            ColorWhen::Auto => no_color || !stdout.is_terminal(),
+    let stdout = io::stdout();
+    let no_color = match color {
+        ColorWhen::Always => false,
+        ColorWhen::Never => true,
+        ColorWhen::Auto => no_color || !stdout.is_terminal(),
+    };
+
+    // Buffer stdout: the formatter emits many small writes per record, and a
+    // bare StdoutLock is line-buffered (a flush per '\n'). A BufWriter
+    // collapses those into a few large writes.
+    let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
+
+    let variables = get_variables(config_variables, variables.variables);
+    let expanded = expanded_format(&format, &variables);
+    let formatter = Formatter::new(&expanded, no_color, compact)?;
+
+    let mut buf = open_input(&input)?;
+
+    // input line read from stdin (allocation reused across iterations)
+    let mut line = String::new();
+
+    // formatted output for one record (allocation reused across iterations)
+    let mut out = String::new();
+
+    // how many records have we emitted?
+    let mut taken = 0;
+
+    while buf.read_line(&mut line)? != 0 {
+        // Only run the (allocating) ANSI strip when the line actually
+        // contains an escape byte. JSON logs almost never do, so this skips
+        // a per-line allocation + full-line scan on the common path.
+        let stripped;
+        let input: &str = if line.as_bytes().contains(&0x1b) {
+            stripped = strip_ansi_escapes::strip_str(&line);
+            &stripped
+        } else {
+            &line
         };
 
-        // Buffer stdout: the formatter emits many small writes per record, and a
-        // bare StdoutLock is line-buffered (a flush per '\n'). A BufWriter
-        // collapses those into a few large writes.
-        let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
-
-        let variables = get_variables(config_variables, variables.variables);
-        let expanded = expanded_format(&format, &variables);
-        let formatter = Formatter::new(&expanded, no_color, compact)?;
-
-        let mut buf = stdin.lock();
-
-        // input line read from stdin (allocation reused across iterations)
-        let mut line = String::new();
-
-        // formatted output for one record (allocation reused across iterations)
-        let mut out = String::new();
-
-        // how many lines have we taken?
-        let mut taken = 0;
-
-        while buf.read_line(&mut line)? != 0 {
-            // Only run the (allocating) ANSI strip when the line actually
-            // contains an escape byte. JSON logs almost never do, so this skips
-            // a per-line allocation + full-line scan on the common path.
-            let stripped;
-            let input: &str = if line.as_bytes().contains(&0x1b) {
-                stripped = strip_ansi_escapes::strip_str(&line);
-                &stripped
-            } else {
-                &line
-            };
-
-            if !input.trim().is_empty() {
-                // `json` is scoped to this iteration so its borrows of `input`
-                // end before the next read; this is what lets us avoid the
-                // previous lifetime-laundering `unsafe` block.
-                let mut json = Json::Null;
-                match json.parse_replace(input) {
-                    Ok(()) => {
-                        if !filters.is_empty() && !jlf_core::matches_all(&filters, &json) {
-                            line.clear();
-                            continue;
-                        }
-                        if !redact.is_empty() {
-                            jlf_core::redact(&mut json, &redact);
-                        }
-                        out.clear();
-                        formatter.as_log(&json).write_fmt(&mut out)?;
-                        out.push('\n');
-                        stdout.write_all(out.as_bytes())?;
+        if !input.trim().is_empty() {
+            // `json` is scoped to this iteration so its borrows of `input`
+            // end before the next read; this is what lets us avoid the
+            // previous lifetime-laundering `unsafe` block.
+            let mut json = Json::Null;
+            match json.parse_replace(input) {
+                Ok(()) => {
+                    if !filters.is_empty() && !jlf_core::matches_all(&filters, &json) {
+                        line.clear();
+                        continue;
                     }
-                    Err(e) => {
-                        if strict {
-                            if no_color {
-                                eprintln!("{:?}", e);
-                            } else {
-                                eprintln!("{:?}", e.red());
-                            }
-                            stdout.flush()?;
-                            std::process::exit(1);
-                        }
-
-                        // not strict: echo the line unchanged (already includes
-                        // its trailing newline from read_line)
+                    if !redact.is_empty() {
+                        jlf_core::redact(&mut json, &redact);
+                    }
+                    out.clear();
+                    formatter.as_log(&json).write_fmt(&mut out)?;
+                    out.push('\n');
+                    stdout.write_all(out.as_bytes())?;
+                }
+                Err(e) => {
+                    if strict {
                         if no_color {
-                            stdout.write_all(input.as_bytes())?;
+                            eprintln!("{:?}", e);
                         } else {
-                            stdout.write_all(line.as_bytes())?;
+                            eprintln!("{:?}", e.red());
                         }
+                        stdout.flush()?;
+                        std::process::exit(1);
+                    }
+
+                    // not strict: echo the line unchanged (already includes
+                    // its trailing newline from read_line)
+                    if no_color {
+                        stdout.write_all(input.as_bytes())?;
+                    } else {
+                        stdout.write_all(line.as_bytes())?;
                     }
                 }
             }
 
-            line.clear();
-
-            // take only N lines if specified
+            // take only N emitted records if specified
             if let Some(take) = take.as_ref() {
                 taken += 1;
                 if taken >= *take {
+                    line.clear();
                     break;
                 }
             }
         }
 
-        stdout.flush()?;
+        line.clear();
     }
 
+    stdout.flush()?;
+
     Ok(())
+}
+
+/// Open the input: stdin when no files are given, otherwise the files chained in
+/// order as one stream.
+fn open_input(files: &[String]) -> io::Result<Box<dyn BufRead>> {
+    if files.is_empty() {
+        Ok(Box::new(io::BufReader::new(io::stdin())))
+    } else {
+        let mut readers = Vec::with_capacity(files.len());
+        for f in files {
+            readers.push(std::fs::File::open(f)?);
+        }
+        Ok(Box::new(io::BufReader::new(MultiReader { readers, pos: 0 })))
+    }
+}
+
+/// Reads a list of files back-to-back as a single contiguous stream.
+struct MultiReader {
+    readers: Vec<std::fs::File>,
+    pos: usize,
+}
+
+impl io::Read for MultiReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while self.pos < self.readers.len() {
+            let n = self.readers[self.pos].read(buf)?;
+            if n != 0 {
+                return Ok(n);
+            }
+            self.pos += 1;
+        }
+        Ok(0)
+    }
 }
 
 fn get_variables(
@@ -348,7 +429,7 @@ fn get_variables(
 }
 
 /// `count` subcommand: count matching lines, or a field's value frequencies.
-fn run_count(args: Vec<String>) -> Result<(), color_eyre::Report> {
+fn run_count(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut filters = Vec::new();
     for a in args {
@@ -359,7 +440,7 @@ fn run_count(args: Vec<String>) -> Result<(), color_eyre::Report> {
         }
     }
 
-    let mut buf = io::stdin().lock();
+    let mut buf = open_input(input)?;
     let mut line = String::new();
     let mut total: u64 = 0;
     let mut by: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -372,14 +453,7 @@ fn run_count(args: Vec<String>) -> Result<(), color_eyre::Report> {
             {
                 total += 1;
                 if let Some(path) = &field {
-                    let mut cur = &json;
-                    for seg in path {
-                        cur = match seg.parse::<usize>() {
-                            Ok(i) => cur.get_i(i),
-                            Err(_) => cur.get(seg),
-                        };
-                    }
-                    let key = cur.as_str().or_else(|| cur.as_value()).unwrap_or("∅");
+                    let key = scalar(resolve(&json, path)).unwrap_or("∅");
                     *by.entry(key.to_owned()).or_insert(0) += 1;
                 }
             }
@@ -391,13 +465,47 @@ fn run_count(args: Vec<String>) -> Result<(), color_eyre::Report> {
     if field.is_some() {
         let mut rows: Vec<_> = by.into_iter().collect();
         rows.sort_by_key(|r| std::cmp::Reverse(r.1));
-        writeln!(stdout, "{:>10}  value", "count")?;
-        for (k, n) in rows {
-            writeln!(stdout, "{n:>10}  {k}")?;
+        match fmt {
+            Some(m) => {
+                write_table(&mut stdout, &["count", "value"], rows.iter().map(|(k, n)| vec![n.to_string(), k.clone()]), m)?;
+            }
+            None => {
+                writeln!(stdout, "{:>10}  value", "count")?;
+                for (k, n) in &rows {
+                    writeln!(stdout, "{n:>10}  {k}")?;
+                }
+                writeln!(stdout, "{total:>10}  total")?;
+            }
         }
+    } else {
+        writeln!(stdout, "{total}")?;
     }
-    writeln!(stdout, "{total:>10}  total")?;
     stdout.flush()?;
+    Ok(())
+}
+
+/// Render rows in CSV/TSV/MD with a header.
+fn write_table(
+    w: &mut impl Write,
+    head: &[&str],
+    rows: impl Iterator<Item = Vec<String>>,
+    mode: Sep,
+) -> io::Result<()> {
+    let join = |cells: &[String]| -> String {
+        match mode {
+            Sep::Csv => cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join(","),
+            Sep::Tsv => cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join("\t"),
+            Sep::Md => format!("| {} |", cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join(" | ")),
+        }
+    };
+    let head: Vec<String> = head.iter().map(|s| s.to_string()).collect();
+    writeln!(w, "{}", join(&head))?;
+    if matches!(mode, Sep::Md) {
+        writeln!(w, "| {} |", head.iter().map(|_| "---").collect::<Vec<_>>().join(" | "))?;
+    }
+    for r in rows {
+        writeln!(w, "{}", join(&r))?;
+    }
     Ok(())
 }
 
@@ -412,6 +520,12 @@ fn resolve<'a>(json: &'a Json<'a>, path: &[String]) -> &'a Json<'a> {
     cur
 }
 
+/// A JSON scalar (string, number, bool) rendered as a borrowed `&str`, if it is
+/// one. Objects, arrays and null yield `None`.
+fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
+    json.as_str().or_else(|| json.as_value())
+}
+
 fn pct(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
@@ -421,7 +535,7 @@ fn pct(sorted: &[f64], q: f64) -> f64 {
 }
 
 /// `stats <field> [by <group>]`: numeric summary, optionally grouped.
-fn run_stats(args: Vec<String>) -> Result<(), color_eyre::Report> {
+fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut group: Option<Vec<String>> = None;
     let mut filters = Vec::new();
@@ -442,7 +556,7 @@ fn run_stats(args: Vec<String>) -> Result<(), color_eyre::Report> {
         std::process::exit(2);
     };
 
-    let mut buf = io::stdin().lock();
+    let mut buf = open_input(input)?;
     let mut line = String::new();
     let mut groups: std::collections::HashMap<String, Vec<f64>> = std::collections::HashMap::new();
     let mut skipped: u64 = 0;
@@ -453,11 +567,11 @@ fn run_stats(args: Vec<String>) -> Result<(), color_eyre::Report> {
                 && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
             {
                 let v = resolve(&json, &field);
-                match v.as_value().or_else(|| v.as_str()).and_then(|s| s.parse::<f64>().ok()) {
+                match scalar(v).and_then(|s| s.parse::<f64>().ok()) {
                     Some(n) => {
                         let key = group
                             .as_ref()
-                            .map(|g| resolve(&json, g).as_str().or_else(|| resolve(&json, g).as_value()).unwrap_or("∅").to_owned())
+                            .map(|g| scalar(resolve(&json, g)).unwrap_or("∅").to_owned())
                             .unwrap_or_default();
                         groups.entry(key).or_default().push(n);
                     }
@@ -471,18 +585,29 @@ fn run_stats(args: Vec<String>) -> Result<(), color_eyre::Report> {
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let mut rows: Vec<_> = groups.into_iter().collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.1.len()));
-    if group.is_some() {
-        writeln!(stdout, "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10}", "group", "count", "min", "mean", "p50", "p99")?;
-    }
-    for (k, mut vs) in rows {
+    let summarize = |vs: &mut Vec<f64>| {
         vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let n = vs.len();
         let sum: f64 = vs.iter().sum();
-        let (min, max, mean) = (vs[0], vs[n - 1], sum / n as f64);
+        (n, vs[0], vs[n - 1], sum / n as f64, pct(vs, 0.5), pct(vs, 0.9), pct(vs, 0.99))
+    };
+    if let Some(m) = fmt {
+        let head: &[&str] = &["group", "count", "min", "mean", "p50", "p90", "p99"];
+        write_table(&mut stdout, head, rows.iter_mut().map(|(k, vs)| {
+            let (n, min, _mx, mean, p50, p90, p99) = summarize(vs);
+            vec![k.clone(), n.to_string(), fmt2(min), fmt2(mean), fmt2(p50), fmt2(p90), fmt2(p99)]
+        }), m)?;
+    } else {
         if group.is_some() {
-            writeln!(stdout, "{k:<24} {n:>8} {min:>10.2} {mean:>10.2} {:>10.2} {:>10.2}", pct(&vs, 0.5), pct(&vs, 0.99))?;
-        } else {
-            writeln!(stdout, "count {n}\nmin   {min:.2}\nmax   {max:.2}\nmean  {mean:.2}\np50   {:.2}\np90   {:.2}\np99   {:.2}", pct(&vs, 0.5), pct(&vs, 0.9), pct(&vs, 0.99))?;
+            writeln!(stdout, "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10}", "group", "count", "min", "mean", "p50", "p99")?;
+        }
+        for (k, mut vs) in rows {
+            let (n, min, max, mean, p50, p90, p99) = summarize(&mut vs);
+            if group.is_some() {
+                writeln!(stdout, "{k:<24} {n:>8} {min:>10.2} {mean:>10.2} {p50:>10.2} {p99:>10.2}")?;
+            } else {
+                writeln!(stdout, "count {n}\nmin   {min:.2}\nmax   {max:.2}\nmean  {mean:.2}\np50   {p50:.2}\np90   {p90:.2}\np99   {p99:.2}")?;
+            }
         }
     }
     if skipped > 0 {
@@ -492,11 +617,15 @@ fn run_stats(args: Vec<String>) -> Result<(), color_eyre::Report> {
     Ok(())
 }
 
+fn fmt2(v: f64) -> String {
+    format!("{v:.2}")
+}
+
 /// Read field-frequency counts plus total, applying filters; field path + filters
 /// come from `args`, with an optional trailing integer N for `top`.
 type FieldCounts = (Vec<(String, u64)>, u64, usize);
 
-fn collect_field(args: Vec<String>) -> Result<FieldCounts, color_eyre::Report> {
+fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut filters = Vec::new();
     let mut n = 10usize;
@@ -509,7 +638,7 @@ fn collect_field(args: Vec<String>) -> Result<FieldCounts, color_eyre::Report> {
             field = Some(a.split('.').map(str::to_owned).collect());
         }
     }
-    let mut buf = io::stdin().lock();
+    let mut buf = open_input(input)?;
     let mut line = String::new();
     let mut total = 0u64;
     let mut by: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -522,7 +651,7 @@ fn collect_field(args: Vec<String>) -> Result<FieldCounts, color_eyre::Report> {
                 total += 1;
                 if let Some(p) = &field {
                     let v = resolve(&json, p);
-                    let k = v.as_str().or_else(|| v.as_value()).unwrap_or("∅");
+                    let k = scalar(v).unwrap_or("∅");
                     *by.entry(k.to_owned()).or_insert(0) += 1;
                 }
             }
@@ -532,22 +661,29 @@ fn collect_field(args: Vec<String>) -> Result<FieldCounts, color_eyre::Report> {
     Ok((by.into_iter().collect(), total, n))
 }
 
-fn run_top(args: Vec<String>) -> Result<(), color_eyre::Report> {
-    let (mut rows, total, n) = collect_field(args)?;
+fn run_top(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
+    let (mut rows, total, n) = collect_field(args, input)?;
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
     let mut out = io::BufWriter::new(io::stdout().lock());
-    writeln!(out, "{:>10}  {:>6}  value", "count", "share")?;
-    for (k, c) in rows.iter().take(n) {
-        let pct = if total > 0 { *c as f64 / total as f64 * 100.0 } else { 0.0 };
-        writeln!(out, "{c:>10}  {pct:>5.1}%  {k}")?;
+    if let Some(m) = fmt {
+        write_table(&mut out, &["count", "share", "value"], rows.iter().take(n).map(|(k, c)| {
+            let p = if total > 0 { *c as f64 / total as f64 * 100.0 } else { 0.0 };
+            vec![c.to_string(), format!("{p:.1}%"), k.clone()]
+        }), m)?;
+    } else {
+        writeln!(out, "{:>10}  {:>6}  value", "count", "share")?;
+        for (k, c) in rows.iter().take(n) {
+            let p = if total > 0 { *c as f64 / total as f64 * 100.0 } else { 0.0 };
+            writeln!(out, "{c:>10}  {p:>5.1}%  {k}")?;
+        }
+        writeln!(out, "top {} of {} distinct ({total} values)", n.min(rows.len()), rows.len())?;
     }
-    writeln!(out, "top {} of {} distinct ({total} values)", n.min(rows.len()), rows.len())?;
     out.flush()?;
     Ok(())
 }
 
-fn run_uniq(args: Vec<String>) -> Result<(), color_eyre::Report> {
-    let (rows, total, _) = collect_field(args)?;
+fn run_uniq(args: Vec<String>, input: &[String]) -> Result<(), color_eyre::Report> {
+    let (rows, total, _) = collect_field(args, input)?;
     println!("{} distinct (of {total} values)", rows.len());
     Ok(())
 }
@@ -560,7 +696,7 @@ enum Sep {
 }
 
 /// CSV/TSV/Markdown export with per-cell escaping. Columns from `fields`.
-fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep) -> Result<(), color_eyre::Report> {
+fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep, input: &[String]) -> Result<(), color_eyre::Report> {
     let cols: Vec<Vec<String>> = fields.iter().map(|f| f.split('.').map(str::to_owned).collect()).collect();
     let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
 
@@ -574,7 +710,7 @@ fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep) ->
         Sep::Csv => writeln!(stdout, "{}", fields.iter().map(|f| esc(f, mode)).collect::<Vec<_>>().join(","))?,
     }
 
-    let mut buf = io::stdin().lock();
+    let mut buf = open_input(input)?;
     let mut line = String::new();
     let mut row = String::new();
     while buf.read_line(&mut line)? != 0 {
@@ -593,7 +729,7 @@ fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep) ->
                         });
                     }
                     let v = resolve(&json, p);
-                    row.push_str(&esc(v.as_str().or_else(|| v.as_value()).unwrap_or(""), mode));
+                    row.push_str(&esc(scalar(v).unwrap_or(""), mode));
                 }
                 match mode {
                     Sep::Md => writeln!(stdout, "| {row} |")?,
