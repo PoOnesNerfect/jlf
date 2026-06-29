@@ -127,6 +127,7 @@ cargo install --path . --locked
   - [Manual Installation](#manual-installation)
 - [Table of Contents](#table-of-contents)
 - [CLI Options](#cli-options)
+- [Input & Fields](#input--fields)
 - [Filtering](#filtering)
 - [Summaries](#summaries)
 - [Extensions](#extensions)
@@ -179,17 +180,49 @@ Arguments:
 
 Options:
   -v, --variable <KEY=VALUE>  Pass variable as KEY=VALUE format; can be passed multiple times
-      --color <COLOR>         Color output: auto (default), always, or never [possible values: auto, always, never]
+      --color <COLOR>         Color output: auto (default), always, or never [default: auto] [possible values: auto, always, never]
   -n, --no-color              Disable color output (shortcut for --color=never)
   -c, --compact               Display log in a compact format
   -s, --strict                On invalid JSON, report and exit non-zero instead of passing the line through
-  -t, --take <TAKE>           Take only the first N lines
+  -t, --take <TAKE>           Take only the first N emitted records
+  -i, --input <FILE>          Input file(s); repeatable. Defaults to stdin
+  -f, --fields <FIELDS>       Fields/columns to show (comma-separated), e.g. -f ts,level,msg
   -r, --redact <FIELDS>       Redact fields by name; comma-separated globs (e.g. password,token,*.email)
       --csv                   Output as CSV
       --tsv                   Output as TSV
       --md                    Output as a Markdown table
   -h, --help                  Print help
   -V, --version               Print version
+```
+
+## Input & Fields
+
+By default **jlf** reads from stdin. Pass one or more files with `-i`/`--input`
+(repeatable) to read them as a single stream — handy when you don't want a pipe:
+
+```sh
+jlf -i app.log                       # read a file instead of stdin
+jlf -i app.log -i app.log.1 count    # concatenate files, then summarize
+```
+
+`-f`/`--fields` is a shortcut for projecting a few fields without writing a
+template: `-f a,b,c` is equivalent to the template `'{a} {b} {c}'`.
+
+```sh
+$ jlf -i examples/sample.ndjson -f ts,level,user
+10:00:01 info alice
+10:00:02 error bob
+10:00:03 warn alice
+10:00:04 info carol
+10:00:05 error alice
+```
+
+`-t`/`--take N` stops after the first N emitted records (after filtering):
+
+```sh
+$ jlf -i examples/sample.ndjson -t 2 -f ts,level
+10:00:01 info
+10:00:02 error
 ```
 
 ## Filtering
@@ -673,7 +706,6 @@ cat ./examples/dummy_logs | jlf -v output="{message}: {&data}"
 # User logged in successfully: { ... }
 ```
 
-````
 As you can see, it's extremely easy to update the format either partially or wholly by replacing the default variables.
 
 #### Storing Variables
@@ -700,7 +732,7 @@ timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
 level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
 message   = "{message|msg|body|fields.message}"
 data      = "{..:json}"
-````
+```
 
 ## Config File
 
