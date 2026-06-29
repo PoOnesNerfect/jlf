@@ -8,13 +8,25 @@
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [mit-url]: https://github.com/PoOnesNerfect/jlf/blob/main/LICENSE
 
-**jlf** is a CLI that converts hard-to-read JSON logs into colorful human-readable logs.
+**jlf** is a small, fast CLI for working with structured (JSON) logs: it reads
+JSON/NDJSON from a pipe and pretty-prints, filters, redacts, summarizes, and
+converts it — all streaming, single-pass, no backend.
 
-Simply pipe your JSON logs with `jlf`.
+Pipe your JSON logs through `jlf`:
 
 ```sh
 cat ./examples/dummy_logs | jlf
 ```
+
+What it does:
+
+- **View** — turn JSON logs into colored, level-aware, human-readable output.
+- **Filter** — keep matching records with `key=value` (`jlf level=error`).
+- **Summarize** — `count`, `stats`, `top`, `uniq` over a stream, no backend.
+- **Redact** — mask secrets/PII by field before sharing.
+- **Convert** — export to CSV/TSV/Markdown.
+- **Customize** — a small template DSL (fields, fallbacks, styles, conditionals,
+  variables); extend with `jlf-<name>` plugins.
 
 ### Basic Example
 
@@ -23,6 +35,65 @@ cat ./examples/dummy_logs | jlf
 **right**: `cat ./examples/dummy_logs | jlf`
 
 <img width="1631" alt="Screenshot 2025-03-03 at 9 45 38 PM" src="https://github.com/user-attachments/assets/95b027e1-d005-48d7-a3c9-72b3b1be51b8" />
+
+### At a glance
+
+All examples below use this sample (`examples/sample.ndjson`):
+
+```json
+{"ts":"10:00:01","level":"info","msg":"login","user":"alice","latency_ms":42,"token":"abc123"}
+{"ts":"10:00:02","level":"error","msg":"db timeout","user":"bob","latency_ms":510,"token":"xyz"}
+{"ts":"10:00:03","level":"warn","msg":"retry","user":"alice","latency_ms":88}
+{"ts":"10:00:04","level":"info","msg":"login","user":"carol","latency_ms":33,"token":"q9"}
+{"ts":"10:00:05","level":"error","msg":"db timeout","user":"alice","latency_ms":620}
+```
+
+```sh
+# view, compact: standard line + the rest as JSON
+$ jlf -c < examples/sample.ndjson
+info login {"ts":"10:00:01","user":"alice","latency_ms":42,"token":"abc123"}
+error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"xyz"}
+...
+
+# filter to errors, custom template
+$ jlf level=error '{ts} {msg} ({user})'
+10:00:02 db timeout (bob)
+10:00:05 db timeout (alice)
+
+# count by level
+$ jlf count level
+     count  value
+         2  info
+         2  error
+         1  warn
+         5  total
+
+# latency percentiles by level
+$ jlf stats latency_ms by level
+group                       count        min       mean        p50        p99
+info                            2      33.00      37.50      42.00      42.00
+error                           2     510.00     565.00     620.00     620.00
+
+# export to CSV
+$ jlf --csv ts,level,user
+ts,level,user
+10:00:01,info,alice
+10:00:02,error,bob
+...
+
+# redact a secret field
+$ jlf -c -r token
+info login {"ts":"10:00:01","user":"alice","latency_ms":42,"token":"***"}
+...
+
+# top users
+$ jlf top user
+     count   share  value
+         3   60.0%  alice
+         1   20.0%  carol
+         1   20.0%  bob
+top 3 of 3 distinct (5 values)
+```
 
 ## Installation
 
@@ -56,9 +127,14 @@ cargo install --path . --locked
   - [Manual Installation](#manual-installation)
 - [Table of Contents](#table-of-contents)
 - [CLI Options](#cli-options)
+- [Filtering](#filtering)
+- [Summaries](#summaries)
+- [Extensions](#extensions)
+- [Export](#export)
+- [Redaction](#redaction)
 - [Usage](#usage)
   - [Compact Format](#compact-format)
-  - [No Color](#no-color)
+  - [Color](#color)
   - [Strict](#strict)
 - [Custom Formatting](#custom-formatting)
   - [Accessing Fields](#accessing-fields)
@@ -87,24 +163,185 @@ $ jlf -h
 
 CLI for converting JSON logs to human-readable format
 
-Usage: jlf [OPTIONS] [FORMAT] [COMMAND]
+Usage: jlf [OPTIONS] [ARGS]... [COMMAND]
 
 Commands:
   expand  Print variable with its inner variables expanded. If no variable is specified, the default format string will be used
   list    List all variables
+  count   Count lines, or a frequency breakdown of a field's values
+  stats   Numeric summary of a field: count/min/max/mean/p50/p90/p99
+  top     Most frequent values of a field (top N, default 10)
+  uniq    Number of distinct values of a field
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [FORMAT]  Formatter to use to format json log. [default: {&output}]
+  [ARGS]...  Format template, filters (key=value), and fields. [default: {&output}]
 
 Options:
   -v, --variable <KEY=VALUE>  Pass variable as KEY=VALUE format; can be passed multiple times
-  -n, --no-color              Disable color output. If output is not a terminal, this is always true
+      --color <COLOR>         Color output: auto (default), always, or never [possible values: auto, always, never]
+  -n, --no-color              Disable color output (shortcut for --color=never)
   -c, --compact               Display log in a compact format
-  -s, --strict                If log line is not valid JSON, then report it and exit, instead of printing the line as is
+  -s, --strict                On invalid JSON, report and exit non-zero instead of passing the line through
   -t, --take <TAKE>           Take only the first N lines
+  -r, --redact <FIELDS>       Redact fields by name; comma-separated globs (e.g. password,token,*.email)
+      --csv                   Output as CSV
+      --tsv                   Output as TSV
+      --md                    Output as a Markdown table
   -h, --help                  Print help
   -V, --version               Print version
+```
+
+## Filtering
+
+Pass `key=value` arguments to keep only matching records. Operators: `=` `!=`
+`>` `<` `>=` `<=`, `~` (contains), `!~` (not contains). Multiple filters AND
+together; a comma-separated value is OR; nested fields use `.`.
+
+```sh
+jlf level=error                 # only errors
+jlf level=error,warn status=500 # (error OR warn) AND status 500
+jlf latency_ms>500              # numeric comparison (quote in a shell: 'latency_ms>500')
+jlf message~timeout             # substring match
+```
+
+Worked example — keep only ERROR lines and show fields:
+
+```sh
+$ jlf level=error '{ts} {msg} ({user})' < examples/sample.ndjson
+10:00:02 db timeout (bob)
+10:00:05 db timeout (alice)
+
+# numeric comparison — slow requests (quote filters with > or < for the shell)
+$ jlf 'latency_ms>100' '{ts} {user} {latency_ms}ms' < examples/sample.ndjson
+10:00:02 bob 510ms
+10:00:05 alice 620ms
+
+# OR within a field, AND across filters
+$ jlf -c level=error,warn user=alice < examples/sample.ndjson
+warn retry {"ts":"10:00:03","user":"alice","latency_ms":88}
+error db timeout {"ts":"10:00:05","user":"alice","latency_ms":620}
+
+# substring (~), and negation (!=)
+$ jlf -c 'msg~timeout' < examples/sample.ndjson   # only "db timeout" lines
+$ jlf -c user!=alice    < examples/sample.ndjson  # exclude alice
+```
+
+## Summaries
+
+Quick analytics over a stream, single pass, no backend:
+
+```sh
+jlf count                # number of (matching) lines
+jlf count level          # breakdown by level, most frequent first
+jlf top user_id 5        # 5 most frequent values + share
+jlf uniq session_id      # distinct count
+jlf stats latency_ms     # count/min/max/mean/p50/p90/p99
+jlf stats latency_ms by endpoint   # grouped summary
+jlf count type level=error         # filters apply to summaries too
+```
+
+Worked examples (using `examples/sample.ndjson`):
+
+```sh
+$ jlf count level
+     count  value
+         2  info
+         2  error
+         1  warn
+         5  total
+
+$ jlf top user
+     count   share  value
+         3   60.0%  alice
+         1   20.0%  carol
+         1   20.0%  bob
+top 3 of 3 distinct (5 values)
+
+$ jlf uniq user
+3 distinct (of 5 values)
+
+$ jlf stats latency_ms
+count 5
+min   33.00
+max   620.00
+mean  258.60
+p50   88.00
+p90   620.00
+p99   620.00
+
+$ jlf stats latency_ms by level
+group                       count        min       mean        p50        p99
+info                            2      33.00      37.50      42.00      42.00
+error                           2     510.00     565.00     620.00     620.00
+warn                            1      88.00      88.00      88.00      88.00
+
+# filters apply to summaries too — top users among errors
+$ jlf top user level=error
+     count   share  value
+         1   50.0%  bob
+         1   50.0%  alice
+top 2 of 2 distinct (2 values)
+```
+
+## Extensions
+
+`jlf` dispatches unknown subcommands to `jlf-<name>` on your `PATH` (git-style),
+so the core stays small and optional features install separately. `jlf foo` runs
+`jlf-foo`; if it isn't installed, `jlf` prints an install hint.
+
+## Export
+
+Render records to other formats from a comma-list of columns:
+
+```sh
+jlf --csv ts,level,message       # CSV with header (cells escaped)
+jlf --tsv ts,level,message       # TSV
+jlf --md ts,level,message        # Markdown table
+jlf --csv ts,level level=error   # filters apply
+```
+
+Worked example — selected columns to CSV (RFC-4180 quoting):
+
+```sh
+$ jlf --csv ts,level,user < examples/sample.ndjson
+ts,level,user
+10:00:01,info,alice
+10:00:02,error,bob
+10:00:03,warn,alice
+10:00:04,info,carol
+10:00:05,error,alice
+
+# Markdown table
+$ jlf --md level,user < examples/sample.ndjson
+| level | user |
+| --- | --- |
+| info | alice |
+| error | bob |
+| warn | alice |
+| info | carol |
+| error | alice |
+
+# filters apply; pipe to a file/spreadsheet
+$ jlf --csv ts,latency_ms level=error > errors.csv
+```
+
+## Redaction
+
+Mask field values by name before sharing, with `-r`/`--redact` (comma-separated
+globs; `*.email` matches that key at any depth). Nested objects are handled:
+
+```sh
+jlf -r password,token,*.email    # password/token/email values become ***
+```
+
+Worked example:
+
+```sh
+$ jlf -c -r token < examples/sample.ndjson
+info login {"ts":"10:00:01","user":"alice","latency_ms":42,"token":"***"}
+error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"***"}
+...
 ```
 
 ## Usage
@@ -121,19 +358,23 @@ cat ./examples/dummy_logs | jlf -c
 
 <img width="700" alt="Screenshot 2025-03-03 at 11 01 27 PM" src="https://github.com/user-attachments/assets/b6f9ebe3-1f51-4a5e-9127-5b55a5b0e0a6" />
 
-### No Color
+### Color
 
-By default, **jlf** prints in pretty colors.
+By default (`--color=auto`), **jlf** prints in pretty colors to a terminal and
+strips colors when the output is piped to a file or another program, so files
+aren't corrupted with ANSI characters.
 
-However, when you pipe logs into a file, **jlf** will automatically write with no colors, so the file isn't corrupted with ANSI characters.
-
-For any reason, if you would like to print with no colors to the terminal, you can pass the option `-n`/`--no-color`.
+Override with `--color`:
 
 ```sh
-# writing into a file will remove all ANSI characters automatically
-cat ./examples/dummy_logs | jlf > pretty_logs
+# auto (default): color on terminal, plain when piped
+cat ./examples/dummy_logs | jlf
 
-# pass `-n` to print to terminal with no colors
+# force color even when piping into a color-capable pager
+cat ./examples/dummy_logs | jlf --color=always | less -R
+
+# never color (same as -n / --no-color)
+cat ./examples/dummy_logs | jlf --color=never
 cat ./examples/dummy_logs | jlf -n
 ```
 
@@ -373,21 +614,17 @@ You can reference a variable in the format string or in another variable as `{&v
 Here is the list of all default variables:
 
 ```toml
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
+output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
+timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
+level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
+message   = "{message|msg|body|fields.message}"
+data      = "{..:json}"
 ```
 
-You can see the variables with command `jlf list`.
+Each variable is the whole rendered piece named for what it is — no `name`/`name_fmt`
+twins. A trailing space inside a `{#key …}{/key}` guard is omitted when the field is
+absent, so missing fields leave no stray gap. You can see the variables with
+`jlf list`.
 
 When expanded, variable `output` will look like this:
 
@@ -397,7 +634,7 @@ When expanded, variable `output` will look like this:
 
 You can view the expanded variables by calling `jlf expand VARIABLE`.
 
-For example, `jlf expand log` will output `{timestamp|level|lvl|severity|message|msg|body|fields.message}`.
+For example, `jlf expand level` will output `{#key level|lvl|severity}{level|lvl|severity:level} {/key}`.
 
 If you don't provide at variable, `jlf expand`, it will print the fully expanded format string.
 
@@ -413,64 +650,30 @@ cat ./examples/dummy_logs | jlf
 #   }
 # }
 
-# replace variable `message_log`
-cat ./examples/dummy_logs | jlf -v message_fmt="Message: {&message}"
+# override variable `message`
+cat ./examples/dummy_logs | jlf -v message="Message: {message}"
 # ->
 # 2024-02-09T07:22:41.439284 DEBUG Message: User logged in successfully
-# {
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+# { "data": { "user_id": 3175 } }
 
 # don't print timestamp by resetting variable `timestamp`
 cat ./examples/dummy_logs | jlf -v timestamp=
 # ->
 # DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+# { "timestamp": "...", "data": { "user_id": 3175 } }
 
-# we can pass multiple variables
-cat ./examples/dummy_logs | jlf -v timestamp= -v message_fmt="Message: {&message}"
-# ->
-# DEBUG Message: User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+# pass multiple variables
+cat ./examples/dummy_logs | jlf -v timestamp= -v message="Message: {message}"
 
-# instead of printing only unused fields, print the entire json
-cat ./examples/dummy_logs | jlf -v data="{.}"
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "message": "User logged in successfully",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+# print the entire json instead of only unused fields
+cat ./examples/dummy_logs | jlf -v data="{.:json}"
 
-# replace the entire format.
-# default format string is `{&output}`; therefore, replacing variable `output`
-# will replace the format string.
-cat ./examples/dummy_logs | jlf -v output="{&message_fmt}: {&data_fmt}"
-# User logged in successfully: {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+# replace the entire format (default is `{&output}`)
+cat ./examples/dummy_logs | jlf -v output="{message}: {&data}"
+# User logged in successfully: { ... }
 ```
 
+````
 As you can see, it's extremely easy to update the format either partially or wholly by replacing the default variables.
 
 #### Storing Variables
@@ -492,19 +695,12 @@ _**jlf.toml**_
 # Default variables
 # Replace or add variables as needed
 [variables]
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
-```
+output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
+timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
+level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
+message   = "{message|msg|body|fields.message}"
+data      = "{..:json}"
+````
 
 ## Config File
 
@@ -524,18 +720,11 @@ strict   = false
 
 # Default variables
 [variables]
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
+output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
+timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
+level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
+message   = "{message|msg|body|fields.message}"
+data      = "{..:json}"
 ```
 
 ## Neat Trick

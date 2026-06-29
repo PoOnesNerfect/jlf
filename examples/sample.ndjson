@@ -1,0 +1,5 @@
+{"ts":"10:00:01","level":"info","msg":"login","user":"alice","latency_ms":42,"token":"abc123"}
+{"ts":"10:00:02","level":"error","msg":"db timeout","user":"bob","latency_ms":510,"token":"xyz"}
+{"ts":"10:00:03","level":"warn","msg":"retry","user":"alice","latency_ms":88}
+{"ts":"10:00:04","level":"info","msg":"login","user":"carol","latency_ms":33,"token":"q9"}
+{"ts":"10:00:05","level":"error","msg":"db timeout","user":"alice","latency_ms":620}
