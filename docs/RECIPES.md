@@ -1,8 +1,9 @@
 # Recipes — one named, reusable thing
 
-Status: **draft / design** (not yet implemented). This supersedes the separate
+Status: **implemented** (phases 1-7). This supersedes the separate
 notions of _variables_, _templates_, _presets_, and _custom formats_ with a
-single concept.
+single concept. The older `[variables]`/`[preset.*]`/`[format.*]` tables and
+`{&name}` still work as aliases.
 
 ## Why
 

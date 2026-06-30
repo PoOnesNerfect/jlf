@@ -134,8 +134,7 @@ cargo install --path crates/jlf --locked
 - [Interactive viewer (jlf tui)](#interactive-viewer-jlf-tui)
 - [Export](#export)
 - [Redaction](#redaction)
-- [Presets](#presets)
-- [Custom output formats](#custom-output-formats)
+- [Recipes](#recipes)
 - [Usage](#usage)
   - [Compact Format](#compact-format)
   - [Color](#color)
@@ -424,64 +423,90 @@ error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"***"}
 ...
 ```
 
-## Presets
+## Recipes
 
-Save a bundle of filters, a template (or fields), summary verbs, and options in
-`[preset.NAME]`, then invoke it by name with `@NAME` or `-p NAME`. A preset is a
-starting point, not a fixed command — explicit arguments layer on top.
+A **recipe** is one named, reusable definition — it replaces what used to be
+separate "variables", "presets", and "custom formats". Define recipes in config
+and refer to them as `@name`:
+
+- `jlf @name` **runs** a recipe (filter → summarize/render → frame).
+- `{@name}` **inlines** a recipe's layout inside another template.
 
 ```toml
-# .jlf.toml
-[preset.errors]
-where    = "level=error,fatal"
-template = "{ts} {level} {message}"
+# .jlf.toml — a recipe can be as small as a fragment or as full as a command
 
-[preset.latency-report]
-where  = "status>=500"
+[recipe.errors]                 # a saved command: filter + layout
+filter = "lvl|level|severity=error,fatal"
+body   = "{ts} {level} {message}"
+
+[recipe.latency]                # a named field (one place for its aliases)
+field  = "latency_ms|duration|elapsed"
+
+[recipe.slow]                   # a summary
+filter = "status>=500"
 stats  = "latency_ms"
 by     = "endpoint"
 format = "md"
+
+[recipe.report]                 # a custom output format
+escape = "html"
+header = "<table>\n  <tbody>\n"
+body   = "    <tr><td>{ts}</td><td>{message}</td></tr>"
+footer = "  </tbody>\n</table>\n"
 ```
 
 ```sh
-jlf @errors                     # filter to errors/fatals, apply the template
-jlf -p latency-report           # run the grouped stats summary as a Markdown table
+jlf @errors                     # filter to errors/fatals, render with body
+jlf @slow                       # grouped latency stats as a Markdown table
+jlf @report < app.log           # an HTML table (values HTML-escaped)
+jlf '{@level} {message}'        # inline a recipe's layout
 
-# explicit args layer over the preset:
-jlf @errors status=500          # add a filter (AND with the preset's)
-jlf @errors level=warn          # override the same-field filter
-jlf @errors '{ts} {msg}'        # override the preset's template
+# named fields work in render, filter, and summary positions:
+jlf '{@latency}ms {message}'
+jlf latency_ms|duration|elapsed>500
+jlf stats latency_ms
 ```
 
-Preset keys mirror the flag forms: `where` (filters), `template`/`fields`,
-`redact`, `compact`, `format`, and the summary verbs `count`/`stats`/`top`/`uniq`
-with `by`/`n`.
+Recipes are a starting point, not a fixed command — explicit args layer on top:
 
-## Custom output formats
+```sh
+jlf @errors status=500          # add a filter (AND with the recipe's)
+jlf @errors level=warn          # override the same-field filter
+jlf @errors '{ts} {msg}'        # override the recipe's body
+```
 
-Beyond the built-in `--csv`/`--tsv`/`--md`, you can define your own output
-format in `[format.NAME]` and select it with `--format NAME`. A `header` and
-`footer` are emitted once around a per-record `row` template, and `escape` makes
-interpolated values safe (e.g. `html`).
+### Recipe keys
+
+| key | purpose |
+| --- | ------- |
+| `body` | per-record layout (a template); `{@other}` inlines another recipe |
+| `fields` | shorthand for a `{a} {b} {c}` body |
+| `field` / `style` | name a value (`a\|b.c`) and how to render it (`level`, `dimmed`, `json`) |
+| `filter` | records to keep (same operators as CLI filters) |
+| `redact`, `compact` | mask fields; force compact |
+| `header` / `footer` / `escape` | frame the output once; `escape = "html"` makes values safe |
+| `count` / `stats` / `top` / `uniq`, `by`, `n` | run a summary |
+| `base` | inherit another recipe (`@other`), then override its keys |
+
+A `[recipes]` table is shorthand for body-only recipes (`name = "{a} {b}"`).
+
+### Conditional overrides
+
+A `[recipe.NAME.<cond>]` sub-table overrides keys when a condition holds (a
+config flag like `compact`), so conditionals stay out of the template strings:
 
 ```toml
-# .jlf.toml
-[format.report]
-escape = "html"
-header = """
-<table>
-  <tbody>
-"""
-row    = "    <tr><td>{ts}</td><td>{level}</td><td>{message}</td></tr>"
-footer = """  </tbody>
-</table>
-"""
+[recipe.output]
+body = "{?@timestamp} {?@level} {?@message}\n{?@data}"
+
+[recipe.output.compact]         # only the separator changes under --compact
+body = "{?@timestamp} {?@level} {?@message} {?@data}"
 ```
 
-```sh
-jlf --format report < app.log    # emit an HTML table (values HTML-escaped)
-jlf --format csv ts,level,msg    # built-in names still work as --format
-```
+This is exactly how the built-in default is defined — see
+[docs/RECIPES.md](docs/RECIPES.md) and the repo's
+[.jlf.toml](.jlf.toml). The older `[variables]`, `[preset.*]`, and `[format.*]`
+tables still work as aliases.
 
 ## Usage
 
