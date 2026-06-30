@@ -3,7 +3,8 @@ use crate::Json;
 /// A single `key OP value[,value...]` predicate over a parsed record.
 #[derive(Debug, Clone)]
 pub struct Filter {
-    path: Vec<String>,
+    /// Fallback field paths (`a|b.c` -> `[[a], [b, c]]`); first present wins.
+    paths: Vec<Vec<String>>,
     op: Op,
     values: Vec<String>,
 }
@@ -21,15 +22,20 @@ enum Op {
 }
 
 impl Filter {
-    /// The dotted field path this filter tests (e.g. `data.user.id`). Used to
-    /// decide when an explicit filter overrides a preset's filter on the same
-    /// field.
+    /// The dotted field path(s) this filter tests (e.g. `data.user.id`, or
+    /// `lvl|level|severity` for a fallback). Used to decide when an explicit
+    /// filter overrides a preset's filter on the same field.
     pub fn key(&self) -> String {
-        self.path.join(".")
+        self.paths
+            .iter()
+            .map(|p| p.join("."))
+            .collect::<Vec<_>>()
+            .join("|")
     }
 
     /// Parse a token like `level=error`, `latency>500`, `msg~timeout`,
-    /// `level=error,warn`. Returns `None` if the token has no operator.
+    /// `level=error,warn`, or `lvl|level|severity=error` (fallback fields).
+    /// Returns `None` if the token has no operator.
     pub fn parse(token: &str) -> Option<Filter> {
         // order matters: check 2-char ops before 1-char
         let ops: &[(&str, Op)] = &[
@@ -50,7 +56,10 @@ impl Filter {
                     return None;
                 }
                 return Some(Filter {
-                    path: key.split('.').map(str::to_owned).collect(),
+                    paths: key
+                        .split('|')
+                        .map(|p| p.split('.').map(str::to_owned).collect())
+                        .collect(),
                     op: *op,
                     values: val.split(',').map(str::to_owned).collect(),
                 });
@@ -60,14 +69,18 @@ impl Filter {
     }
 
     pub fn matches(&self, json: &Json) -> bool {
-        let mut cur = json;
-        for seg in &self.path {
-            cur = match seg.parse::<usize>() {
-                Ok(i) => cur.get_i(i),
-                Err(_) => cur.get(seg),
-            };
-        }
-        let field = cur.as_str().or_else(|| cur.as_value());
+        // First present (non-null) fallback path wins; if none present, the
+        // field counts as missing.
+        let field = self.paths.iter().find_map(|path| {
+            let mut cur = json;
+            for seg in path {
+                cur = match seg.parse::<usize>() {
+                    Ok(i) => cur.get_i(i),
+                    Err(_) => cur.get(seg),
+                };
+            }
+            cur.as_str().or_else(|| cur.as_value())
+        });
         let Some(field) = field else {
             // missing field: only !=/!~ can match
             return matches!(self.op, Op::Ne | Op::NotContains);
@@ -183,6 +196,26 @@ mod tests {
         assert!(!matches("absent=x", r));
         assert!(!matches("absent~x", r));
         assert!(!matches("absent>1", r));
+    }
+
+    #[test]
+    fn fallback_fields_first_present_wins() {
+        // `a|b|c=x` matches whichever of those keys is present.
+        assert!(matches("lvl|level|severity=error", r#"{"lvl":"error"}"#));
+        assert!(matches("lvl|level|severity=error", r#"{"severity":"error"}"#));
+        assert!(matches("lvl|level|severity=error", r#"{"level":"error"}"#));
+        assert!(!matches("lvl|level|severity=error", r#"{"level":"warn"}"#));
+        // none present -> missing -> only !=/!~ match
+        assert!(!matches("lvl|level|severity=error", r#"{"other":"error"}"#));
+        assert!(matches("lvl|level|severity!=error", r#"{"other":"x"}"#));
+    }
+
+    #[test]
+    fn fallback_key_roundtrips_for_override_dedup() {
+        let f = Filter::parse("lvl|level|severity=error").unwrap();
+        assert_eq!(f.key(), "lvl|level|severity");
+        let nested = Filter::parse("data.user.id=1").unwrap();
+        assert_eq!(nested.key(), "data.user.id");
     }
 
     #[test]

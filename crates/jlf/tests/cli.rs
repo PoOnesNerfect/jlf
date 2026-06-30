@@ -422,3 +422,28 @@ n = 2
         assert_eq!(run_preset(&["@missing"]), "");
     }
 }
+
+/// Phase 1 of the recipes redesign: `{@name}` aliases `{&name}`, and filters
+/// accept `a|b|c` fallback fields.
+mod recipes_phase1 {
+    use super::run;
+
+    #[test]
+    fn at_sign_is_an_alias_for_ampersand_variable_include() {
+        let json = "{\"timestamp\":\"T\",\"level\":\"INFO\",\"message\":\"hi\"}\n";
+        let amp = run(&["-v", "output={&message}", "{&output}"], json).0;
+        let at = run(&["-v", "output={@message}", "{@output}"], json).0;
+        assert_eq!(at, amp);
+        assert_eq!(at, "hi\n");
+    }
+
+    #[test]
+    fn filter_fallback_fields() {
+        let logs = concat!(
+            "{\"lvl\":\"error\",\"msg\":\"a\"}\n",
+            "{\"level\":\"info\",\"msg\":\"b\"}\n",
+            "{\"severity\":\"error\",\"msg\":\"c\"}\n",
+        );
+        assert_eq!(run(&["lvl|level|severity=error", "{msg}"], logs).0, "a\nc\n");
+    }
+}

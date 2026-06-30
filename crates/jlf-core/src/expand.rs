@@ -70,8 +70,8 @@ fn write_chunk(
         if let Some(end) = part.find('}') {
             let content = &part[..end];
 
-            // '&' means a variable and needs to be expanded
-            if content.starts_with('&') {
+            // '&' (or its alias '@') means a variable and needs to be expanded
+            if content.starts_with('&') || content.starts_with('@') {
                 write_variable(f, content, variables)?;
             } else if let Some(content) = content.strip_prefix('#') {
                 write_cond(f, content, variables)?;
@@ -213,7 +213,7 @@ fn write_field(
             f.write_char('|')?;
         }
 
-        if let Some(key) = field.strip_prefix('&') {
+        if let Some(key) = field.strip_prefix('&').or_else(|| field.strip_prefix('@')) {
             let val = get_variable_field(variables, key);
             if !val.is_empty() {
                 prev_written = write_field(f, val, variables)?;
