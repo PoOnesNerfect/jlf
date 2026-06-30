@@ -114,7 +114,7 @@ You can also clone the repo and install it manually.
 ```sh
 git clone https://github.com/PoOnesNerfect/jlf.git
 cd jlf
-cargo install --path . --locked
+cargo install --path crates/jlf --locked
 ```
 
 ## Table of Contents
