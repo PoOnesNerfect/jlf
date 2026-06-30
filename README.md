@@ -450,22 +450,23 @@ Especially, `variables` is a new addition in `jlf v0.2.0` which unlocked the pow
 To print the fields of JSON log, simple write the field name in braces `{field1}`.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}
+# the commands below pipe in this example line:
+line='{"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}'
 
 # access the field by writing the field in braces
-cat ./examples/dummy_logs | jlf 'Msg: {message}!' # -> Msg: User logged in successfully!
+echo "$line" | jlf 'Msg: {message}!' # -> Msg: User logged in successfully!
 
 # if field may not exist, provide fallback fields separated by '|'. It will print the first field that exits.
-cat ./examples/dummy_logs | jlf 'Msg: {msg|body|message}!' # -> Msg: My Body!
+echo "$line" | jlf 'Msg: {msg|body|message}!' # -> Msg: My Body!
 
 # access nested field using '.' as a separator.
-cat ./examples/dummy_logs | jlf 'User {data.user_id} logged in!' # -> User 3175 logged in!
+echo "$line" | jlf 'User {data.user_id} logged in!' # -> User 3175 logged in!
 
 # access array items using '[n]' to index at `n`.
-cat ./examples/dummy_logs | jlf 'My girl friend is {data.friends[1]}.' # -> My girl friend is Jill.
+echo "$line" | jlf 'My girl friend is {data.friends[1]}.' # -> My girl friend is Jill.
 
 # if the field is an object or array, it will it as pretty json by default.
-cat ./examples/dummy_logs | jlf 'user data: {data}'
+echo "$line" | jlf 'user data: {data}'
 # ->
 # user data: {
 #  "user_id": 3175,
@@ -478,7 +479,7 @@ cat ./examples/dummy_logs | jlf 'user data: {data}'
 # }
 
 # print the entire json by writing `{.}`
-cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{.}'
+echo "$line" | jlf 'user({data.user_id}): {message}\n{.}'
 # ->
 # user(3175): User logged in successfully
 # {
@@ -496,7 +497,7 @@ cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{.}'
 # }
 
 # print only the un-printed fields by writing `{..}`
-cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{..}'
+echo "$line" | jlf 'user({data.user_id}): {message}\n{..}'
 # ->
 # user(3175): User logged in successfully
 # {
@@ -559,25 +560,26 @@ For conditionals, main conditional starts with `#` like `{#if ..}`, else conditi
 **if** checks for the `truthy`ness of the given field values; one difference with Javascript truthiness is that empty object and array is evaluated to `false`.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
+# the commands below pipe in this example line:
+line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
 
 # if field doesn't exist, or is null, it's `false`.
-cat ./examples/dummy_logs | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully!
+echo "$line" | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully
 
 # empty string is also `false`.
-cat ./examples/dummy_logs | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
+echo "$line" | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
 
 # number 0 is also 'false'.
-cat ./examples/dummy_logs | jlf '{#if count}count = {count}{:else}count is zero{/if}' # -> count is zero
+echo "$line" | jlf '{#if data.count}count = {data.count}{:else}count is zero{/if}' # -> count is zero
 
 # empty object or arrays are also 'false'.
-cat ./examples/dummy_logs | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
+echo "$line" | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
 
 # nesting is allowed
-cat ./examples/dummy_logs | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
+echo "$line" | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
 
 # if multiple fields are given, it will return `true` if at least one of them is `truthy`.
-cat ./examples/dummy_logs | jlf "{#if msg|body|data.count|message}I'm still here{/if}" # -> I'm still here
+echo "$line" | jlf "{#if msg|body|data.count|message}I'm still here{/if}" # -> I'm still here
 ```
 
 #### {#key field1}{:else key field2}{:else}{/key}
@@ -587,25 +589,26 @@ cat ./examples/dummy_logs | jlf "{#if msg|body|data.count|message}I'm still here
 **key** checks the existence of the given field; even when the field value is `falsey`, it will evaluate to `true` if the field exists, and is not null.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
+# the commands below pipe in this example line:
+line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
 
 # if field doesn't exist, or is null, it's `false`.
-cat ./examples/dummy_logs | jlf '{#key msg}msg: {msg}{:else key message}message: {message}{/key}' # -> message: User logged in successfully!
+echo "$line" | jlf '{#key msg}msg: {msg}{:else key message}message: {message}{/key}' # -> message: User logged in successfully
 
 # empty string is still `true`.
-cat ./examples/dummy_logs | jlf '{#key body}body = {body}{:else}no body{/key}' # -> body = 
+echo "$line" | jlf '{#key body}body = {body}{:else}no body{/key}' # -> body = 
 
 # number 0 is also 'true'.
-cat ./examples/dummy_logs | jlf '{#key count}count = {count}{:else}count is zero{/key}' # -> count = 0
+echo "$line" | jlf '{#key data.count}count = {data.count}{:else}count is zero{/key}' # -> count = 0
 
 # empty object or arrays are also 'true'.
-cat ./examples/dummy_logs | jlf '{#key data.friends}friends: {data.friends}{:else}I have no friends{/key}' # -> friends: []
+echo "$line" | jlf '{#key data.friends}friends: {data.friends}{:else}I have no friends{/key}' # -> friends: []
 
 # nesting is allowed
-cat ./examples/dummy_logs | jlf '{#key data.user_id}user ({data.user_id}) {#key message}has a message{:else}has no message{/key}{/key}.' # -> user (3175) has a message.
+echo "$line" | jlf '{#key data.user_id}user ({data.user_id}) {#key message}has a message{:else}has no message{/key}{/key}.' # -> user (3175) has a message.
 
 # if multiple fields are given, it will return `true` if at least one of them exists.
-cat ./examples/dummy_logs | jlf "{#key msg|no_field|message}I'm still here{/key}" # -> I'm still here
+echo "$line" | jlf "{#key msg|no_field|message}I'm still here{/key}" # -> I'm still here
 ```
 
 #### {#config config1}{:else}{/config}
@@ -615,14 +618,15 @@ cat ./examples/dummy_logs | jlf "{#key msg|no_field|message}I'm still here{/key}
 **config** returns `true` if the given config is set.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
+# the commands below pipe in this example line:
+line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
 
 # If `compact` is set, print ` `; if `compact` is not set, print `\n`
-cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else}\n{/config}{..}'
-# `jlf -c`
-# User logged in successfully {"body":"","data":{"user_id":3175,"count":0,"friends":[]}}
-#
-# `jlf`
+echo "$line" | jlf -c '{message}{#config compact} {:else}\n{/config}{..}'
+# -> User logged in successfully {"body":"","data":{"user_id":3175,"count":0,"friends":[]}}
+
+echo "$line" | jlf '{message}{#config compact} {:else}\n{/config}{..}'
+# ->
 # User logged in successfully
 # {
 #   "body": "",
@@ -633,9 +637,8 @@ cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else}\n{/config}{.
 #   }
 # }
 
-
 # {:else config ..} is not supported.
-cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else config strict}strict{:else}\n{/config}{..}' -> INVALID
+echo "$line" | jlf '{message}{#config compact} {:else config strict}strict{:else}\n{/config}{..}' # -> INVALID
 ```
 
 ### Variables
@@ -672,9 +675,10 @@ For example, `jlf expand level` will output `{#key level|lvl|severity}{level|lvl
 If you don't provide at variable, `jlf expand`, it will print the fully expanded format string.
 
 ```sh
-# Example Line: {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175}}
+# the commands below pipe in this example line:
+line='{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175}}'
 
-cat ./examples/dummy_logs | jlf
+echo "$line" | jlf
 # ->
 # 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
 # {
@@ -684,26 +688,60 @@ cat ./examples/dummy_logs | jlf
 # }
 
 # override variable `message`
-cat ./examples/dummy_logs | jlf -v message="Message: {message}"
+echo "$line" | jlf -v message="Message: {message}"
 # ->
 # 2024-02-09T07:22:41.439284 DEBUG Message: User logged in successfully
-# { "data": { "user_id": 3175 } }
+# {
+#   "data": {
+#     "user_id": 3175
+#   }
+# }
 
 # don't print timestamp by resetting variable `timestamp`
-cat ./examples/dummy_logs | jlf -v timestamp=
+echo "$line" | jlf -v timestamp=
 # ->
 # DEBUG User logged in successfully
-# { "timestamp": "...", "data": { "user_id": 3175 } }
+# {
+#   "timestamp": "2024-02-09T07:22:41.439284",
+#   "data": {
+#     "user_id": 3175
+#   }
+# }
 
 # pass multiple variables
-cat ./examples/dummy_logs | jlf -v timestamp= -v message="Message: {message}"
+echo "$line" | jlf -v timestamp= -v message="Message: {message}"
+# ->
+# DEBUG Message: User logged in successfully
+# {
+#   "timestamp": "2024-02-09T07:22:41.439284",
+#   "data": {
+#     "user_id": 3175
+#   }
+# }
 
 # print the entire json instead of only unused fields
-cat ./examples/dummy_logs | jlf -v data="{.:json}"
+echo "$line" | jlf -v data="{.:json}"
+# ->
+# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
+# {
+#   "timestamp": "2024-02-09T07:22:41.439284",
+#   "level": "DEBUG",
+#   "message": "User logged in successfully",
+#   "data": {
+#     "user_id": 3175
+#   }
+# }
 
 # replace the entire format (default is `{&output}`)
-cat ./examples/dummy_logs | jlf -v output="{message}: {&data}"
-# User logged in successfully: { ... }
+echo "$line" | jlf -v output="{message}: {&data}"
+# ->
+# User logged in successfully: {
+#   "timestamp": "2024-02-09T07:22:41.439284",
+#   "level": "DEBUG",
+#   "data": {
+#     "user_id": 3175
+#   }
+# }
 ```
 
 As you can see, it's extremely easy to update the format either partially or wholly by replacing the default variables.
