@@ -201,14 +201,19 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
     let mut cfg = get_config()?;
 
-    // Apply recipe conditional overrides for the flags that are active (config
-    // value OR explicit CLI flag), then translate recipes into the variable/
-    // preset/format maps the rest of the pipeline consumes.
+    // Build the set of active condition flags for recipe `[recipe.NAME.<cond>]`
+    // overrides: a flag is active if set on the CLI, in `[config]`, or by the
+    // preset being invoked (peeked from the parsed presets before translation).
+    let preset_compact = preset_name
+        .as_ref()
+        .and_then(|n| cfg.presets.get(n))
+        .and_then(|p| p.compact)
+        .unwrap_or(false);
     let mut active: Vec<&str> = Vec::new();
-    if compact || cfg.config.compact.unwrap_or(false) {
+    if compact || preset_compact || cfg.config.compact.unwrap_or(false) {
         active.push("compact");
     }
-    if no_color || cfg.config.no_color.unwrap_or(false) {
+    if no_color || color == ColorWhen::Never || cfg.config.no_color.unwrap_or(false) {
         active.push("no_color");
     }
     if strict || cfg.config.strict.unwrap_or(false) {

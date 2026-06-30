@@ -493,7 +493,8 @@ A `[recipes]` table is shorthand for body-only recipes (`name = "{a} {b}"`).
 ### Conditional overrides
 
 A `[recipe.NAME.<cond>]` sub-table overrides keys when a condition holds (a
-config flag like `compact`), so conditionals stay out of the template strings:
+config flag — `compact`, `no_color`, or `strict`), so conditionals stay out of
+the template strings:
 
 ```toml
 [recipe.output]

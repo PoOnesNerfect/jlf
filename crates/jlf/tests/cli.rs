@@ -598,3 +598,54 @@ mod undefined_variable {
         assert_eq!(code, 0);
     }
 }
+
+/// Recipe `[recipe.X.compact]` overrides trigger from any source of `compact` —
+/// the CLI flag, config, or a preset that sets it (review fix).
+mod recipe_override_sources {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const CFG: &str = concat!(
+        "[recipe.sep]\nbody = \"[normal]\"\n",
+        "[recipe.sep.compact]\nbody = \"[compact]\"\n",
+        "[preset.cmp]\ncompact = true\ntemplate = \"{&sep}\"\n",
+    );
+
+    fn run_in(args: &[&str]) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "jlf_ovr_{}_{}",
+            std::process::id(),
+            args.join("_").replace(['@', ' ', '-'], "_")
+        ));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("jlf.toml"), CFG).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_jlf"))
+            .args(args)
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"{\"a\":1}\n").unwrap();
+        let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn compact_flag_triggers_override() {
+        assert_eq!(run_in(&["-c", "{&sep}"]), "[compact]\n");
+    }
+
+    #[test]
+    fn normal_uses_base() {
+        assert_eq!(run_in(&["{&sep}"]), "[normal]\n");
+    }
+
+    #[test]
+    fn preset_set_compact_triggers_override() {
+        // @cmp sets compact=true; the sep recipe's compact override must apply
+        assert_eq!(run_in(&["@cmp"]), "[compact]\n");
+    }
+}

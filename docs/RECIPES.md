@@ -78,10 +78,12 @@ style = "json"
 style = "compact-json"
 ```
 
-Conditions are the same vocabulary as filters — a config flag (`compact`), a
-field test (`level=error`), or rest-state — and overrides are shallow (only the
-named keys change; the rest of the base recipe stands). This replaces the old
-inline `{#config compact}{:else}{/config}` branch with structure.
+Conditions are config flags — `compact`, `no_color`, or `strict` — and overrides
+are shallow (only the named keys change; the rest of the base recipe stands).
+This replaces the old inline `{#config compact}{:else}{/config}` branch with
+structure. (Per-record conditions such as field tests aren't supported here:
+recipes are resolved once at startup, not per record — use an in-`body`
+conditional like `{#if level=…}` for those.)
 
 ## Two ways to use `@name`
 
@@ -266,5 +268,6 @@ For at least one release, the old names are deprecated **aliases**:
   `@output`)?
 - Invocation flag: keep `-p`/`--preset`, or rename it (e.g. `--use NAME`) now that
   it runs any recipe, not just a "preset"? (`@name` works regardless.)
-- Override conditions: which vocabulary exactly (config flags, field tests,
-  rest-state) and how `[recipe.NAME.<cond>]` keys spell them.
+- Override conditions: currently config flags only (`compact`/`no_color`/
+  `strict`). Per-record conditions (field tests) would require applying overrides
+  during rendering rather than once at startup.
