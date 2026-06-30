@@ -329,3 +329,96 @@ footer = "</table>\n"
         assert_eq!(out, "level,msg\ninfo,hi\n");
     }
 }
+
+/// `[preset.*]` saved bundles invoked via `@name` / `-p`.
+mod presets {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const CONFIG: &str = r#"
+[preset.errors]
+where = "level=error,fatal"
+template = "{level} {msg}"
+
+[preset.lat]
+where = "latency_ms>=100"
+stats = "latency_ms"
+
+[preset.acts]
+top = "action"
+n = 2
+"#;
+
+    const LOGS: &str = concat!(
+        "{\"level\":\"info\",\"msg\":\"a\",\"latency_ms\":42,\"action\":\"x\"}\n",
+        "{\"level\":\"error\",\"msg\":\"b\",\"latency_ms\":510,\"action\":\"y\"}\n",
+        "{\"level\":\"warn\",\"msg\":\"c\",\"latency_ms\":88,\"action\":\"x\"}\n",
+        "{\"level\":\"fatal\",\"msg\":\"d\",\"latency_ms\":900,\"action\":\"x\"}\n",
+    );
+
+    fn run_preset(args: &[&str]) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "jlf_preset_{}_{}",
+            std::process::id(),
+            args.join("_").replace(['@', '=', '/', ' '], "-")
+        ));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("jlf.toml"), CONFIG).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_jlf"))
+            .args(args)
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(LOGS.as_bytes()).unwrap();
+        let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn view_preset_applies_filter_and_template() {
+        assert_eq!(run_preset(&["@errors"]), "error b\nfatal d\n");
+    }
+
+    #[test]
+    fn explicit_filter_on_new_field_is_added() {
+        // adds action=x on top of the preset's level filter
+        assert_eq!(run_preset(&["@errors", "action=x"]), "fatal d\n");
+    }
+
+    #[test]
+    fn explicit_filter_overrides_same_field() {
+        // level=warn replaces the preset's level=error,fatal
+        assert_eq!(run_preset(&["@errors", "level=warn"]), "warn c\n");
+    }
+
+    #[test]
+    fn explicit_template_overrides_preset() {
+        assert_eq!(run_preset(&["@errors", "M:{msg}"]), "M:b\nM:d\n");
+    }
+
+    #[test]
+    fn summary_preset_runs_stats() {
+        // only latency_ms >= 100 (510, 900)
+        let out = run_preset(&["-p", "lat"]);
+        assert!(out.contains("count 2"), "got:\n{out}");
+        assert!(out.contains("max   900.00"), "got:\n{out}");
+    }
+
+    #[test]
+    fn top_preset_respects_n() {
+        let out = run_preset(&["@acts"]);
+        assert!(out.starts_with("     count   share  value\n"), "got:\n{out}");
+        assert!(out.contains("  x\n"));
+        assert!(out.trim_end().ends_with("top 2 of 2 distinct (4 values)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn unknown_preset_errors() {
+        // no stdout on error; just ensure it doesn't render records
+        assert_eq!(run_preset(&["@missing"]), "");
+    }
+}

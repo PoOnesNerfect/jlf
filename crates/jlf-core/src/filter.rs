@@ -21,6 +21,13 @@ enum Op {
 }
 
 impl Filter {
+    /// The dotted field path this filter tests (e.g. `data.user.id`). Used to
+    /// decide when an explicit filter overrides a preset's filter on the same
+    /// field.
+    pub fn key(&self) -> String {
+        self.path.join(".")
+    }
+
     /// Parse a token like `level=error`, `latency>500`, `msg~timeout`,
     /// `level=error,warn`. Returns `None` if the token has no operator.
     pub fn parse(token: &str) -> Option<Filter> {

@@ -70,6 +70,10 @@ pub struct Args {
     #[arg(long = "format", value_name = "NAME")]
     format_name: Option<String>,
 
+    /// Use a saved preset from `[preset.NAME]` (also: `@NAME` as a bare arg).
+    #[arg(short = 'p', long = "preset", value_name = "NAME")]
+    preset: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -173,35 +177,100 @@ pub fn run() -> Result<(), color_eyre::Report> {
         tsv,
         md,
         format_name,
+        preset,
         command,
     } = Args::parse();
 
-    // Classify bare args: a token with `{` is the template, one with an operator
-    // is a filter, a comma-list of plain names is the field/column list.
+    // Classify bare args: `@name` is a preset, a token with `{` the template, one
+    // with an operator a filter, a comma-list the field/column list.
     let mut format = None;
-    let mut filters = Vec::new();
+    let mut filter_strs: Vec<String> = Vec::new();
     let mut fields: Vec<String> = fields_flag;
+    let mut preset_name = preset;
     for a in args {
-        if a.contains('{') {
+        if let Some(name) = a.strip_prefix('@').filter(|n| !n.is_empty()) {
+            preset_name.get_or_insert_with(|| name.to_owned());
+        } else if a.contains('{') {
             format = Some(a);
-        } else if let Some(f) = jlf_core::Filter::parse(&a) {
-            filters.push(f);
+        } else if jlf_core::Filter::parse(&a).is_some() {
+            filter_strs.push(a);
         } else if a.contains(',') || (csv || tsv || md) {
             fields = a.split(',').map(str::to_owned).collect();
         }
     }
 
-    // `--format csv|tsv|md` are shorthands for the built-in exporters.
-    let builtin_export = if md || format_name.as_deref() == Some("md") {
-        Some(Sep::Md)
-    } else if tsv || format_name.as_deref() == Some("tsv") {
-        Some(Sep::Tsv)
-    } else if csv || format_name.as_deref() == Some("csv") {
-        Some(Sep::Csv)
-    } else {
-        None
-    };
-    if let Some(mode) = builtin_export {
+    let ConfigFile {
+        mut config,
+        variables: config_variables,
+        formats,
+        presets,
+    } = get_config()?;
+
+    let mut compact = compact;
+    let mut redact = redact;
+    let mut format_name = format_name;
+    let mut preset_summary = None;
+
+    // Resolve a preset: its values are defaults that explicit args layer over —
+    // a same-field filter overrides, a different-field filter is added, and an
+    // explicit template/fields/format/redact wins.
+    if let Some(name) = &preset_name {
+        let Some(def) = presets.get(name) else {
+            eprintln!("jlf: unknown preset `{name}` (no [preset.{name}] in config)");
+            std::process::exit(2);
+        };
+        filter_strs = merge_filter_tokens(def.filter.as_deref().unwrap_or(""), filter_strs);
+        if format.is_none() && fields.is_empty() {
+            if let Some(t) = &def.template {
+                format = Some(t.clone());
+            } else if let Some(fl) = &def.fields {
+                fields = fl.split(',').map(str::to_owned).collect();
+            }
+        }
+        if redact.is_empty() {
+            if let Some(r) = &def.redact {
+                redact = r.split(',').map(str::to_owned).collect();
+            }
+        }
+        compact = compact || def.compact.unwrap_or(false);
+        if format_name.is_none() && !(csv || tsv || md) {
+            format_name = def.format.clone();
+        }
+        if command.is_none() {
+            preset_summary = preset_summary_from(def);
+        }
+    }
+
+    let filters: Vec<jlf_core::Filter> = filter_strs
+        .iter()
+        .filter_map(|s| jlf_core::Filter::parse(s))
+        .collect();
+
+    // A preset can run a summary directly (`stats = "latency_ms"`, etc.).
+    if let Some((verb, field, by, n)) = preset_summary {
+        let mode = output_sep(format_name.as_deref(), csv, tsv, md);
+        let mut sargs = Vec::new();
+        if !field.is_empty() {
+            sargs.push(field);
+        }
+        if let Some(by) = by {
+            sargs.push("by".to_owned());
+            sargs.push(by);
+        }
+        if verb == "top" && n > 0 {
+            sargs.push(n.to_string());
+        }
+        sargs.extend(filter_strs.iter().cloned());
+        return match verb.as_str() {
+            "count" => run_count(sargs, mode, &input),
+            "stats" => run_stats(sargs, mode, &input),
+            "top" => run_top(sargs, mode, &input),
+            _ => run_uniq(sargs, &input),
+        };
+    }
+
+    // `--format csv|tsv|md` (or a preset's format) are exporter shorthands.
+    if let Some(mode) = output_sep(format_name.as_deref(), csv, tsv, md) {
         return run_export(fields, filters, mode, &input);
     }
 
@@ -209,13 +278,6 @@ pub fn run() -> Result<(), color_eyre::Report> {
     if format.is_none() && !fields.is_empty() {
         format = Some(fields.iter().map(|f| format!("{{{f}}}")).collect::<Vec<_>>().join(" "));
     }
-
-    let ConfigFile {
-        mut config,
-        variables: config_variables,
-        formats,
-        presets: _,
-    } = get_config()?;
 
     // A non-built-in `--format NAME` selects a custom `[format.NAME]`.
     if let Some(name) = format_name {
@@ -261,10 +323,19 @@ pub fn run() -> Result<(), color_eyre::Report> {
                     println!("{:width$} = {v}", k.bold(), width = width);
                 }
             }
-            Command::Count { args, out } => return run_count(args, out.mode(), &input),
-            Command::Stats { args, out } => return run_stats(args, out.mode(), &input),
-            Command::Top { args, out } => return run_top(args, out.mode(), &input),
-            Command::Uniq { args, out: _ } => return run_uniq(args, &input),
+            // Preset filters (if any) apply to an explicit summary subcommand too.
+            Command::Count { args, out } => {
+                return run_count(prepend(&filter_strs, args), out.mode(), &input)
+            }
+            Command::Stats { args, out } => {
+                return run_stats(prepend(&filter_strs, args), out.mode(), &input)
+            }
+            Command::Top { args, out } => {
+                return run_top(prepend(&filter_strs, args), out.mode(), &input)
+            }
+            Command::Uniq { args, out: _ } => {
+                return run_uniq(prepend(&filter_strs, args), &input)
+            }
         }
 
         return Ok(());
@@ -365,6 +436,65 @@ pub fn run() -> Result<(), color_eyre::Report> {
     stdout.flush()?;
 
     Ok(())
+}
+
+/// Prepend preset-derived filter tokens to a summary subcommand's args.
+fn prepend(filter_strs: &[String], mut args: Vec<String>) -> Vec<String> {
+    let mut out = filter_strs.to_vec();
+    out.append(&mut args);
+    out
+}
+
+/// Merge a preset's `where` filters under explicit ones: an explicit filter on a
+/// field drops the preset's filters on that same field; others are kept.
+fn merge_filter_tokens(preset_where: &str, explicit: Vec<String>) -> Vec<String> {
+    let explicit_keys: std::collections::HashSet<String> = explicit
+        .iter()
+        .filter_map(|s| jlf_core::Filter::parse(s).map(|f| f.key()))
+        .collect();
+    let mut merged: Vec<String> = preset_where
+        .split_whitespace()
+        .filter(|t| {
+            jlf_core::Filter::parse(t)
+                .map(|f| !explicit_keys.contains(&f.key()))
+                .unwrap_or(false)
+        })
+        .map(str::to_owned)
+        .collect();
+    merged.extend(explicit);
+    merged
+}
+
+/// Extract a summary verb from a preset, if it defines one.
+/// Returns `(verb, field, by, n)`.
+fn preset_summary_from(
+    def: &jlf_core::PresetDef,
+) -> Option<(String, String, Option<String>, usize)> {
+    if let Some(f) = &def.count {
+        Some(("count".into(), f.clone(), def.by.clone(), def.n.unwrap_or(10)))
+    } else if let Some(f) = &def.stats {
+        Some(("stats".into(), f.clone(), def.by.clone(), 0))
+    } else if let Some(f) = &def.top {
+        Some(("top".into(), f.clone(), def.by.clone(), def.n.unwrap_or(10)))
+    } else {
+        def.uniq
+            .as_ref()
+            .map(|f| ("uniq".into(), f.clone(), None, 0))
+    }
+}
+
+/// Map the built-in output formats (`--csv/--tsv/--md` or `--format csv|tsv|md`)
+/// to a separator. Returns `None` for the default and for custom format names.
+fn output_sep(format_name: Option<&str>, csv: bool, tsv: bool, md: bool) -> Option<Sep> {
+    if md || format_name == Some("md") {
+        Some(Sep::Md)
+    } else if tsv || format_name == Some("tsv") {
+        Some(Sep::Tsv)
+    } else if csv || format_name == Some("csv") {
+        Some(Sep::Csv)
+    } else {
+        None
+    }
 }
 
 /// Open the input: stdin when no files are given, otherwise the files chained in
