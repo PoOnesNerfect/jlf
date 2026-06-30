@@ -134,6 +134,8 @@ cargo install --path crates/jlf --locked
 - [Interactive viewer (jlf tui)](#interactive-viewer-jlf-tui)
 - [Export](#export)
 - [Redaction](#redaction)
+- [Presets](#presets)
+- [Custom output formats](#custom-output-formats)
 - [Usage](#usage)
   - [Compact Format](#compact-format)
   - [Color](#color)
@@ -420,6 +422,65 @@ $ jlf -c -r token < examples/sample.ndjson
 info login {"ts":"10:00:01","user":"alice","latency_ms":42,"token":"***"}
 error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"***"}
 ...
+```
+
+## Presets
+
+Save a bundle of filters, a template (or fields), summary verbs, and options in
+`[preset.NAME]`, then invoke it by name with `@NAME` or `-p NAME`. A preset is a
+starting point, not a fixed command — explicit arguments layer on top.
+
+```toml
+# .jlf.toml
+[preset.errors]
+where    = "level=error,fatal"
+template = "{ts} {level} {message}"
+
+[preset.latency-report]
+where  = "status>=500"
+stats  = "latency_ms"
+by     = "endpoint"
+format = "md"
+```
+
+```sh
+jlf @errors                     # filter to errors/fatals, apply the template
+jlf -p latency-report           # run the grouped stats summary as a Markdown table
+
+# explicit args layer over the preset:
+jlf @errors status=500          # add a filter (AND with the preset's)
+jlf @errors level=warn          # override the same-field filter
+jlf @errors '{ts} {msg}'        # override the preset's template
+```
+
+Preset keys mirror the flag forms: `where` (filters), `template`/`fields`,
+`redact`, `compact`, `format`, and the summary verbs `count`/`stats`/`top`/`uniq`
+with `by`/`n`.
+
+## Custom output formats
+
+Beyond the built-in `--csv`/`--tsv`/`--md`, you can define your own output
+format in `[format.NAME]` and select it with `--format NAME`. A `header` and
+`footer` are emitted once around a per-record `row` template, and `escape` makes
+interpolated values safe (e.g. `html`).
+
+```toml
+# .jlf.toml
+[format.report]
+escape = "html"
+header = """
+<table>
+  <tbody>
+"""
+row    = "    <tr><td>{ts}</td><td>{level}</td><td>{message}</td></tr>"
+footer = """  </tbody>
+</table>
+"""
+```
+
+```sh
+jlf --format report < app.log    # emit an HTML table (values HTML-escaped)
+jlf --format csv ts,level,msg    # built-in names still work as --format
 ```
 
 ## Usage
