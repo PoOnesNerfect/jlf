@@ -131,6 +131,7 @@ cargo install --path crates/jlf --locked
 - [Filtering](#filtering)
 - [Summaries](#summaries)
 - [Extensions](#extensions)
+- [Interactive viewer (jlf tui)](#interactive-viewer-jlf-tui)
 - [Export](#export)
 - [Redaction](#redaction)
 - [Usage](#usage)
@@ -322,6 +323,45 @@ top 2 of 2 distinct (2 values)
 `jlf` dispatches unknown subcommands to `jlf-<name>` on your `PATH` (git-style),
 so the core stays small and optional features install separately. `jlf foo` runs
 `jlf-foo`; if it isn't installed, `jlf` prints an install hint.
+
+The interactive viewer below (`jlf tui`) is the first such extension.
+
+## Interactive viewer (`jlf tui`)
+
+`jlf-tui` is a full-screen terminal app that brings viewing, filtering,
+redaction, and summaries together with vi-style keys. It **live-tails** its
+input: records show up as they stream in, so it works on a growing file or a
+pipe.
+
+```sh
+cargo install jlf-tui        # or: cargo install --path crates/jlf-tui
+
+tail -f app.log | jlf tui    # follow a live stream
+jlf tui app.log              # open a file (keeps following appends)
+jlf tui app.log level=error  # start with a filter applied
+```
+
+Layout: a scrolling record list on the left, a pretty-printed detail pane for
+the selected record on the right, a status bar (follow state, position, active
+filter), and a prompt line.
+
+Keys:
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k`, `↓` / `↑` | move selection |
+| `g` / `G` | jump to top / bottom |
+| `Ctrl-d` / `Ctrl-u` | half-page down / up |
+| `J` / `K` | scroll the detail pane |
+| `f` | toggle follow (auto-scroll to newest) |
+| `/` | filter — type `key=value` (same operators as the CLI), `Enter` applies |
+| `:` | command — `count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`, `csv\|tsv\|md cols [path]`, `q` |
+| `Esc` | close a summary popup, or clear the filter |
+| `q` | quit |
+
+For example, press `/`, type `level=error`, `Enter` to keep only errors, then
+`:top user` to see the top users among them, or `:csv ts,level,msg` to write the
+current filtered view to `jlf-export.csv`.
 
 ## Export
 
