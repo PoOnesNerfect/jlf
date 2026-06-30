@@ -20,23 +20,49 @@ impl fmt::Display for FormattedLog<'_> {
 impl FormattedLog<'_> {
     pub fn write_fmt(&self, f: &mut impl fmt::Write) -> Result<(), fmt::Error> {
         let Self {
-            formatter: Formatter { pieces, args },
+            formatter:
+                Formatter {
+                    pieces,
+                    args,
+                    has_optional,
+                },
             json,
         } = self;
 
         let mut used_fields = SmallVec::new();
 
-        let mut piece_i = 0;
-        while piece_i < pieces.len() {
-            piece_i = write_piece(f, pieces, piece_i, args, json, false, &mut used_fields)?;
+        // Plain templates write straight through. Only when an optional
+        // `{?field}` is present do we wrap the writer to defer whitespace so an
+        // empty optional can collapse one adjacent space.
+        if *has_optional {
+            let mut w = Trimmer::new(f);
+            render(&mut w, pieces, args, json, &mut used_fields)?;
+            w.flush_ws()?;
+        } else {
+            let mut w = Plain(f);
+            render(&mut w, pieces, args, json, &mut used_fields)?;
         }
 
         Ok(())
     }
 }
 
+fn render<'a>(
+    f: &mut impl Write2,
+    pieces: &'a Vec<Piece>,
+    args: &'a Vec<Arg>,
+    json: &'a Json<'a>,
+    used_fields: &mut SmallVec<[&'a Field; 5]>,
+) -> fmt::Result {
+    let mut piece_i = 0;
+    while piece_i < pieces.len() {
+        piece_i = write_piece(f, pieces, piece_i, args, json, false, used_fields)?;
+    }
+    Ok(())
+}
+
 fn write_piece<'a>(
-    f: &mut impl fmt::Write,
+    f: &mut impl Write2,
     pieces: &'a Vec<Piece>,
     mut piece_i: usize,
     args: &'a Vec<Arg>,
@@ -59,7 +85,20 @@ fn write_piece<'a>(
         }
         Arg(i) => {
             if !skip {
-                write_arg(f, &args[*i], json, used_fields)?
+                let arg = &args[*i];
+                if arg.1.optional {
+                    // Render the optional field aside; if it produced nothing,
+                    // collapse a neighbouring space instead of emitting it.
+                    let mut scratch = String::new();
+                    write_arg(&mut scratch, arg, json, used_fields)?;
+                    if scratch.is_empty() {
+                        f.collapse_ws();
+                    } else {
+                        f.write_str(&scratch)?;
+                    }
+                } else {
+                    write_arg(f, arg, json, used_fields)?
+                }
             }
         }
         CondStart(cond, i) => {
@@ -225,6 +264,7 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
         is_json,
         is_level,
         indent,
+        optional: _,
         markup_styles: json_styles,
     } = format;
     let indent = *indent;
@@ -406,5 +446,98 @@ impl fmt::Debug for RestView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.json
             .fmt_rest(f, self.excluded, Some(self.indent), &self.styles)
+    }
+}
+
+/// A writer that can collapse one whitespace separator next to an empty
+/// `{?field}`. Plain writers treat the collapse hooks as no-ops, so non-optional
+/// templates render with zero extra work.
+trait Write2: fmt::Write {
+    /// An optional field rendered empty: collapse one adjacent space.
+    fn collapse_ws(&mut self) {}
+    /// Emit any deferred trailing whitespace.
+    fn flush_ws(&mut self) -> fmt::Result {
+        Ok(())
+    }
+}
+
+/// Pass-through writer for templates without any `{?field}`.
+struct Plain<'a, W: fmt::Write>(&'a mut W);
+
+impl<W: fmt::Write> fmt::Write for Plain<'_, W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.write_str(s)
+    }
+}
+
+impl<W: fmt::Write> Write2 for Plain<'_, W> {}
+
+/// Whitespace-deferring writer used when a template contains `{?field}`.
+///
+/// Trailing whitespace is buffered rather than written immediately, so when an
+/// empty optional asks to collapse a space we can either drop that buffered run
+/// (the space *before* the field) or skip the next run (the space *after* it) —
+/// collapsing exactly one separator so an absent field leaves no stray gap.
+struct Trimmer<'a, W: fmt::Write> {
+    inner: &'a mut W,
+    pending: String,
+    skip_leading_ws: bool,
+}
+
+impl<'a, W: fmt::Write> Trimmer<'a, W> {
+    fn new(inner: &'a mut W) -> Self {
+        Self {
+            inner,
+            pending: String::new(),
+            skip_leading_ws: false,
+        }
+    }
+}
+
+impl<W: fmt::Write> fmt::Write for Trimmer<'_, W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut s = s;
+        if self.skip_leading_ws {
+            let trimmed = s.trim_start_matches([' ', '\t']);
+            let stripped_some = trimmed.len() != s.len();
+            s = trimmed;
+            // Keep skipping only while the run is still all whitespace; stop once
+            // real content (this or a later write) appears.
+            if !stripped_some || !s.is_empty() {
+                self.skip_leading_ws = false;
+            }
+        }
+        if s.is_empty() {
+            return Ok(());
+        }
+        let core_len = s.trim_end_matches([' ', '\t']).len();
+        let (core, trail) = s.split_at(core_len);
+        if !core.is_empty() {
+            if !self.pending.is_empty() {
+                self.inner.write_str(&self.pending)?;
+                self.pending.clear();
+            }
+            self.inner.write_str(core)?;
+        }
+        self.pending.push_str(trail);
+        Ok(())
+    }
+}
+
+impl<W: fmt::Write> Write2 for Trimmer<'_, W> {
+    fn collapse_ws(&mut self) {
+        if self.pending.is_empty() {
+            self.skip_leading_ws = true;
+        } else {
+            self.pending.clear();
+        }
+    }
+
+    fn flush_ws(&mut self) -> fmt::Result {
+        if !self.pending.is_empty() {
+            self.inner.write_str(&self.pending)?;
+            self.pending.clear();
+        }
+        Ok(())
     }
 }

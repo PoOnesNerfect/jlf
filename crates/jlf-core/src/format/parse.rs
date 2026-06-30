@@ -192,9 +192,18 @@ fn crunch_arg(
     let content = content.trim();
 
     // param is a field
-    let (name_part, format) = match content.split_once(':') {
+    let (name_part, mut format) = match content.split_once(':') {
         Some((name, styles)) => (name, parse_format(Some(styles), no_color, compact)?),
         None => (content, parse_format(None, no_color, compact)?),
+    };
+
+    // `{?field}`: optional — collapse one adjacent space when it renders empty.
+    let name_part = match name_part.strip_prefix('?') {
+        Some(rest) => {
+            format.optional = true;
+            rest
+        }
+        None => name_part,
     };
 
     let mut fields = FieldOptions::new();
@@ -274,6 +283,7 @@ pub fn parse_format(
             is_json,
             indent,
             is_level,
+            optional: false,
             markup_styles,
         });
     };
@@ -364,6 +374,7 @@ pub fn parse_format(
         is_json,
         indent,
         is_level,
+        optional: false,
         markup_styles,
     })
 }

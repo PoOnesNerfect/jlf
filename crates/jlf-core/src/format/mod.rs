@@ -23,6 +23,9 @@ enum Field {
 pub struct Formatter {
     pieces: Vec<Piece>,
     args: Vec<Arg>,
+    /// Whether any arg is an optional `{?field}` — gates the (slightly costlier)
+    /// whitespace-collapsing render path so plain templates pay nothing.
+    has_optional: bool,
 }
 
 impl Formatter {
@@ -36,7 +39,13 @@ impl Formatter {
 
         parse::crunch_input(&mut pieces, &mut args, input, no_color, compact)?;
 
-        Ok(Formatter { pieces, args })
+        let has_optional = args.iter().any(|(_, fmt)| fmt.optional);
+
+        Ok(Formatter {
+            pieces,
+            args,
+            has_optional,
+        })
     }
 
     pub fn as_log<'a>(&'a self, json: &'a Json<'a>) -> FormattedLog<'a> {
@@ -81,5 +90,8 @@ pub struct Format {
     // special type of modifier only applicable to level field, where the style
     // changes based on the level
     pub is_level: bool,
+    // `{?field}`: when this field renders empty, collapse one adjacent space so
+    // an absent field leaves no stray gap.
+    pub optional: bool,
     pub markup_styles: MarkupStyles,
 }

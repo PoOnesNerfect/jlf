@@ -210,3 +210,60 @@ fn key_is_true_for_present_but_falsey_field() {
 fn key_or_list_falls_through_to_first_present() {
     assert_eq!(run(&["{#key msg}m{:else key message}message{/key}"], COND).0, "message\n");
 }
+
+/// `{?field}` collapses one adjacent space when the field is empty/absent, but
+/// leaves plain `{field}` and intentional spacing untouched.
+mod optional_field {
+    use super::run;
+
+    fn render(template: &str, json: &str) -> String {
+        run(&[template], &format!("{json}\n")).0
+    }
+
+    #[test]
+    fn collapses_one_space_in_the_middle_when_absent() {
+        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","c":"C"}"#), "A C\n");
+    }
+
+    #[test]
+    fn keeps_spacing_when_present() {
+        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","b":"B","c":"C"}"#), "A B C\n");
+    }
+
+    #[test]
+    fn trims_trailing_space_at_line_end() {
+        assert_eq!(render("{a} {?b}", r#"{"a":"A"}"#), "A\n");
+    }
+
+    #[test]
+    fn trims_leading_space_at_line_start() {
+        assert_eq!(render("{?a} {b}", r#"{"b":"B"}"#), "B\n");
+    }
+
+    #[test]
+    fn collapses_consecutive_absent_optionals() {
+        assert_eq!(render("{a} {?b} {?c} {d}", r#"{"a":"A","d":"D"}"#), "A D\n");
+    }
+
+    #[test]
+    fn empty_string_value_also_collapses() {
+        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","b":"","c":"C"}"#), "A C\n");
+    }
+
+    #[test]
+    fn plain_field_does_not_collapse() {
+        // a missing plain {b} leaves the two surrounding spaces intact
+        assert_eq!(render("{a} {b} {c}", r#"{"a":"A","c":"C"}"#), "A  C\n");
+    }
+
+    #[test]
+    fn intentional_indentation_is_preserved() {
+        assert_eq!(render("  {?label}: {v}", r#"{"label":"L","v":"V"}"#), "  L: V\n");
+    }
+
+    #[test]
+    fn fallbacks_and_styles_work_on_optionals() {
+        assert_eq!(render("{a} {?x.y|z} {c}", r#"{"a":"A","z":"Z","c":"C"}"#), "A Z C\n");
+        assert_eq!(render("{a} {?x.y|z} {c}", r#"{"a":"A","c":"C"}"#), "A C\n");
+    }
+}
