@@ -554,3 +554,29 @@ mod recipes_config {
         assert_eq!(run_in_cfg(cfg, &["@g", "-c"], LOGS), "sm a\nsm b <c>\n");
     }
 }
+
+/// Phase 6: optional variable include `{?@name}` collapses when its field is
+/// absent (so the recipe-style default works).
+mod recipes_optional_include {
+    use super::run;
+
+    #[test]
+    fn optional_include_renders_when_present() {
+        let out = run(
+            &["-v", "lvl={lvl|level:level}", "-v", "o={?@lvl}{msg}", "{&o}"],
+            "{\"level\":\"INFO\",\"msg\":\"hi\"}\n",
+        )
+        .0;
+        assert_eq!(out, "INFOhi\n");
+    }
+
+    #[test]
+    fn optional_include_collapses_when_absent() {
+        let out = run(
+            &["-v", "lvl={lvl|level:level}", "-v", "o={?@lvl} {msg}", "{&o}"],
+            "{\"msg\":\"hi\"}\n",
+        )
+        .0;
+        assert_eq!(out, "hi\n");
+    }
+}

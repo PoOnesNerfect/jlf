@@ -1,4 +1,4 @@
-use std::fmt::{self, Write};
+use std::fmt;
 
 use color_eyre::eyre::{eyre, Result};
 
@@ -28,7 +28,7 @@ impl fmt::Display for ExpandedFormat<'_> {
 
 #[inline]
 fn write_input(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     input: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
@@ -54,7 +54,7 @@ fn write_input(
 }
 
 fn write_chunk(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     chunk: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
@@ -70,9 +70,16 @@ fn write_chunk(
         if let Some(end) = part.find('}') {
             let content = &part[..end];
 
+            // `?` prefix on a variable include (`{?@name}`) makes the inlined
+            // field optional. Detect it before the variable dispatch.
+            let (optional, content) = match content.strip_prefix('?') {
+                Some(rest) if rest.starts_with('&') || rest.starts_with('@') => (true, rest),
+                _ => (false, content),
+            };
+
             // '&' (or its alias '@') means a variable and needs to be expanded
             if content.starts_with('&') || content.starts_with('@') {
-                write_variable(f, content, variables)?;
+                write_variable(f, content, variables, optional)?;
             } else if let Some(content) = content.strip_prefix('#') {
                 write_cond(f, content, variables)?;
             } else if let Some(content) = content.strip_prefix(':') {
@@ -97,10 +104,28 @@ fn write_chunk(
 }
 
 fn write_variable(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     content: &str,
     variables: &[(String, String)],
+    optional: bool,
 ) -> fmt::Result {
+    // For `{?@name}`, expand into a scratch buffer, then make the result
+    // optional by injecting `?` into its single field group (`{x}` -> `{?x}`).
+    // A multi-field expansion can't be made optional this way, so it passes
+    // through unchanged.
+    if optional {
+        let mut scratch = String::new();
+        write_variable(&mut scratch, content, variables, false)?;
+        let t = scratch.trim_end();
+        let trailing = &scratch[t.len()..];
+        if let Some(inner) = t.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            if !inner.contains('{') {
+                return f.write_fmt(format_args!("{{?{inner}}}{trailing}"));
+            }
+        }
+        return f.write_str(&scratch);
+    }
+
     // if there's a formatting like `{&var:dimmed}`, it must be a field
     if let Some((content, style)) = content.split_once(':') {
         let mut e = String::new();
@@ -127,7 +152,7 @@ fn write_variable(
 }
 
 fn write_cond(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     content: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
@@ -150,7 +175,7 @@ fn write_cond(
 }
 
 fn write_cond_else(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     content: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {
@@ -173,7 +198,7 @@ fn write_cond_else(
 }
 
 fn write_arg(
-    f: &mut fmt::Formatter<'_>,
+    f: &mut impl fmt::Write,
     content: &str,
     variables: &[(String, String)],
 ) -> fmt::Result {

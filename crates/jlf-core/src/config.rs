@@ -163,16 +163,21 @@ pub struct PresetDef {
 
 /// The built-in default template variables, used when no config overrides them.
 /// Shared by the CLI and the TUI so both render records identically.
+///
+/// The recipe-style form (docs/RECIPES.md): `output` joins reusable field
+/// variables; each field is optional (`{?…}`) so an absent one collapses its
+/// space, and the separator before the JSON is chosen by the `compact` flag.
+/// Overriding any field variable (e.g. `-v level=…`) still recolors the output.
 pub fn default_variables() -> Vec<(String, String)> {
     [
         (
             "output",
-            "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}",
+            "{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{&data}",
         ),
-        ("timestamp", "{#key timestamp}{timestamp:dimmed} {/key}"),
-        ("level", "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"),
-        ("message", "{message|msg|body|fields.message}"),
-        ("data", "{..:json}"),
+        ("timestamp", "{?timestamp:dimmed} "),
+        ("level", "{?lvl|level|severity:level} "),
+        ("message", "{?message|msg|body|fields.message}"),
+        ("data", "{?..:json}"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))

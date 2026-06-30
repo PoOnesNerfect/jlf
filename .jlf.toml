@@ -1,14 +1,35 @@
-# Default config values
-[config]
-format = "{&output}"
-compact = false
-no_color = false
-strict = false
+# Default config + recipes. Copy this to your config dir
+# ($XDG_CONFIG_HOME/jlf/config.toml) or workspace (.jlf.toml / jlf.toml).
+# See docs/RECIPES.md for the full recipe model.
 
-# Default variables
-[variables]
-output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
-timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
-level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
-message   = "{message|msg|body|fields.message}"
-data      = "{..:json}"
+[config]
+format   = "{&output}"   # the default format renders the `output` recipe
+compact  = false
+no_color = false
+strict   = false
+
+# `output` is the entry point: it joins the field recipes below. Each field is
+# optional ({?@...}), so an absent one collapses its space; output.compact only
+# changes the separator before the JSON.
+[recipe.output]
+body = "{?@timestamp} {?@level} {?@message}\n{?@data}"
+
+[recipe.output.compact]
+body = "{?@timestamp} {?@level} {?@message} {?@data}"
+
+# Field recipes - reusable as {@name} in a template, name=... in a filter, or
+# `stats name` in a summary. Override one (e.g. -v level=...) to restyle.
+[recipe.timestamp]
+field = "timestamp"
+style = "dimmed"
+
+[recipe.level]
+field = "lvl|level|severity"
+style = "level"
+
+[recipe.message]
+field = "message|msg|body|fields.message"
+
+[recipe.data]
+field = ".."
+style = "json"
