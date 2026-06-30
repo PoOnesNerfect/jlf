@@ -40,6 +40,24 @@ pub struct ConfigFile {
     pub variables: Option<Vec<(String, String)>>,
 }
 
+/// The built-in default template variables, used when no config overrides them.
+/// Shared by the CLI and the TUI so both render records identically.
+pub fn default_variables() -> Vec<(String, String)> {
+    [
+        (
+            "output",
+            "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}",
+        ),
+        ("timestamp", "{#key timestamp}{timestamp:dimmed} {/key}"),
+        ("level", "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"),
+        ("message", "{message|msg|body|fields.message}"),
+        ("data", "{..:json}"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect()
+}
+
 fn de_map_to_list<'de, D>(de: D) -> Result<Option<Vec<(String, String)>>, D::Error>
 where
     D: serde::Deserializer<'de>,

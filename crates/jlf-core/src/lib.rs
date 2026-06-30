@@ -7,7 +7,7 @@ mod format;
 pub use format::{FormattedLog, Formatter};
 
 mod config;
-pub use config::{get_config, Config, ConfigFile};
+pub use config::{default_variables, get_config, Config, ConfigFile};
 
 mod expand;
 pub use expand::expanded_format;

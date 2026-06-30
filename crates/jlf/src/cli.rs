@@ -378,25 +378,7 @@ fn get_variables(
     from_config: Option<Vec<(String, String)>>,
     args: Option<Vec<String>>,
 ) -> Vec<(String, String)> {
-    let mut variables = vec![
-        (
-            "output".to_owned(),
-            "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}".to_owned(),
-        ),
-        (
-            "timestamp".to_owned(),
-            "{#key timestamp}{timestamp:dimmed} {/key}".to_owned(),
-        ),
-        (
-            "level".to_owned(),
-            "{#key level|lvl|severity}{level|lvl|severity:level} {/key}".to_owned(),
-        ),
-        (
-            "message".to_owned(),
-            "{message|msg|body|fields.message}".to_owned(),
-        ),
-        ("data".to_owned(), "{..:json}".to_owned()),
-    ];
+    let mut variables = jlf_core::default_variables();
 
     if let Some(from_config) = from_config {
         for (k2, v2) in from_config {
