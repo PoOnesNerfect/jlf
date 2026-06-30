@@ -17,3 +17,6 @@ pub use filter::{matches_all, Filter};
 
 mod redact;
 pub use redact::redact;
+
+mod digest;
+pub use digest::Digest;

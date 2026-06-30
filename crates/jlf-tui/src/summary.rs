@@ -96,29 +96,25 @@ pub fn top(lines: &[&str], field: &str, n: usize) -> Summary {
 /// `stats field`: count/min/max/mean/p50/p90/p99 over numeric values.
 pub fn stats(lines: &[&str], field: &str) -> Summary {
     let p = path(field);
-    let mut vs: Vec<f64> = Vec::new();
+    let mut d = jlf_core::Digest::new();
     for line in lines {
         if let Some(j) = parsed(line) {
             if let Some(n) = scalar(resolve(&j, &p)).and_then(|s| s.parse::<f64>().ok()) {
-                vs.push(n);
+                d.add(n);
             }
         }
     }
-    let rows = if vs.is_empty() {
+    let rows = if d.count() == 0 {
         vec!["count 0".into(), "(no numeric values)".into()]
     } else {
-        vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let n = vs.len();
-        let sum: f64 = vs.iter().sum();
-        let pct = |q: f64| vs[(((n - 1) as f64) * q).round() as usize];
         vec![
-            format!("count {n}"),
-            format!("min   {:.2}", vs[0]),
-            format!("max   {:.2}", vs[n - 1]),
-            format!("mean  {:.2}", sum / n as f64),
-            format!("p50   {:.2}", pct(0.5)),
-            format!("p90   {:.2}", pct(0.9)),
-            format!("p99   {:.2}", pct(0.99)),
+            format!("count {}", d.count()),
+            format!("min   {:.2}", d.min()),
+            format!("max   {:.2}", d.max()),
+            format!("mean  {:.2}", d.mean()),
+            format!("p50   {:.2}", d.quantile(0.5)),
+            format!("p90   {:.2}", d.quantile(0.9)),
+            format!("p99   {:.2}", d.quantile(0.99)),
         ]
     };
     Summary {

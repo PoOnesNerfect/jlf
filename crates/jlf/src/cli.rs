@@ -508,14 +508,6 @@ fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
     json.as_str().or_else(|| json.as_value())
 }
 
-fn pct(sorted: &[f64], q: f64) -> f64 {
-    if sorted.is_empty() {
-        return f64::NAN;
-    }
-    let i = ((sorted.len() as f64 - 1.0) * q).round() as usize;
-    sorted[i]
-}
-
 /// `stats <field> [by <group>]`: numeric summary, optionally grouped.
 fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
@@ -540,7 +532,8 @@ fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
 
     let mut buf = open_input(input)?;
     let mut line = String::new();
-    let mut groups: std::collections::HashMap<String, Vec<f64>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, jlf_core::Digest> =
+        std::collections::HashMap::new();
     let mut skipped: u64 = 0;
     while buf.read_line(&mut line)? != 0 {
         if !line.trim().is_empty() {
@@ -555,7 +548,7 @@ fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
                             .as_ref()
                             .map(|g| scalar(resolve(&json, g)).unwrap_or("∅").to_owned())
                             .unwrap_or_default();
-                        groups.entry(key).or_default().push(n);
+                        groups.entry(key).or_default().add(n);
                     }
                     None => skipped += 1,
                 }
@@ -566,25 +559,32 @@ fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
 
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let mut rows: Vec<_> = groups.into_iter().collect();
-    rows.sort_by_key(|r| std::cmp::Reverse(r.1.len()));
-    let summarize = |vs: &mut Vec<f64>| {
-        vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let n = vs.len();
-        let sum: f64 = vs.iter().sum();
-        (n, vs[0], vs[n - 1], sum / n as f64, pct(vs, 0.5), pct(vs, 0.9), pct(vs, 0.99))
+    rows.sort_by_key(|r| std::cmp::Reverse(r.1.count()));
+    // Percentiles come from the digest: exact for normal inputs, t-digest
+    // approximation past ~50k values per group (count/min/max/mean stay exact).
+    let summarize = |d: &mut jlf_core::Digest| {
+        (
+            d.count(),
+            d.min(),
+            d.max(),
+            d.mean(),
+            d.quantile(0.5),
+            d.quantile(0.9),
+            d.quantile(0.99),
+        )
     };
     if let Some(m) = fmt {
         let head: &[&str] = &["group", "count", "min", "mean", "p50", "p90", "p99"];
-        write_table(&mut stdout, head, rows.iter_mut().map(|(k, vs)| {
-            let (n, min, _mx, mean, p50, p90, p99) = summarize(vs);
+        write_table(&mut stdout, head, rows.iter_mut().map(|(k, d)| {
+            let (n, min, _mx, mean, p50, p90, p99) = summarize(d);
             vec![k.clone(), n.to_string(), fmt2(min), fmt2(mean), fmt2(p50), fmt2(p90), fmt2(p99)]
         }), m)?;
     } else {
         if group.is_some() {
             writeln!(stdout, "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10}", "group", "count", "min", "mean", "p50", "p99")?;
         }
-        for (k, mut vs) in rows {
-            let (n, min, max, mean, p50, p90, p99) = summarize(&mut vs);
+        for (k, mut d) in rows {
+            let (n, min, max, mean, p50, p90, p99) = summarize(&mut d);
             if group.is_some() {
                 writeln!(stdout, "{k:<24} {n:>8} {min:>10.2} {mean:>10.2} {p50:>10.2} {p99:>10.2}")?;
             } else {
