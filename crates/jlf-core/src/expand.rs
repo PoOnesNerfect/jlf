@@ -144,8 +144,11 @@ fn write_variable(
             f.write_char('}')?;
         }
     } else {
-        let value = get_variable(variables, &content[1..]).unwrap();
-        write_input(f, value, variables)?;
+        // An undefined variable renders empty rather than crashing — a single
+        // typo in a template/recipe shouldn't abort the whole stream.
+        if let Ok(value) = get_variable(variables, &content[1..]) {
+            write_input(f, value, variables)?;
+        }
     }
 
     Ok(())
@@ -260,7 +263,11 @@ fn write_field(
 }
 
 fn get_variable_field<'a>(variables: &'a [(String, String)], key: &str) -> &'a str {
-    let var = get_variable(variables, key).unwrap();
+    // Undefined variable -> empty (treated like an absent field) instead of a
+    // panic, so a typo'd `{@name}` degrades gracefully.
+    let Ok(var) = get_variable(variables, key) else {
+        return "";
+    };
     if var.is_empty() {
         return var;
     }

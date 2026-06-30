@@ -580,3 +580,21 @@ mod recipes_optional_include {
         assert_eq!(out, "hi\n");
     }
 }
+
+/// An undefined variable/recipe reference renders empty instead of panicking.
+mod undefined_variable {
+    use super::run;
+
+    #[test]
+    fn undefined_include_does_not_crash() {
+        let (out, code) = run(&["-v", "o={@nope}{a}", "{&o}"], "{\"a\":\"x\"}\n");
+        assert_eq!(code, 0);
+        assert_eq!(out, "x\n");
+    }
+
+    #[test]
+    fn undefined_optional_include_does_not_crash() {
+        let (_out, code) = run(&["-v", "o={?@nope} {a}", "{&o}"], "{\"a\":\"x\"}\n");
+        assert_eq!(code, 0);
+    }
+}
