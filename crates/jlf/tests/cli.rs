@@ -447,3 +447,41 @@ mod recipes_phase1 {
         assert_eq!(run(&["lvl|level|severity=error", "{msg}"], logs).0, "a\nc\n");
     }
 }
+
+/// Phase 5 render rules: optional rest is empty when nothing's left over, and
+/// the `?`-collapse absorbs an adjacent newline.
+mod recipes_phase5 {
+    use super::run;
+
+    fn render(template: &str, json: &str) -> String {
+        run(&[template], &format!("{json}\n")).0
+    }
+
+    #[test]
+    fn optional_rest_is_empty_when_fully_consumed() {
+        // was "X {}" before; the {?..} now collapses to nothing
+        assert_eq!(render("{a} {?..:json}", r#"{"a":"X"}"#), "X\n");
+    }
+
+    #[test]
+    fn optional_rest_renders_when_leftover_exists() {
+        let out = render("{a} {?..:json}", r#"{"a":"X","b":"Y"}"#);
+        assert!(out.starts_with("X {"), "got: {out:?}");
+        assert!(out.contains("\"b\": \"Y\""), "got: {out:?}");
+    }
+
+    #[test]
+    fn collapse_absorbs_a_newline_separator() {
+        // newline before an empty optional is dropped
+        assert_eq!(render("{a}\n{?..:json}", r#"{"a":"X"}"#), "X\n");
+        // ...but stays when the optional renders
+        let out = render("{a}\n{?..:json}", r#"{"a":"X","b":"Y"}"#);
+        assert!(out.starts_with("X\n{"), "got: {out:?}");
+    }
+
+    #[test]
+    fn plain_rest_still_prints_empty_object() {
+        // only the `?` form collapses; plain {..} is unchanged
+        assert_eq!(render("{a} {..:json}", r#"{"a":"X"}"#), "X {}\n");
+    }
+}

@@ -88,10 +88,15 @@ fn write_piece<'a>(
                 let arg = &args[*i];
                 if arg.1.optional {
                     // Render the optional field aside; if it produced nothing,
-                    // collapse a neighbouring space instead of emitting it.
+                    // collapse a neighbouring space instead of emitting it. An
+                    // optional rest (`{?..}`) with no leftover fields counts as
+                    // empty too (so it doesn't print a bare `{}`/`[]`).
                     let mut scratch = String::new();
-                    write_arg(&mut scratch, arg, json, used_fields)?;
-                    if scratch.is_empty() {
+                    let empty = rest_arg_without_content(arg, json, used_fields) || {
+                        write_arg(&mut scratch, arg, json, used_fields)?;
+                        scratch.is_empty()
+                    };
+                    if empty {
                         f.collapse_ws();
                     } else {
                         f.write_str(&scratch)?;
@@ -140,6 +145,38 @@ fn write_piece<'a>(
     }
 
     Ok(piece_i + 1)
+}
+
+/// True when an optional arg's selected field is the rest (`..`) and there are no
+/// leftover fields to show — so `{?..}` renders empty and collapses its space
+/// rather than printing a bare `{}`/`[]`. A present earlier fallback (`{?a|..}`
+/// with `a` set) returns false, since rest is never reached.
+fn rest_arg_without_content<'a>(
+    (field_options, _): &'a Arg,
+    json: &'a Json<'a>,
+    used_fields: &SmallVec<[&'a Field; 5]>,
+) -> bool {
+    for field in field_options {
+        match field {
+            Field::Whole => return false,
+            Field::Rest => {
+                return !with_excluded(used_fields, |excluded| json.has_rest_content(excluded));
+            }
+            Field::Names(names) => {
+                let mut val = json;
+                for arg in names {
+                    val = match arg {
+                        FieldType::Name(name) => val.get(name),
+                        FieldType::Index(index) => val.get_i(*index),
+                    };
+                }
+                if !val.is_null() {
+                    return false; // this fallback renders; rest isn't reached
+                }
+            }
+        }
+    }
+    false
 }
 
 fn test_cond<'a>(
@@ -522,9 +559,12 @@ impl<'a, W: fmt::Write> Trimmer<'a, W> {
 
 impl<W: fmt::Write> fmt::Write for Trimmer<'_, W> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        // Collapsible separators include newlines, not just spaces/tabs, so an
+        // empty optional can absorb a line break (e.g. the `\n` before `{?@data}`).
+        const WS: [char; 4] = [' ', '\t', '\n', '\r'];
         let mut s = s;
         if self.skip_leading_ws {
-            let trimmed = s.trim_start_matches([' ', '\t']);
+            let trimmed = s.trim_start_matches(WS);
             let stripped_some = trimmed.len() != s.len();
             s = trimmed;
             // Keep skipping only while the run is still all whitespace; stop once
@@ -536,7 +576,7 @@ impl<W: fmt::Write> fmt::Write for Trimmer<'_, W> {
         if s.is_empty() {
             return Ok(());
         }
-        let core_len = s.trim_end_matches([' ', '\t']).len();
+        let core_len = s.trim_end_matches(WS).len();
         let (core, trail) = s.split_at(core_len);
         if !core.is_empty() {
             if !self.pending.is_empty() {
