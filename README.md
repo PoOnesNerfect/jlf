@@ -318,6 +318,11 @@ $ jlf top user level=error
 top 2 of 2 distinct (2 values)
 ```
 
+All summaries run in a single pass with bounded memory. `stats` keeps exact
+percentiles for typical inputs and automatically switches to a t-digest sketch
+past ~50k values per group, so percentiles stay constant-memory on huge streams
+(`count`, `min`, `max`, and `mean` remain exact either way).
+
 ## Extensions
 
 `jlf` dispatches unknown subcommands to `jlf-<name>` on your `PATH` (git-style),
@@ -552,6 +557,25 @@ echo "$line" | jlf 'user({data.user_id}): {message}\n{..}'
 #   }
 # }
 ```
+
+### Optional fields (`{?field}`)
+
+Prefix a field with `?` to make it _optional_: when it renders empty (the field
+is absent, `null`, or an empty string) **jlf** collapses one adjacent space, so a
+missing field leaves no stray gap. Plain `{field}` is unchanged, so spacing you
+add on purpose (such as indentation) is preserved.
+
+```sh
+# `req_id` is optional: present on some lines, missing on others
+echo '{"level":"info","req_id":"abc","msg":"ok"}' | jlf '{level} {?req_id} {msg}'
+# -> info abc ok
+
+echo '{"level":"info","msg":"ok"}'                | jlf '{level} {?req_id} {msg}'
+# -> info ok          (no double space where req_id would be)
+```
+
+Optional fields support fallbacks and modifiers like any other field
+(`{?trace_id|span_id}`, `{?level:level}`).
 
 ### Styling Fields
 
