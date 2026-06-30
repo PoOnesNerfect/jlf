@@ -47,9 +47,13 @@ impl App {
     pub fn new(rx: Receiver<String>) -> color_eyre::Result<Self> {
         // Render list rows with the same default template the CLI uses, but
         // forced compact + uncolored so each record is a single plain line that
-        // ratatui can lay out and highlight itself.
+        // ratatui can lay out and highlight itself. Rows are always compact, so
+        // recipe `compact` overrides apply.
         let variables = match jlf_core::get_config() {
-            Ok(cfg) => merge_variables(cfg.variables),
+            Ok(mut cfg) => {
+                cfg.resolve_recipes(&["compact"]);
+                merge_variables(cfg.variables)
+            }
             Err(_) => jlf_core::default_variables(),
         };
         let expanded = expanded_format("{&output}", &variables);

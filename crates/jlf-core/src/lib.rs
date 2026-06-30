@@ -7,7 +7,9 @@ mod format;
 pub use format::{Escape, FormattedLog, Formatter};
 
 mod config;
-pub use config::{default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef};
+pub use config::{
+    default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef, Recipe,
+};
 
 mod expand;
 pub use expand::expanded_format;

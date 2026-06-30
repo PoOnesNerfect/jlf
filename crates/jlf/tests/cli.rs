@@ -485,3 +485,72 @@ mod recipes_phase5 {
         assert_eq!(render("{a} {..:json}", r#"{"a":"X"}"#), "X {}\n");
     }
 }
+
+/// Phases 2-4: unified `[recipe.*]` config (variable + preset + format + named
+/// field) resolved through `@name`.
+mod recipes_config {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    fn run_in_cfg(config: &str, args: &[&str], stdin: &str) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "jlf_recipe_{}_{}",
+            std::process::id(),
+            args.join("_").replace(['@', '=', '/', ' ', '|'], "-")
+        ));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("jlf.toml"), config).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_jlf"))
+            .args(args)
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    const LOGS: &str = concat!(
+        "{\"ts\":\"t1\",\"level\":\"info\",\"message\":\"a\",\"x\":1}\n",
+        "{\"ts\":\"t2\",\"level\":\"error\",\"message\":\"b <c>\"}\n",
+    );
+
+    #[test]
+    fn named_field_recipe_inlines_and_filters() {
+        let cfg = "[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n";
+        // inline {@level}
+        assert_eq!(run_in_cfg(cfg, &["{@level} {message}"], LOGS), "info a\nerror b <c>\n");
+    }
+
+    #[test]
+    fn preset_recipe_runs_with_filter_and_body() {
+        let cfg = "[recipe.errors]\nfilter = \"level=error\"\nbody = \"{ts} {message}\"\n";
+        assert_eq!(run_in_cfg(cfg, &["@errors"], LOGS), "t2 b <c>\n");
+    }
+
+    #[test]
+    fn format_recipe_frames_and_escapes() {
+        let cfg = "[recipe.report]\nescape = \"html\"\nheader = \"<table>\\n\"\nbody = \"<tr><td>{message}</td></tr>\"\nfooter = \"</table>\\n\"\n";
+        let out = run_in_cfg(cfg, &["@report"], LOGS);
+        assert!(out.starts_with("<table>\n"), "got:\n{out}");
+        assert!(out.contains("<tr><td>b &lt;c&gt;</td></tr>\n"), "got:\n{out}");
+        assert!(out.trim_end().ends_with("</table>"), "got:\n{out}");
+    }
+
+    #[test]
+    fn shorthand_recipes_table() {
+        let cfg = "[recipes]\nline = \"{level}: {message}\"\n";
+        assert_eq!(run_in_cfg(cfg, &["@line"], LOGS), "info: a\nerror: b <c>\n");
+    }
+
+    #[test]
+    fn conditional_override_on_compact() {
+        let cfg = "[recipe.g]\nbody = \"BIG {message}\"\n[recipe.g.compact]\nbody = \"sm {message}\"\n";
+        assert_eq!(run_in_cfg(cfg, &["@g"], LOGS), "BIG a\nBIG b <c>\n");
+        assert_eq!(run_in_cfg(cfg, &["@g", "-c"], LOGS), "sm a\nsm b <c>\n");
+    }
+}
