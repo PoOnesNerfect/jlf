@@ -1,0 +1,16 @@
+[package]
+name = "jlf-tui"
+description = "Interactive terminal UI for jlf: live-tail, filter, inspect, and summarize JSON logs"
+documentation = "https://docs.rs/jlf-tui"
+categories = ["command-line-interface"]
+keywords = ["json", "log", "tui", "viewer", "cli"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jlf-core = { version = "0.3.0", path = "../jlf-core" }
+ratatui = "0.29"
+color-eyre = "0.6.5"
