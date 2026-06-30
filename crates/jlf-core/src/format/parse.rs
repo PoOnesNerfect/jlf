@@ -284,6 +284,7 @@ pub fn parse_format(
             indent,
             is_level,
             optional: false,
+            escape: super::Escape::None,
             markup_styles,
         });
     };
@@ -375,6 +376,7 @@ pub fn parse_format(
         indent,
         is_level,
         optional: false,
+        escape: super::Escape::None,
         markup_styles,
     })
 }

@@ -267,3 +267,65 @@ mod optional_field {
         assert_eq!(render("{a} {?x.y|z} {c}", r#"{"a":"A","c":"C"}"#), "A C\n");
     }
 }
+
+/// `[format.*]` custom output formats and the `--format` flag.
+mod custom_format {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    fn run_in(dir: &std::path::Path, args: &[&str], stdin: &str) -> String {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_jlf"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    }
+
+    #[test]
+    fn custom_html_format_escapes_values() {
+        let dir = std::env::temp_dir().join(format!("jlf_fmt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `.git` marker so the dir is treated as the workspace root
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(
+            dir.join("jlf.toml"),
+            r#"
+[format.report]
+escape = "html"
+header = "<table>\n"
+row = "<tr><td>{level}</td><td>{msg}</td></tr>"
+footer = "</table>\n"
+"#,
+        )
+        .unwrap();
+
+        let out = run_in(
+            &dir,
+            &["--format", "report"],
+            "{\"level\":\"info\",\"msg\":\"a <b> & c\"}\n",
+        );
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(out.starts_with("<table>\n"), "got:\n{out}");
+        assert!(out.contains("<tr><td>info</td><td>a &lt;b&gt; &amp; c</td></tr>\n"), "got:\n{out}");
+        assert!(out.trim_end().ends_with("</table>"), "got:\n{out}");
+    }
+
+    #[test]
+    fn format_csv_is_a_builtin_shorthand() {
+        let dir = std::env::temp_dir().join(format!("jlf_fmt_csv_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = run_in(
+            &dir,
+            &["--format", "csv", "level,msg"],
+            "{\"level\":\"info\",\"msg\":\"hi\"}\n",
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(out, "level,msg\ninfo,hi\n");
+    }
+}

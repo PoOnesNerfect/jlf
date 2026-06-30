@@ -65,6 +65,11 @@ pub struct Args {
     #[arg(long)]
     md: bool,
 
+    /// Render with a named output format: a built-in (`csv`/`tsv`/`md`) or a
+    /// custom `[format.NAME]` from your config.
+    #[arg(long = "format", value_name = "NAME")]
+    format_name: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -167,6 +172,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         csv,
         tsv,
         md,
+        format_name,
         command,
     } = Args::parse();
 
@@ -185,9 +191,17 @@ pub fn run() -> Result<(), color_eyre::Report> {
         }
     }
 
-    // Export presets use a dedicated, escaping writer rather than the template.
-    if csv || tsv || md {
-        let mode = if md { Sep::Md } else if tsv { Sep::Tsv } else { Sep::Csv };
+    // `--format csv|tsv|md` are shorthands for the built-in exporters.
+    let builtin_export = if md || format_name.as_deref() == Some("md") {
+        Some(Sep::Md)
+    } else if tsv || format_name.as_deref() == Some("tsv") {
+        Some(Sep::Tsv)
+    } else if csv || format_name.as_deref() == Some("csv") {
+        Some(Sep::Csv)
+    } else {
+        None
+    };
+    if let Some(mode) = builtin_export {
         return run_export(fields, filters, mode, &input);
     }
 
@@ -199,7 +213,19 @@ pub fn run() -> Result<(), color_eyre::Report> {
     let ConfigFile {
         mut config,
         variables: config_variables,
+        formats,
+        presets: _,
     } = get_config()?;
+
+    // A non-built-in `--format NAME` selects a custom `[format.NAME]`.
+    if let Some(name) = format_name {
+        let Some(def) = formats.get(&name) else {
+            eprintln!("jlf: unknown format `{name}` (not a built-in and no [format.{name}] in config)");
+            std::process::exit(2);
+        };
+        return run_custom_format(def, filters, redact, &input, &config_variables);
+    }
+
     if let Some(format) = format {
         config.format = Some(format);
     }
@@ -678,6 +704,65 @@ enum Sep {
 }
 
 /// CSV/TSV/Markdown export with per-cell escaping. Columns from `fields`.
+/// Render records with a user-defined `[format.NAME]`: `header` and `footer`
+/// emitted once around per-record `row` templates, with interpolated values
+/// escaped per `escape`.
+fn run_custom_format(
+    def: &jlf_core::FormatDef,
+    filters: Vec<jlf_core::Filter>,
+    redact: Vec<String>,
+    input: &[String],
+    config_variables: &Option<Vec<(String, String)>>,
+) -> Result<(), color_eyre::Report> {
+    let escape = match def.escape.as_deref() {
+        None => jlf_core::Escape::None,
+        Some(name) => {
+            let Some(e) = jlf_core::Escape::from_name(name) else {
+                eprintln!("jlf: unknown escape `{name}` (expected `none` or `html`)");
+                std::process::exit(2);
+            };
+            e
+        }
+    };
+
+    let variables = get_variables(config_variables.clone(), None);
+    let expanded = expanded_format(&def.row, &variables);
+    let formatter = Formatter::new(&expanded, true, false)?.with_escape(escape);
+
+    let mut buf = open_input(input)?;
+    let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
+
+    if let Some(header) = &def.header {
+        write!(stdout, "{header}")?;
+    }
+
+    let mut line = String::new();
+    let mut out = String::new();
+    while buf.read_line(&mut line)? != 0 {
+        if !line.trim().is_empty() {
+            let mut json = Json::Null;
+            if json.parse_replace(&line).is_ok()
+                && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
+            {
+                if !redact.is_empty() {
+                    jlf_core::redact(&mut json, &redact);
+                }
+                out.clear();
+                formatter.as_log(&json).write_fmt(&mut out)?;
+                out.push('\n');
+                stdout.write_all(out.as_bytes())?;
+            }
+        }
+        line.clear();
+    }
+
+    if let Some(footer) = &def.footer {
+        write!(stdout, "{footer}")?;
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
 fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep, input: &[String]) -> Result<(), color_eyre::Report> {
     let cols: Vec<Vec<String>> = fields.iter().map(|f| f.split('.').map(str::to_owned).collect()).collect();
     let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());

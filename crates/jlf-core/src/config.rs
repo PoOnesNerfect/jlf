@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{fmt, fs, path::PathBuf};
 
 use etcetera::{choose_base_strategy, BaseStrategy};
@@ -38,6 +39,43 @@ pub struct ConfigFile {
     pub config: Config,
     #[serde(default, deserialize_with = "de_map_to_list")]
     pub variables: Option<Vec<(String, String)>>,
+    /// User-defined output formats from `[format.NAME]` tables.
+    #[serde(default, rename = "format")]
+    pub formats: HashMap<String, FormatDef>,
+    /// Saved argument bundles from `[preset.NAME]` tables.
+    #[serde(default, rename = "preset")]
+    pub presets: HashMap<String, PresetDef>,
+}
+
+/// A custom output format: `header`/`footer` printed once, `row` rendered per
+/// record, with interpolated values escaped per `escape`.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct FormatDef {
+    pub escape: Option<String>,
+    pub header: Option<String>,
+    pub row: String,
+    pub footer: Option<String>,
+}
+
+/// A saved bundle of arguments invoked by name (`@name` / `-p name`). Keys
+/// mirror the explicit flag forms; explicit CLI args layer on top.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct PresetDef {
+    /// Filters, as a single `key=value ...` string (space-separated).
+    #[serde(rename = "where")]
+    pub filter: Option<String>,
+    pub template: Option<String>,
+    pub fields: Option<String>,
+    pub redact: Option<String>,
+    pub compact: Option<bool>,
+    pub format: Option<String>,
+    // summary verbs: at most one is set
+    pub count: Option<String>,
+    pub stats: Option<String>,
+    pub top: Option<String>,
+    pub uniq: Option<String>,
+    pub by: Option<String>,
+    pub n: Option<usize>,
 }
 
 /// The built-in default template variables, used when no config overrides them.
@@ -112,10 +150,17 @@ pub struct Config {
 
 impl ConfigFile {
     fn merge(&mut self, other: Self) {
-        let Self { config, variables } = self;
+        let Self {
+            config,
+            variables,
+            formats,
+            presets,
+        } = self;
         let Self {
             config: config2,
             variables: variables2,
+            formats: formats2,
+            presets: presets2,
         } = other;
 
         if let Some(format) = config2.format {
@@ -130,6 +175,10 @@ impl ConfigFile {
         if let Some(strict) = config2.strict {
             config.strict = Some(strict);
         }
+
+        // Workspace-defined formats/presets override same-named base ones.
+        formats.extend(formats2);
+        presets.extend(presets2);
 
         match (variables, variables2) {
             (_, None) => (),

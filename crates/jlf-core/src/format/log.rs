@@ -265,17 +265,21 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
         is_level,
         indent,
         optional: _,
+        escape,
         markup_styles: json_styles,
     } = format;
     let indent = *indent;
     let is_level = *is_level;
+    let escape = *escape;
 
     if indent > 0 {
         write!(f, "{:indent$}", "", indent = indent)?;
     }
 
     if let Some(val) = json.as_str() {
-        if let Some(style) = style {
+        if escape != Escape::None {
+            write_escaped(f, escape, val)?;
+        } else if let Some(style) = style {
             if is_level {
                 match val {
                     "TRACE" | "trace" => write!(
@@ -304,7 +308,9 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
             write!(f, "{}", val)?;
         }
     } else if let Some(val) = json.as_value() {
-        if let Some(style) = style.as_ref() {
+        if escape != Escape::None {
+            write_escaped(f, escape, val)?;
+        } else if let Some(style) = style.as_ref() {
             write!(f, "{}", val.style(*style))?;
         } else {
             write!(f, "{}", val)?;
@@ -381,6 +387,26 @@ fn with_excluded<R>(
     let paths = build_excluded(used_fields);
     let excluded: SmallVec<[&[PathToken]; 5]> = paths.iter().map(|p| p.as_slice()).collect();
     f(&excluded)
+}
+
+/// Write `s` with the given escape applied (currently HTML entity escaping).
+fn write_escaped(f: &mut impl fmt::Write, escape: Escape, s: &str) -> fmt::Result {
+    match escape {
+        Escape::None => f.write_str(s),
+        Escape::Html => {
+            for c in s.chars() {
+                match c {
+                    '&' => f.write_str("&amp;")?,
+                    '<' => f.write_str("&lt;")?,
+                    '>' => f.write_str("&gt;")?,
+                    '"' => f.write_str("&quot;")?,
+                    '\'' => f.write_str("&#39;")?,
+                    _ => f.write_char(c)?,
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Renders the rest object (`{..}`) as a filtered view of `json`, skipping the

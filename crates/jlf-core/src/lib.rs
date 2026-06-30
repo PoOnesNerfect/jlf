@@ -4,10 +4,10 @@ mod json;
 pub use json::{parse_json, Json, ParseError};
 
 mod format;
-pub use format::{FormattedLog, Formatter};
+pub use format::{Escape, FormattedLog, Formatter};
 
 mod config;
-pub use config::{default_variables, get_config, Config, ConfigFile};
+pub use config::{default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef};
 
 mod expand;
 pub use expand::expanded_format;
