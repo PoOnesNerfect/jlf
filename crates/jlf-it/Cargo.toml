@@ -1,0 +1,16 @@
+[package]
+name = "jlf-it"
+description = "Interactive command builder for jlf: assemble a filter/view/summary/table step by step, preview it, then run or save it as a recipe"
+documentation = "https://docs.rs/jlf-it"
+categories = ["command-line-interface"]
+keywords = ["json", "log", "cli", "wizard", "interactive"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dialoguer = "0.11"
+console = "0.15"
+etcetera = "0.11"
