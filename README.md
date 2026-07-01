@@ -132,6 +132,7 @@ cargo install --path crates/jlf --locked
 - [Summaries](#summaries)
 - [Extensions](#extensions)
 - [Interactive viewer (jlf tui)](#interactive-viewer-jlf-tui)
+- [Command builder (jlf it)](#command-builder-jlf-it)
 - [Export](#export)
 - [Redaction](#redaction)
 - [Recipes](#recipes)
@@ -368,6 +369,32 @@ Keys:
 For example, press `/`, type `level=error`, `Enter` to keep only errors, then
 `:top user` to see the top users among them, or `:csv ts,level,msg` to write the
 current filtered view to `jlf-export.csv`.
+
+## Command builder (`jlf it`)
+
+`jlf it` is an interactive builder (like `npm create`) that assembles a command
+step by step, shows a **live preview** of its output against a sample, and then
+lets you run it, save it as a recipe, or both.
+
+```sh
+jlf it app.log          # build against a file
+cat app.log | jlf it    # ...or a pipe (drained for the sample)
+jlf it                  # ...or pick a sample interactively
+```
+
+It walks you through a mode (**View** / **Summarize** / **Export**), filters,
+and mode-specific options; after each build it runs the real `jlf` on the sample
+so you see exactly what you'll get. At the end you can **run it**, **save it as a
+recipe**, or both. Saving appends a `[recipe.NAME]` block to your workspace
+`.jlf.toml` or user config, so it's immediately usable:
+
+```
+✓ saved @errors → .jlf.toml
+  run it any time with: jlf @errors
+```
+
+`jlf it` needs `jlf-it` on your `PATH` (`cargo install jlf-it`), like other
+extensions.
 
 ## Export
 
