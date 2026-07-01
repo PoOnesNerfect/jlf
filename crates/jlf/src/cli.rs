@@ -139,16 +139,17 @@ struct OutFmt {
 }
 
 impl OutFmt {
-    fn mode(&self) -> Option<Sep> {
-        if self.csv {
-            Some(Sep::Csv)
+    fn mode(&self) -> Option<Table> {
+        let name = if self.csv {
+            "csv"
         } else if self.tsv {
-            Some(Sep::Tsv)
+            "tsv"
         } else if self.md {
-            Some(Sep::Md)
+            "md"
         } else {
-            None
-        }
+            return None;
+        };
+        Table::builtin(name)
     }
 }
 
@@ -226,6 +227,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         variables: config_variables,
         formats,
         presets,
+        tables,
         ..
     } = cfg;
 
@@ -271,7 +273,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
     // A preset can run a summary directly (`stats = "latency_ms"`, etc.).
     if let Some((verb, field, by, n)) = preset_summary {
-        let mode = output_sep(format_name.as_deref(), csv, tsv, md);
+        let mode = resolve_table(format_name.as_deref(), csv, tsv, md, &tables);
         let mut sargs = Vec::new();
         if !field.is_empty() {
             sargs.push(field);
@@ -292,9 +294,10 @@ pub fn run() -> Result<(), color_eyre::Report> {
         };
     }
 
-    // `--format csv|tsv|md` (or a preset's format) are exporter shorthands.
-    if let Some(mode) = output_sep(format_name.as_deref(), csv, tsv, md) {
-        return run_export(fields, filters, mode, &input);
+    // `--csv/--tsv/--md`, `--format NAME`, or a preset's `format` that names a
+    // column table (built-in or a recipe with a `separator`) export directly.
+    if let Some(table) = resolve_table(format_name.as_deref(), csv, tsv, md, &tables) {
+        return run_export(fields, filters, table, &input);
     }
 
     // A bare -f/--fields with no template builds a simple "{a} {b}" template.
@@ -506,18 +509,32 @@ fn preset_summary_from(
     }
 }
 
-/// Map the built-in output formats (`--csv/--tsv/--md` or `--format csv|tsv|md`)
-/// to a separator. Returns `None` for the default and for custom format names.
-fn output_sep(format_name: Option<&str>, csv: bool, tsv: bool, md: bool) -> Option<Sep> {
-    if md || format_name == Some("md") {
-        Some(Sep::Md)
-    } else if tsv || format_name == Some("tsv") {
-        Some(Sep::Tsv)
-    } else if csv || format_name == Some("csv") {
-        Some(Sep::Csv)
+/// The output-format name selected by `--csv/--tsv/--md` or `--format NAME`.
+/// `None` means the default (template) output.
+fn table_name(format_name: Option<&str>, csv: bool, tsv: bool, md: bool) -> Option<String> {
+    if md {
+        Some("md".into())
+    } else if tsv {
+        Some("tsv".into())
+    } else if csv {
+        Some("csv".into())
     } else {
-        None
+        format_name.map(str::to_owned)
     }
+}
+
+/// Resolve the selected output format to a column [`Table`], if it names one
+/// (built-in `csv`/`tsv`/`md` or a user recipe with a `separator`). A framed
+/// format name (e.g. `report`) resolves to `None` here and is handled elsewhere.
+fn resolve_table(
+    format_name: Option<&str>,
+    csv: bool,
+    tsv: bool,
+    md: bool,
+    tables: &std::collections::HashMap<String, jlf_core::TableDef>,
+) -> Option<Table> {
+    let name = table_name(format_name, csv, tsv, md)?;
+    tables.get(&name).map(Table::from_def)
 }
 
 /// Open the input: stdin when no files are given, otherwise the files chained in
@@ -590,7 +607,7 @@ fn get_variables(
 }
 
 /// `count` subcommand: count matching lines, or a field's value frequencies.
-fn run_count(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_count(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut filters = Vec::new();
     for a in args {
@@ -628,7 +645,7 @@ fn run_count(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
         rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         match fmt {
             Some(m) => {
-                write_table(&mut stdout, &["count", "value"], rows.iter().map(|(k, n)| vec![n.to_string(), k.clone()]), m)?;
+                write_table(&mut stdout, &["count", "value"], rows.iter().map(|(k, n)| vec![n.to_string(), k.clone()]), &m)?;
             }
             None => {
                 writeln!(stdout, "{:>10}  value", "count")?;
@@ -645,27 +662,17 @@ fn run_count(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
     Ok(())
 }
 
-/// Render rows in CSV/TSV/MD with a header.
+/// Render summary rows through a table with a header.
 fn write_table(
     w: &mut impl Write,
     head: &[&str],
     rows: impl Iterator<Item = Vec<String>>,
-    mode: Sep,
+    table: &Table,
 ) -> io::Result<()> {
-    let join = |cells: &[String]| -> String {
-        match mode {
-            Sep::Csv => cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join(","),
-            Sep::Tsv => cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join("\t"),
-            Sep::Md => format!("| {} |", cells.iter().map(|c| esc(c, mode)).collect::<Vec<_>>().join(" | ")),
-        }
-    };
     let head: Vec<String> = head.iter().map(|s| s.to_string()).collect();
-    writeln!(w, "{}", join(&head))?;
-    if matches!(mode, Sep::Md) {
-        writeln!(w, "| {} |", head.iter().map(|_| "---").collect::<Vec<_>>().join(" | "))?;
-    }
+    table.write_header(w, &head)?;
     for r in rows {
-        writeln!(w, "{}", join(&r))?;
+        writeln!(w, "{}", table.row(r.into_iter()))?;
     }
     Ok(())
 }
@@ -688,7 +695,7 @@ fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
 }
 
 /// `stats <field> [by <group>]`: numeric summary, optionally grouped.
-fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_stats(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut group: Option<Vec<String>> = None;
     let mut filters = Vec::new();
@@ -757,7 +764,7 @@ fn run_stats(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<()
         write_table(&mut stdout, head, rows.iter_mut().map(|(k, d)| {
             let (n, min, _mx, mean, p50, p90, p99) = summarize(d);
             vec![k.clone(), n.to_string(), fmt2(min), fmt2(mean), fmt2(p50), fmt2(p90), fmt2(p99)]
-        }), m)?;
+        }), &m)?;
     } else {
         if group.is_some() {
             writeln!(stdout, "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10}", "group", "count", "min", "mean", "p50", "p99")?;
@@ -822,7 +829,7 @@ fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, col
     Ok((by.into_iter().collect(), total, n))
 }
 
-fn run_top(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_top(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
     let (mut rows, total, n) = collect_field(args, input)?;
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -830,7 +837,7 @@ fn run_top(args: Vec<String>, fmt: Option<Sep>, input: &[String]) -> Result<(), 
         write_table(&mut out, &["count", "share", "value"], rows.iter().take(n).map(|(k, c)| {
             let p = if total > 0 { *c as f64 / total as f64 * 100.0 } else { 0.0 };
             vec![c.to_string(), format!("{p:.1}%"), k.clone()]
-        }), m)?;
+        }), &m)?;
     } else {
         writeln!(out, "{:>10}  {:>6}  value", "count", "share")?;
         for (k, c) in rows.iter().take(n) {
@@ -849,11 +856,80 @@ fn run_uniq(args: Vec<String>, input: &[String]) -> Result<(), color_eyre::Repor
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum Sep {
+/// A column table output format built from a [`jlf_core::TableDef`]: cells are
+/// escaped per `quote`, joined by `sep`, wrapped per row, with an optional
+/// Markdown-style `rule` row after the header.
+#[derive(Clone)]
+struct Table {
+    sep: String,
+    quote: Quote,
+    prefix: String,
+    suffix: String,
+    rule: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Quote {
     Csv,
     Tsv,
     Md,
+    None,
+}
+
+impl Table {
+    fn from_def(def: &jlf_core::TableDef) -> Table {
+        Table {
+            sep: def.separator.clone(),
+            quote: match def.escape.as_deref() {
+                Some("csv") => Quote::Csv,
+                Some("tsv") => Quote::Tsv,
+                Some("md") => Quote::Md,
+                _ => Quote::None,
+            },
+            prefix: def.row_prefix.clone().unwrap_or_default(),
+            suffix: def.row_suffix.clone().unwrap_or_default(),
+            rule: def.rule.clone(),
+        }
+    }
+
+    /// A built-in table by name (`csv`/`tsv`/`md`), for summary output which
+    /// doesn't consult user config.
+    fn builtin(name: &str) -> Option<Table> {
+        jlf_core::builtin_tables().get(name).map(Table::from_def)
+    }
+
+    /// Escape one cell for this table's quoting style.
+    fn esc(&self, s: &str) -> String {
+        match self.quote {
+            Quote::Csv => {
+                if s.contains('"') || s.contains('\n') || s.contains('\r') || s.contains(&self.sep) {
+                    format!("\"{}\"", s.replace('"', "\"\""))
+                } else {
+                    s.to_owned()
+                }
+            }
+            Quote::Tsv => s.replace(['\t', '\n', '\r'], " "),
+            Quote::Md => s.replace('|', "\\|").replace('\n', "<br>"),
+            Quote::None => s.to_owned(),
+        }
+    }
+
+    /// Render one row: prefix + escaped cells joined by sep + suffix.
+    fn row(&self, cells: impl Iterator<Item = String>) -> String {
+        let body = cells.map(|c| self.esc(&c)).collect::<Vec<_>>().join(&self.sep);
+        format!("{}{}{}", self.prefix, body, self.suffix)
+    }
+
+    /// Write the header row (unescaped column names) and any rule row.
+    fn write_header(&self, w: &mut impl Write, cols: &[String]) -> io::Result<()> {
+        writeln!(w, "{}", self.row(cols.iter().cloned()))?;
+        if let Some(rule) = &self.rule {
+            let cells = cols.iter().map(|_| rule.clone());
+            let body = cells.collect::<Vec<_>>().join(&self.sep);
+            writeln!(w, "{}{}{}", self.prefix, body, self.suffix)?;
+        }
+        Ok(())
+    }
 }
 
 /// CSV/TSV/Markdown export with per-cell escaping. Columns from `fields`.
@@ -916,63 +992,28 @@ fn run_custom_format(
     Ok(())
 }
 
-fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, mode: Sep, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, table: Table, input: &[String]) -> Result<(), color_eyre::Report> {
     let cols: Vec<Vec<String>> = fields.iter().map(|f| f.split('.').map(str::to_owned).collect()).collect();
     let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
 
-    // header
-    match mode {
-        Sep::Md => {
-            writeln!(stdout, "| {} |", fields.join(" | "))?;
-            writeln!(stdout, "| {} |", fields.iter().map(|_| "---").collect::<Vec<_>>().join(" | "))?;
-        }
-        Sep::Tsv => writeln!(stdout, "{}", fields.join("\t"))?,
-        Sep::Csv => writeln!(stdout, "{}", fields.iter().map(|f| esc(f, mode)).collect::<Vec<_>>().join(","))?,
-    }
+    table.write_header(&mut stdout, &fields)?;
 
     let mut buf = open_input(input)?;
     let mut line = String::new();
-    let mut row = String::new();
     while buf.read_line(&mut line)? != 0 {
         if !line.trim().is_empty() {
             let mut json = Json::Null;
             if json.parse_replace(&line).is_ok()
                 && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
             {
-                row.clear();
-                for (i, p) in cols.iter().enumerate() {
-                    if i > 0 {
-                        row.push_str(match mode {
-                            Sep::Csv => ",",
-                            Sep::Tsv => "\t",
-                            Sep::Md => " | ",
-                        });
-                    }
-                    let v = resolve(&json, p);
-                    row.push_str(&esc(scalar(v).unwrap_or(""), mode));
-                }
-                match mode {
-                    Sep::Md => writeln!(stdout, "| {row} |")?,
-                    _ => writeln!(stdout, "{row}")?,
-                }
+                let cells = cols
+                    .iter()
+                    .map(|p| scalar(resolve(&json, p)).unwrap_or("").to_owned());
+                writeln!(stdout, "{}", table.row(cells))?;
             }
         }
         line.clear();
     }
     stdout.flush()?;
     Ok(())
-}
-
-fn esc(s: &str, mode: Sep) -> String {
-    match mode {
-        Sep::Csv => {
-            if s.contains([',', '"', '\n', '\r']) {
-                format!("\"{}\"", s.replace('"', "\"\""))
-            } else {
-                s.to_owned()
-            }
-        }
-        Sep::Tsv => s.replace(['\t', '\n', '\r'], " "),
-        Sep::Md => s.replace('|', "\\|").replace('\n', "<br>"),
-    }
 }

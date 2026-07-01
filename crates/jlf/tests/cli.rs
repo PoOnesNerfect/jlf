@@ -649,3 +649,77 @@ mod recipe_override_sources {
         assert_eq!(run_in(&["@cmp"]), "[compact]\n");
     }
 }
+
+/// Output-format unification: `--csv/--tsv/--md` are predefined table recipes,
+/// and users can define new table formats with `separator`/`escape`/wrapping.
+mod table_recipes {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    fn run_in(config: &str, args: &[&str], stdin: &str) -> String {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "jlf_table_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("jlf.toml"), config).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_jlf"))
+            .args(args)
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn builtin_csv_unchanged() {
+        let out = run_in("", &["--csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
+        assert_eq!(out, "a,b\nx,y\n");
+    }
+
+    #[test]
+    fn builtin_md_unchanged() {
+        let out = run_in("", &["--md", "a"], "{\"a\":\"x\"}\n");
+        assert_eq!(out, "| a |\n| --- |\n| x |\n");
+    }
+
+    #[test]
+    fn custom_separator_table_with_csv_quoting() {
+        // pipe-separated; a cell containing the separator gets csv-quoted
+        let cfg = "[recipe.psv]\nseparator = \"|\"\nescape = \"csv\"\n";
+        let out = run_in(cfg, &["--format", "psv", "-f", "a,b"], "{\"a\":\"x\",\"b\":\"y|z\"}\n");
+        assert_eq!(out, "a|b\nx|\"y|z\"\n");
+    }
+
+    #[test]
+    fn custom_table_run_by_name_with_saved_fields_and_filter() {
+        let cfg = concat!(
+            "[recipe.grid]\n",
+            "separator = \" | \"\nrow_prefix = \"| \"\nrow_suffix = \" |\"\n",
+            "rule = \"===\"\nescape = \"md\"\nfields = \"a,b\"\nfilter = \"keep=1\"\n",
+        );
+        let logs = concat!(
+            "{\"a\":\"1\",\"b\":\"x\",\"keep\":1}\n",
+            "{\"a\":\"2\",\"b\":\"y\",\"keep\":0}\n",
+        );
+        let out = run_in(cfg, &["@grid"], logs);
+        assert_eq!(out, "| a | b |\n| === | === |\n| 1 | x |\n");
+    }
+
+    #[test]
+    fn user_can_override_builtin_csv() {
+        // redefine csv to use semicolons
+        let cfg = "[recipe.csv]\nseparator = \";\"\nescape = \"csv\"\n";
+        let out = run_in(cfg, &["--csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
+        assert_eq!(out, "a;b\nx;y\n");
+    }
+}

@@ -55,6 +55,13 @@ pub struct Recipe {
     pub header: Option<String>,
     pub footer: Option<String>,
     pub escape: Option<String>,
+    /// Table format: the cell separator (`,`, `\t`, ` | `). Its presence marks
+    /// this recipe as a column table (with dynamic `-f`/`fields` columns).
+    pub separator: Option<String>,
+    /// Optional per-row wrapper and Markdown-style rule (`---`) for tables.
+    pub row_prefix: Option<String>,
+    pub row_suffix: Option<String>,
+    pub rule: Option<String>,
     pub count: Option<String>,
     pub stats: Option<String>,
     pub top: Option<String>,
@@ -101,13 +108,32 @@ impl Recipe {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
         take!(body, fields, field, style, filter, redact, format, header, footer,
-              escape, count, stats, top, uniq, by, n, base);
+              escape, separator, row_prefix, row_suffix, rule,
+              count, stats, top, uniq, by, n, base);
     }
 
-    /// Does this recipe describe a custom output format (header/footer/escape)?
-    fn is_format(&self) -> bool {
-        self.header.is_some() || self.footer.is_some() || self.escape.is_some()
+    /// A column table format (`--csv`-like): driven by a cell `separator`.
+    fn is_table(&self) -> bool {
+        self.separator.is_some()
     }
+
+    /// Does this recipe describe a custom *framed* output format (header/footer,
+    /// or an `escape` without a table separator)?
+    fn is_format(&self) -> bool {
+        !self.is_table() && (self.header.is_some() || self.footer.is_some() || self.escape.is_some())
+    }
+}
+
+/// A column table output format (`csv`/`tsv`/`md` or a user-defined one): cells
+/// joined by `separator`, each escaped per `escape`, optionally wrapped per row
+/// and preceded by a Markdown-style `rule` row.
+#[derive(Debug, Default, Clone)]
+pub struct TableDef {
+    pub separator: String,
+    pub escape: Option<String>,
+    pub row_prefix: Option<String>,
+    pub row_suffix: Option<String>,
+    pub rule: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -128,6 +154,35 @@ pub struct ConfigFile {
     /// Full recipes from `[recipe.NAME]` tables.
     #[serde(default, rename = "recipe")]
     pub recipe: HashMap<String, Recipe>,
+    /// Column table formats — the built-ins `csv`/`tsv`/`md` plus any defined by
+    /// a recipe with a `separator`. Populated by `resolve_recipes`.
+    #[serde(skip)]
+    pub tables: HashMap<String, TableDef>,
+}
+
+/// The built-in `csv`/`tsv`/`md` table formats, seeded so they're selectable by
+/// name (`--format csv`, a recipe's `format = "md"`) and overridable in config.
+pub fn builtin_tables() -> HashMap<String, TableDef> {
+    HashMap::from([
+        (
+            "csv".to_owned(),
+            TableDef { separator: ",".into(), escape: Some("csv".into()), ..Default::default() },
+        ),
+        (
+            "tsv".to_owned(),
+            TableDef { separator: "\t".into(), escape: Some("tsv".into()), ..Default::default() },
+        ),
+        (
+            "md".to_owned(),
+            TableDef {
+                separator: " | ".into(),
+                escape: Some("md".into()),
+                row_prefix: Some("| ".into()),
+                row_suffix: Some(" |".into()),
+                rule: Some("---".into()),
+            },
+        ),
+    ])
 }
 
 /// A custom output format: `header`/`footer` printed once, `row` rendered per
@@ -245,6 +300,7 @@ impl ConfigFile {
             presets: presets2,
             recipes: recipes2,
             recipe: recipe2,
+            tables: tables2,
         } = other;
 
         if let Some(format) = config2.format {
@@ -265,6 +321,7 @@ impl ConfigFile {
         self.presets.extend(presets2);
         self.recipes.extend(recipes2);
         self.recipe.extend(recipe2);
+        self.tables.extend(tables2);
 
         match (&mut self.variables, variables2) {
             (_, None) => (),
@@ -291,6 +348,12 @@ impl ConfigFile {
     /// set of currently-true condition flags (e.g. `["compact"]`), used to apply
     /// `[recipe.NAME.<cond>]` overrides. Idempotent; call once flags are known.
     pub fn resolve_recipes(&mut self, active: &[&str]) {
+        // Seed the built-in csv/tsv/md tables first, so a user recipe of the
+        // same name can override them.
+        for (name, def) in builtin_tables() {
+            self.tables.entry(name).or_insert(def);
+        }
+
         // Body-only shorthand: a variable, and a runnable preset (template=body).
         let shorthand: Vec<(String, String)> = self.recipes.drain().collect();
         for (name, body) in shorthand {
@@ -334,11 +397,23 @@ impl ConfigFile {
         resolved
     }
 
-    /// Register a resolved recipe as a variable (inline), a preset (run), and a
-    /// format (if it frames output).
+    /// Register a resolved recipe as a variable (inline), a preset (run), a
+    /// framed format, and/or a column table.
     fn install_recipe(&mut self, name: &str, r: &Recipe) {
         if let Some(body) = r.inline_body() {
             self.set_variable(name.to_owned(), body);
+        }
+        if r.is_table() {
+            self.tables.insert(
+                name.to_owned(),
+                TableDef {
+                    separator: r.separator.clone().unwrap_or_default(),
+                    escape: r.escape.clone(),
+                    row_prefix: r.row_prefix.clone(),
+                    row_suffix: r.row_suffix.clone(),
+                    rule: r.rule.clone(),
+                },
+            );
         }
         if r.is_format() {
             self.formats.insert(
@@ -363,7 +438,11 @@ impl ConfigFile {
             fields: r.fields.clone(),
             redact: r.redact.clone(),
             compact: None,
-            format: r.format.clone().or_else(|| r.is_format().then(|| name.to_owned())),
+            // A format/table recipe runs through its own named output format.
+            format: r
+                .format
+                .clone()
+                .or_else(|| (r.is_format() || r.is_table()).then(|| name.to_owned())),
             count: r.count.clone(),
             stats: r.stats.clone(),
             top: r.top.clone(),
