@@ -371,7 +371,9 @@ current filtered view to `jlf-export.csv`.
 
 ## Export
 
-Render records to other formats from a comma-list of columns:
+Render records to a column table from a comma-list of columns. `--csv`/`--tsv`/
+`--md` are the built-in table formats (they're predefined recipes — see
+[Recipes](#recipes) to define your own dialect):
 
 ```sh
 jlf --csv ts,level,message       # CSV with header (cells escaped)
@@ -480,15 +482,48 @@ jlf @errors '{ts} {msg}'        # override the recipe's body
 | key | purpose |
 | --- | ------- |
 | `body` | per-record layout (a template); `{@other}` inlines another recipe |
-| `fields` | shorthand for a `{a} {b} {c}` body |
+| `fields` | shorthand for a `{a} {b} {c}` body (and the columns of a table) |
 | `field` / `style` | name a value (`a\|b.c`) and how to render it (`level`, `dimmed`, `json`) |
 | `filter` | records to keep (same operators as CLI filters) |
 | `redact`, `compact` | mask fields; force compact |
 | `header` / `footer` / `escape` | frame the output once; `escape = "html"` makes values safe |
+| `separator` / `row_prefix` / `row_suffix` / `rule` | define a **column table** (see below); `escape` here is cell quoting (`csv`/`tsv`/`md`) |
 | `count` / `stats` / `top` / `uniq`, `by`, `n` | run a summary |
+| `format` | render through another output format (a built-in `csv`/`tsv`/`md` or a recipe) |
 | `base` | inherit another recipe (`@other`), then override its keys |
 
 A `[recipes]` table is shorthand for body-only recipes (`name = "{a} {b}"`).
+
+### Output formats are recipes too
+
+There are three ways a recipe shapes output, and they're all just recipes:
+
+- **template** (default) — a `body` per record, e.g. the built-in `output`.
+- **column table** — a `separator` (and optional wrapping) with dynamic columns
+  from `-f`/`--fields`. `--csv`/`--tsv`/`--md` are **predefined table recipes**;
+  define your own the same way:
+
+  ```toml
+  [recipe.psv]              # pipe-separated, csv-style quoting
+  separator = "|"
+  escape    = "csv"
+
+  [recipe.grid]            # a custom Markdown-ish table
+  separator  = " | "
+  row_prefix = "| "
+  row_suffix = " |"
+  rule       = "---"
+  escape     = "md"
+  ```
+  ```sh
+  jlf --format psv -f ts,level,msg      # your table dialect, dynamic columns
+  jlf --csv ts,level,msg                # built-in — same mechanism
+  ```
+  A recipe with a `separator` of the same name as a built-in (`csv`/`tsv`/`md`)
+  overrides it.
+
+- **framed format** — `header`/`body`/`footer`/`escape` with a **fixed** row
+  template, for HTML/reports (see the `report` example above).
 
 ### Conditional overrides
 

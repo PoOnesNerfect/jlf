@@ -55,12 +55,15 @@ body   = "{ts} {level} {msg}"
 | `field`                            | value accessor (`a\|b.c`) — makes the recipe usable _as a value_                                                                  |
 | `style`                            | render modifier(s) for `field` (`level`, `dimmed`, `red`, `json`, …) — maps to the `:mod` syntax                                  |
 | `fields`                           | comma list; shorthand for `body = "{a} {b} {c}"`                                                                                  |
-| `header` / `footer`                | emitted once, before / after all records                                                                                          |
-| `escape`                           | escape special characters in interpolated values so they're safe for the output (`html` → `<` becomes `&lt;`, etc.; default none) |
+| `header` / `footer`                | emitted once, before / after all records (framed format)                                                                          |
+| `escape`                           | escape interpolated values so they're safe for the output — `html` (`<`→`&lt;`) for a framed format, or the cell-quoting style (`csv`/`tsv`/`md`) for a table |
+| `separator`                        | marks a **column table** — cells joined by this string, columns from `-f`/`fields` (e.g. `,`, `\t`, ` \| `)                        |
+| `row_prefix` / `row_suffix` / `rule` | optional per-row wrapper and a Markdown-style rule row (`---`) for a table                                                       |
 | `count` / `stats` / `top` / `uniq` | run a summary over a field (a name or `@fieldrecipe`)                                                                             |
 | `by`                               | group field for the summary                                                                                                       |
 | `n`                                | N for `top`                                                                                                                       |
 | `compact`                          | force compact rendering                                                                                                           |
+| `format`                           | render through another output format (built-in `csv`/`tsv`/`md` or a recipe)                                                      |
 | `base`                             | inherit another recipe (`@other`), then override its keys                                                                         |
 
 ## Conditional overrides
@@ -158,6 +161,34 @@ jlf 'lvl|level|severity=error'   # match whichever of those keys exists
 
 `a|b=x` is true when any of `a`, `b` equals a listed value; `,` still ORs values
 and multiple filters AND together.
+
+## Output formats are recipes
+
+A recipe shapes output in one of three ways — all just recipes, selected with
+`@name` or `--format NAME` (and `--csv`/`--tsv`/`--md` are shorthands):
+
+1. **template** — a `body` rendered per record (the default `output` recipe).
+2. **column table** — a `separator` with dynamic columns from `-f`/`fields`;
+   cells escaped per `escape` (`csv`/`tsv`/`md`), optionally wrapped
+   (`row_prefix`/`row_suffix`) with a `rule` row. `csv`/`tsv`/`md` are
+   predefined table recipes seeded at startup; a recipe of the same name
+   overrides one, and a new name adds a dialect:
+
+   ```toml
+   [recipe.psv]
+   separator = "|"
+   escape    = "csv"     # quote a cell if it contains the separator
+   ```
+   ```sh
+   jlf --format psv -f ts,level,msg
+   ```
+
+3. **framed format** — `header`/`footer` around a **fixed** `body` row, for
+   HTML/reports; `escape = "html"` makes values safe. Unlike a table, the
+   columns are written by hand in `body` (no dynamic `-f` columns).
+
+This is the one gap the table kind closes: before, `--csv`/`--md` were built-in
+and unextendable, so only fixed-row framed formats were user-definable.
 
 ## What the defaults become
 
