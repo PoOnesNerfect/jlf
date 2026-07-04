@@ -135,7 +135,8 @@ pub fn run() -> Result<(), color_eyre::Report> {
     let stdin = io::stdin();
     if !stdin.is_terminal() {
         let stdout = io::stdout();
-        let no_color = no_color || (!stdout.is_terminal() && !color);
+        let interactive = stdout.is_terminal();
+        let no_color = no_color || (!interactive && !color);
 
         // Buffer stdout: the formatter emits many small writes per record, and a
         // bare StdoutLock is line-buffered (a flush per '\n'). A BufWriter
@@ -200,6 +201,14 @@ pub fn run() -> Result<(), color_eyre::Report> {
                             stdout.write_all(line.as_bytes())?;
                         }
                     }
+                }
+
+                // Live-tail: when writing to a terminal, flush each record so a
+                // slow stream (e.g. `docker compose logs -f | jlf`) shows up
+                // immediately instead of sitting in the 64KB block buffer. Pipes
+                // and files keep block buffering and flush once at the end.
+                if interactive {
+                    stdout.flush()?;
                 }
             }
 
