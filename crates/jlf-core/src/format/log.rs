@@ -13,8 +13,21 @@ pub struct FormattedLog<'a> {
     pub(super) json: &'a Json<'a>,
 }
 
+/// The current entry bound inside a `$( … )` repetition: `$key`/`$value`.
+struct Binding<'a> {
+    key: BindKey<'a>,
+    value: &'a Json<'a>,
+}
+
+enum BindKey<'a> {
+    Str(&'a str),
+    Index(usize),
+}
+
 impl fmt::Display for FormattedLog<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.write_fmt(f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_fmt(f)
+    }
 }
 
 impl FormattedLog<'_> {
@@ -25,6 +38,7 @@ impl FormattedLog<'_> {
                     pieces,
                     args,
                     has_optional,
+                    columns,
                 },
             json,
         } = self;
@@ -36,11 +50,11 @@ impl FormattedLog<'_> {
         // empty optional can collapse one adjacent space.
         if *has_optional {
             let mut w = Trimmer::new(f);
-            render(&mut w, pieces, args, json, &mut used_fields)?;
+            render(&mut w, pieces, args, json, columns, &mut used_fields)?;
             w.flush_ws()?;
         } else {
             let mut w = Plain(f);
-            render(&mut w, pieces, args, json, &mut used_fields)?;
+            render(&mut w, pieces, args, json, columns, &mut used_fields)?;
         }
 
         Ok(())
@@ -52,21 +66,25 @@ fn render<'a>(
     pieces: &'a Vec<Piece>,
     args: &'a Vec<Arg>,
     json: &'a Json<'a>,
+    cols: &'a [Column],
     used_fields: &mut SmallVec<[&'a Field; 5]>,
 ) -> fmt::Result {
     let mut piece_i = 0;
     while piece_i < pieces.len() {
-        piece_i = write_piece(f, pieces, piece_i, args, json, false, used_fields)?;
+        piece_i = write_piece(f, pieces, piece_i, args, json, cols, None, false, used_fields)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_piece<'a>(
     f: &mut impl Write2,
     pieces: &'a Vec<Piece>,
     mut piece_i: usize,
     args: &'a Vec<Arg>,
     json: &'a Json<'a>,
+    cols: &'a [Column],
+    cur: Option<&Binding<'a>>,
     skip: bool,
     used_fields: &mut SmallVec<[&'a Field; 5]>,
 ) -> Result<usize, fmt::Error> {
@@ -76,11 +94,6 @@ fn write_piece<'a>(
         Literal(literal) => {
             if !skip {
                 write!(f, "{}", literal)?
-            }
-        }
-        Escaped(c) => {
-            if !skip {
-                write!(f, "{}", c)?
             }
         }
         Arg(i) => {
@@ -93,7 +106,7 @@ fn write_piece<'a>(
                     // empty too (so it doesn't print a bare `{}`/`[]`).
                     let mut scratch = String::new();
                     let empty = rest_arg_without_content(arg, json, used_fields) || {
-                        write_arg(&mut scratch, arg, json, used_fields)?;
+                        write_arg(&mut scratch, arg, json, cur, used_fields)?;
                         scratch.is_empty()
                     };
                     if empty {
@@ -102,12 +115,22 @@ fn write_piece<'a>(
                         f.write_str(&scratch)?;
                     }
                 } else {
-                    write_arg(f, arg, json, used_fields)?
+                    write_arg(f, arg, json, cur, used_fields)?
                 }
             }
         }
+        RepStart(src, sep, op) => {
+            let end = find_rep_end(pieces, piece_i);
+            if !skip {
+                render_rep(
+                    f, pieces, piece_i, end, src, sep, *op, args, json, cols, used_fields,
+                )?;
+            }
+            return Ok(end + 1);
+        }
+        RepEnd => {}
         CondStart(cond, i) => {
-            let cond_matched = !skip && test_cond(*cond, args, *i, json, used_fields);
+            let cond_matched = !skip && test_cond(*cond, args, *i, json, cur, used_fields);
             let mut should_run = cond_matched;
             let mut else_cond_matched = false;
 
@@ -115,7 +138,7 @@ fn write_piece<'a>(
             while piece_i < pieces.len() {
                 if let Piece::ElseCond(cond, i) = pieces[piece_i] {
                     if !skip && !cond_matched && !else_cond_matched {
-                        should_run = test_cond(cond, args, i, json, used_fields);
+                        should_run = test_cond(cond, args, i, json, cur, used_fields);
                         else_cond_matched = true;
                     } else {
                         should_run = false;
@@ -137,14 +160,126 @@ fn write_piece<'a>(
                     break;
                 }
 
-                piece_i = write_piece(f, pieces, piece_i, args, json, !should_run, used_fields)?;
+                piece_i =
+                    write_piece(f, pieces, piece_i, args, json, cols, cur, !should_run, used_fields)?;
             }
         }
-        // Handled in the IfStart case above
+        // Handled in the CondStart case above
         ElseCond(..) | Else | CondEnd => {}
     }
 
     Ok(piece_i + 1)
+}
+
+/// Index of the `RepEnd` matching the `RepStart` at `start` (nesting-aware).
+fn find_rep_end(pieces: &[Piece], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = start + 1;
+    while i < pieces.len() {
+        match &pieces[i] {
+            Piece::RepStart(..) => depth += 1,
+            Piece::RepEnd => {
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    pieces.len().saturating_sub(1)
+}
+
+/// Render a `$( … )` repetition: build the bindings from `src`, render the body
+/// once per binding, and write `sep` between iterations (never trailing).
+#[allow(clippy::too_many_arguments)]
+fn render_rep<'a>(
+    f: &mut impl Write2,
+    pieces: &'a Vec<Piece>,
+    start: usize,
+    end: usize,
+    src: &RepSource,
+    sep: &str,
+    op: RepOp,
+    args: &'a Vec<Arg>,
+    json: &'a Json<'a>,
+    cols: &'a [Column],
+    used_fields: &mut SmallVec<[&'a Field; 5]>,
+) -> fmt::Result {
+    let mut bindings: Vec<Binding<'a>> = Vec::new();
+    match src {
+        RepSource::Columns => {
+            for col in cols {
+                bindings.push(Binding {
+                    key: BindKey::Str(&col.name),
+                    value: resolve_field(json, &col.field),
+                });
+            }
+        }
+        // `$( … )` iterates the record itself; `$path( … )` a sub-object/array.
+        RepSource::Record | RepSource::Path(_) => {
+            let target = match src {
+                RepSource::Path(field) => resolve_field(json, field),
+                _ => json,
+            };
+            if let Some(obj) = target.as_object() {
+                for (k, v) in obj.iter() {
+                    bindings.push(Binding {
+                        key: BindKey::Str(k),
+                        value: v,
+                    });
+                }
+            } else if let Some(arr) = target.as_array() {
+                for (idx, v) in arr.iter().enumerate() {
+                    bindings.push(Binding {
+                        key: BindKey::Index(idx),
+                        value: v,
+                    });
+                }
+            }
+        }
+    }
+
+    // `?` renders at most one iteration; `*`/`+` render them all.
+    let count = if op == RepOp::Question {
+        bindings.len().min(1)
+    } else {
+        bindings.len()
+    };
+
+    for (n, b) in bindings.iter().take(count).enumerate() {
+        if n > 0 {
+            f.write_str(sep)?;
+        }
+        let mut i = start + 1;
+        while i < end {
+            i = write_piece(f, pieces, i, args, json, cols, Some(b), false, used_fields)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Walk a name path from a `Json` node (used for `${value.path}` in a rep).
+fn walk<'a>(mut val: &'a Json<'a>, names: &FieldNames) -> &'a Json<'a> {
+    for t in names {
+        val = match t {
+            FieldType::Name(n) => val.get(n),
+            FieldType::Index(i) => val.get_i(*i),
+        };
+    }
+    val
+}
+
+/// Resolve a field accessor to the pointed-at `Json` (no rest handling).
+fn resolve_field<'a>(json: &'a Json<'a>, field: &Field) -> &'a Json<'a> {
+    match field {
+        Field::Whole | Field::Rest | Field::ColValue | Field::ColKey | Field::ColValuePath(_) => {
+            json
+        }
+        Field::Names(names) => walk(json, names),
+    }
 }
 
 /// True when an optional arg's selected field is the rest (`..`) and there are no
@@ -159,6 +294,7 @@ fn rest_arg_without_content<'a>(
     for field in field_options {
         match field {
             Field::Whole => return false,
+            Field::ColValue | Field::ColKey | Field::ColValuePath(_) => return false,
             Field::Rest => {
                 return !with_excluded(used_fields, |excluded| json.has_rest_content(excluded));
             }
@@ -184,6 +320,7 @@ fn test_cond<'a>(
     args: &[Arg],
     i: usize,
     json: &'a Json<'a>,
+    cur: Option<&Binding<'a>>,
     used_fields: &SmallVec<[&'a Field; 5]>,
 ) -> bool {
     if let Cond::IfConfig(b) = cond {
@@ -194,6 +331,16 @@ fn test_cond<'a>(
     for field in field_options {
         let matched = match field {
             Field::Whole => test_cond2(cond, json),
+            Field::ColValue => cur.map(|c| test_cond2(cond, c.value)).unwrap_or(false),
+            Field::ColValuePath(names) => cur
+                .map(|c| test_cond2(cond, walk(c.value, names)))
+                .unwrap_or(false),
+            Field::ColKey => cur
+                .map(|c| match c.key {
+                    BindKey::Str(s) => cond == Cond::Key || !s.is_empty(),
+                    BindKey::Index(_) => true,
+                })
+                .unwrap_or(false),
             Field::Rest => {
                 // For `key`, `rest` is the base object and always exists. For
                 // `if`, it's truthy only when there are unused fields left.
@@ -257,6 +404,7 @@ fn write_arg<'a>(
     f: &mut impl fmt::Write,
     (field_options, format): &'a (FieldOptions, Format),
     json: &'a Json<'a>,
+    cur: Option<&Binding<'a>>,
     used_fields: &mut SmallVec<[&'a Field; 5]>,
 ) -> fmt::Result {
     let mut val = &Json::Null;
@@ -270,6 +418,27 @@ fn write_arg<'a>(
             }
             Field::Rest => {
                 return write_rest(f, format, json, used_fields);
+            }
+            Field::ColValue => {
+                return match cur {
+                    Some(c) => write_arg2(f, format, c.value),
+                    None => Ok(()),
+                };
+            }
+            Field::ColValuePath(names) => {
+                return match cur {
+                    Some(c) => write_arg2(f, format, walk(c.value, names)),
+                    None => Ok(()),
+                };
+            }
+            Field::ColKey => {
+                return match cur {
+                    Some(c) => match c.key {
+                        BindKey::Str(s) => write_scalar_str(f, format, s),
+                        BindKey::Index(idx) => write_scalar_str(f, format, &idx.to_string()),
+                    },
+                    None => Ok(()),
+                };
             }
             Field::Names(names) => {
                 for arg in names {
@@ -292,6 +461,19 @@ fn write_arg<'a>(
     }
 
     write_arg2(f, format, val)
+}
+
+/// Write a plain string value with the arg's escape or style applied (used for
+/// `$key`, which is a bare string/index rather than a `Json` node).
+fn write_scalar_str(f: &mut impl fmt::Write, format: &Format, val: &str) -> fmt::Result {
+    if format.escape != Escape::None {
+        return write_escaped(f, format.escape, val);
+    }
+    if let Some(style) = format.style {
+        write!(f, "{}", val.style(style))
+    } else {
+        f.write_str(val)
+    }
 }
 
 fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt::Result {
@@ -353,7 +535,6 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
             write!(f, "{}", val)?;
         }
     } else if json.is_object() || json.is_array() {
-        // TODO: Implement formatting for objects
         match (is_json, compact) {
             (true, true) => {
                 if style.is_some() {
@@ -391,9 +572,6 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
 
 /// Builds the list of already-consumed field paths (as `PathToken` slices) from
 /// `used_fields`, so they can be skipped when rendering the rest object.
-///
-/// `write_arg` only ever pushes `Field::Names` entries into `used_fields`, so
-/// any other variant is ignored here.
 fn build_excluded<'a>(
     used_fields: &SmallVec<[&'a Field; 5]>,
 ) -> SmallVec<[SmallVec<[PathToken<'a>; 2]>; 5]> {
@@ -416,7 +594,6 @@ fn build_excluded<'a>(
 }
 
 /// Builds the excluded-path slice view from `used_fields` and runs `f` with it.
-/// The owned `PathToken` storage lives for the duration of the call.
 fn with_excluded<R>(
     used_fields: &SmallVec<[&Field; 5]>,
     f: impl FnOnce(&[&[PathToken]]) -> R,
@@ -426,7 +603,7 @@ fn with_excluded<R>(
     f(&excluded)
 }
 
-/// Write `s` with the given escape applied (currently HTML entity escaping).
+/// Write `s` with the given escape applied.
 fn write_escaped(f: &mut impl fmt::Write, escape: Escape, s: &str) -> fmt::Result {
     match escape {
         Escape::None => f.write_str(s),
@@ -438,6 +615,40 @@ fn write_escaped(f: &mut impl fmt::Write, escape: Escape, s: &str) -> fmt::Resul
                     '>' => f.write_str("&gt;")?,
                     '"' => f.write_str("&quot;")?,
                     '\'' => f.write_str("&#39;")?,
+                    _ => f.write_char(c)?,
+                }
+            }
+            Ok(())
+        }
+        Escape::Csv => {
+            if s.contains('"') || s.contains('\n') || s.contains('\r') || s.contains(',') {
+                f.write_char('"')?;
+                for c in s.chars() {
+                    if c == '"' {
+                        f.write_str("\"\"")?;
+                    } else {
+                        f.write_char(c)?;
+                    }
+                }
+                f.write_char('"')
+            } else {
+                f.write_str(s)
+            }
+        }
+        Escape::Tsv => {
+            for c in s.chars() {
+                match c {
+                    '\t' | '\n' | '\r' => f.write_char(' ')?,
+                    _ => f.write_char(c)?,
+                }
+            }
+            Ok(())
+        }
+        Escape::Md => {
+            for c in s.chars() {
+                match c {
+                    '|' => f.write_str("\\|")?,
+                    '\n' => f.write_str("<br>")?,
                     _ => f.write_char(c)?,
                 }
             }

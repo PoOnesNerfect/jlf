@@ -90,11 +90,8 @@ impl Builder {
     }
 
     fn push_format(&self, args: &mut Vec<String>) {
-        match self.format.as_deref() {
-            Some("csv") => args.push("--csv".into()),
-            Some("tsv") => args.push("--tsv".into()),
-            Some("md") => args.push("--md".into()),
-            _ => {}
+        if let Some(fmt) = self.format.as_deref() {
+            args.push(format!("@{fmt}"));
         }
     }
 
@@ -176,12 +173,12 @@ mod tests {
     fn view_with_filter_and_template() {
         let b = Builder {
             filters: vec!["level=error".into()],
-            template: Some("{ts} {msg}".into()),
+            template: Some("${ts} ${msg}".into()),
             ..Default::default()
         };
-        assert_eq!(b.to_args(), vec!["level=error", "{ts} {msg}"]);
+        assert_eq!(b.to_args(), vec!["level=error", "${ts} ${msg}"]);
         assert!(b.to_recipe_toml("errs").contains("filter = \"level=error\""));
-        assert!(b.to_recipe_toml("errs").contains("body = \"{ts} {msg}\""));
+        assert!(b.to_recipe_toml("errs").contains("body = \"${ts} ${msg}\""));
     }
 
     #[test]
@@ -209,7 +206,7 @@ mod tests {
         };
         assert_eq!(
             b.to_args(),
-            vec!["stats", "latency_ms", "by", "level", "--md"]
+            vec!["stats", "latency_ms", "by", "level", "@md"]
         );
         let toml = b.to_recipe_toml("lat");
         assert!(toml.contains("stats = \"latency_ms\""));
@@ -237,7 +234,7 @@ mod tests {
             filters: vec!["level=error".into()],
             ..Default::default()
         };
-        assert_eq!(b.to_args(), vec!["--csv", "ts,level", "level=error"]);
+        assert_eq!(b.to_args(), vec!["@csv", "ts,level", "level=error"]);
         let toml = b.to_recipe_toml("x");
         assert!(toml.contains("format = \"csv\""));
         assert!(toml.contains("fields = \"ts,level\""));

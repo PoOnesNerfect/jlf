@@ -41,7 +41,7 @@ fn stdout(args: &[&str]) -> String {
 #[test]
 fn template_projects_fields() {
     assert_eq!(
-        stdout(&["{ts} {level} {user}"]),
+        stdout(&["${ts} ${level} ${user}"]),
         "10:00:01 info alice\n\
          10:00:02 error bob\n\
          10:00:03 warn alice\n\
@@ -52,13 +52,13 @@ fn template_projects_fields() {
 
 #[test]
 fn fields_flag_is_a_template_shortcut() {
-    assert_eq!(stdout(&["-f", "ts,level,user"]), stdout(&["{ts} {level} {user}"]));
+    assert_eq!(stdout(&["-f", "ts,level,user"]), stdout(&["${ts} ${level} ${user}"]));
 }
 
 #[test]
 fn filter_keeps_matching_records() {
     assert_eq!(
-        stdout(&["level=error", "{ts} {user}"]),
+        stdout(&["level=error", "${ts} ${user}"]),
         "10:00:02 bob\n10:00:05 alice\n"
     );
 }
@@ -66,7 +66,7 @@ fn filter_keeps_matching_records() {
 #[test]
 fn numeric_filter() {
     assert_eq!(
-        stdout(&["latency_ms>100", "{user} {latency_ms}"]),
+        stdout(&["latency_ms>100", "${user} ${latency_ms}"]),
         "bob 510\nalice 620\n"
     );
 }
@@ -74,13 +74,13 @@ fn numeric_filter() {
 #[test]
 fn or_within_field_and_across_filters() {
     // (error OR warn) AND user=alice
-    assert_eq!(stdout(&["level=error,warn", "user=alice", "{ts}"]), "10:00:03\n10:00:05\n");
+    assert_eq!(stdout(&["level=error,warn", "user=alice", "${ts}"]), "10:00:03\n10:00:05\n");
 }
 
 #[test]
 fn take_counts_emitted_records_after_filtering() {
     // Two errors exist; --take 1 must stop after the first emitted (filtered) one.
-    assert_eq!(stdout(&["level=error", "--take", "1", "{ts}"]), "10:00:02\n");
+    assert_eq!(stdout(&["level=error", "--take", "1", "${ts}"]), "10:00:02\n");
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn top_with_share_and_footer() {
 #[test]
 fn csv_export_with_header() {
     assert_eq!(
-        stdout(&["--csv", "ts,level,user"]),
+        stdout(&["@csv", "ts,level,user"]),
         "ts,level,user\n\
          10:00:01,info,alice\n\
          10:00:02,error,bob\n\
@@ -135,14 +135,14 @@ fn csv_export_with_header() {
 
 #[test]
 fn md_export_with_separator_row() {
-    let out = stdout(&["--md", "level,user"]);
+    let out = stdout(&["@md", "level,user"]);
     assert!(out.starts_with("| level | user |\n| --- | --- |\n"), "got:\n{out}");
     assert!(out.contains("| info | alice |\n"));
 }
 
 #[test]
 fn summary_export_to_csv_has_header() {
-    let out = stdout(&["count", "level", "--csv"]);
+    let out = stdout(&["count", "level", "@csv"]);
     assert!(out.starts_with("count,value\n"), "got:\n{out}");
 }
 
@@ -190,29 +190,29 @@ const COND: &str = "{\"message\":\"hi\",\"body\":\"\",\"data\":{\"count\":0}}\n"
 fn if_or_list_is_true_when_any_field_is_truthy() {
     // `body` (empty) and `data.count` (0) are present-but-falsey and must not
     // short-circuit the OR before reaching the truthy `message`.
-    let (out, _) = run(&["{#if body|data.count|message}yes{:else}no{/if}"], COND);
+    let (out, _) = run(&["${if body|data.count|message}yes${else}no${/}"], COND);
     assert_eq!(out, "yes\n");
 }
 
 #[test]
 fn if_single_falsey_field_is_false() {
-    assert_eq!(run(&["{#if body}yes{:else}no{/if}"], COND).0, "no\n");
-    assert_eq!(run(&["{#if data.count}yes{:else}no{/if}"], COND).0, "no\n");
+    assert_eq!(run(&["${if body}yes${else}no${/}"], COND).0, "no\n");
+    assert_eq!(run(&["${if data.count}yes${else}no${/}"], COND).0, "no\n");
 }
 
 #[test]
 fn key_is_true_for_present_but_falsey_field() {
     // `#key` checks existence, so an empty string still counts.
-    assert_eq!(run(&["{#key body}has{:else}missing{/key}"], COND).0, "has\n");
+    assert_eq!(run(&["${key body}has${else}missing${/}"], COND).0, "has\n");
 }
 
 #[test]
 fn key_or_list_falls_through_to_first_present() {
-    assert_eq!(run(&["{#key msg}m{:else key message}message{/key}"], COND).0, "message\n");
+    assert_eq!(run(&["${key msg}m${else key message}message${/}"], COND).0, "message\n");
 }
 
-/// `{?field}` collapses one adjacent space when the field is empty/absent, but
-/// leaves plain `{field}` and intentional spacing untouched.
+/// `${?field}` collapses one adjacent space when the field is empty/absent, but
+/// leaves plain `${field}` and intentional spacing untouched.
 mod optional_field {
     use super::run;
 
@@ -222,49 +222,49 @@ mod optional_field {
 
     #[test]
     fn collapses_one_space_in_the_middle_when_absent() {
-        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","c":"C"}"#), "A C\n");
+        assert_eq!(render("${a} ${?b} ${c}", r#"{"a":"A","c":"C"}"#), "A C\n");
     }
 
     #[test]
     fn keeps_spacing_when_present() {
-        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","b":"B","c":"C"}"#), "A B C\n");
+        assert_eq!(render("${a} ${?b} ${c}", r#"{"a":"A","b":"B","c":"C"}"#), "A B C\n");
     }
 
     #[test]
     fn trims_trailing_space_at_line_end() {
-        assert_eq!(render("{a} {?b}", r#"{"a":"A"}"#), "A\n");
+        assert_eq!(render("${a} ${?b}", r#"{"a":"A"}"#), "A\n");
     }
 
     #[test]
     fn trims_leading_space_at_line_start() {
-        assert_eq!(render("{?a} {b}", r#"{"b":"B"}"#), "B\n");
+        assert_eq!(render("${?a} ${b}", r#"{"b":"B"}"#), "B\n");
     }
 
     #[test]
     fn collapses_consecutive_absent_optionals() {
-        assert_eq!(render("{a} {?b} {?c} {d}", r#"{"a":"A","d":"D"}"#), "A D\n");
+        assert_eq!(render("${a} ${?b} ${?c} ${d}", r#"{"a":"A","d":"D"}"#), "A D\n");
     }
 
     #[test]
     fn empty_string_value_also_collapses() {
-        assert_eq!(render("{a} {?b} {c}", r#"{"a":"A","b":"","c":"C"}"#), "A C\n");
+        assert_eq!(render("${a} ${?b} ${c}", r#"{"a":"A","b":"","c":"C"}"#), "A C\n");
     }
 
     #[test]
     fn plain_field_does_not_collapse() {
-        // a missing plain {b} leaves the two surrounding spaces intact
-        assert_eq!(render("{a} {b} {c}", r#"{"a":"A","c":"C"}"#), "A  C\n");
+        // a missing plain ${b} leaves the two surrounding spaces intact
+        assert_eq!(render("${a} ${b} ${c}", r#"{"a":"A","c":"C"}"#), "A  C\n");
     }
 
     #[test]
     fn intentional_indentation_is_preserved() {
-        assert_eq!(render("  {?label}: {v}", r#"{"label":"L","v":"V"}"#), "  L: V\n");
+        assert_eq!(render("  ${?label}: ${v}", r#"{"label":"L","v":"V"}"#), "  L: V\n");
     }
 
     #[test]
     fn fallbacks_and_styles_work_on_optionals() {
-        assert_eq!(render("{a} {?x.y|z} {c}", r#"{"a":"A","z":"Z","c":"C"}"#), "A Z C\n");
-        assert_eq!(render("{a} {?x.y|z} {c}", r#"{"a":"A","c":"C"}"#), "A C\n");
+        assert_eq!(render("${a} ${?x.y|z} ${c}", r#"{"a":"A","z":"Z","c":"C"}"#), "A Z C\n");
+        assert_eq!(render("${a} ${?x.y|z} ${c}", r#"{"a":"A","c":"C"}"#), "A C\n");
     }
 }
 
@@ -295,11 +295,9 @@ mod custom_format {
         std::fs::write(
             dir.join("jlf.toml"),
             r#"
-[format.report]
+[recipe.report]
 escape = "html"
-header = "<table>\n"
-row = "<tr><td>{level}</td><td>{msg}</td></tr>"
-footer = "</table>\n"
+body = "<table>\n$rows( <tr><td>${level}</td><td>${msg}</td></tr> )*</table>\n"
 "#,
         )
         .unwrap();
@@ -338,7 +336,7 @@ mod presets {
     const CONFIG: &str = r#"
 [preset.errors]
 where = "level=error,fatal"
-template = "{level} {msg}"
+template = "${level} ${msg}"
 
 [preset.lat]
 where = "latency_ms>=100"
@@ -397,7 +395,7 @@ n = 2
 
     #[test]
     fn explicit_template_overrides_preset() {
-        assert_eq!(run_preset(&["@errors", "M:{msg}"]), "M:b\nM:d\n");
+        assert_eq!(run_preset(&["@errors", "M:${msg}"]), "M:b\nM:d\n");
     }
 
     #[test]
@@ -423,18 +421,18 @@ n = 2
     }
 }
 
-/// Phase 1 of the recipes redesign: `{@name}` aliases `{&name}`, and filters
-/// accept `a|b|c` fallback fields.
+/// Phase 1 of the recipes redesign: `${@name}` includes variables/recipes, and
+/// filters accept `a|b|c` fallback fields.
 mod recipes_phase1 {
     use super::run;
 
     #[test]
-    fn at_sign_is_an_alias_for_ampersand_variable_include() {
+    fn at_sign_variable_include_renders() {
         let json = "{\"timestamp\":\"T\",\"level\":\"INFO\",\"message\":\"hi\"}\n";
-        let amp = run(&["-v", "output={&message}", "{&output}"], json).0;
-        let at = run(&["-v", "output={@message}", "{@output}"], json).0;
-        assert_eq!(at, amp);
-        assert_eq!(at, "hi\n");
+        assert_eq!(
+            run(&["-v", "output=${@message}", "${@output}"], json).0,
+            "hi\n"
+        );
     }
 
     #[test]
@@ -444,7 +442,7 @@ mod recipes_phase1 {
             "{\"level\":\"info\",\"msg\":\"b\"}\n",
             "{\"severity\":\"error\",\"msg\":\"c\"}\n",
         );
-        assert_eq!(run(&["lvl|level|severity=error", "{msg}"], logs).0, "a\nc\n");
+        assert_eq!(run(&["lvl|level|severity=error", "${msg}"], logs).0, "a\nc\n");
     }
 }
 
@@ -459,13 +457,13 @@ mod recipes_phase5 {
 
     #[test]
     fn optional_rest_is_empty_when_fully_consumed() {
-        // was "X {}" before; the {?..} now collapses to nothing
-        assert_eq!(render("{a} {?..:json}", r#"{"a":"X"}"#), "X\n");
+        // was "X {}" before; the ${?..} now collapses to nothing
+        assert_eq!(render("${a} ${?..:json}", r#"{"a":"X"}"#), "X\n");
     }
 
     #[test]
     fn optional_rest_renders_when_leftover_exists() {
-        let out = render("{a} {?..:json}", r#"{"a":"X","b":"Y"}"#);
+        let out = render("${a} ${?..:json}", r#"{"a":"X","b":"Y"}"#);
         assert!(out.starts_with("X {"), "got: {out:?}");
         assert!(out.contains("\"b\": \"Y\""), "got: {out:?}");
     }
@@ -473,16 +471,16 @@ mod recipes_phase5 {
     #[test]
     fn collapse_absorbs_a_newline_separator() {
         // newline before an empty optional is dropped
-        assert_eq!(render("{a}\n{?..:json}", r#"{"a":"X"}"#), "X\n");
+        assert_eq!(render("${a}\n${?..:json}", r#"{"a":"X"}"#), "X\n");
         // ...but stays when the optional renders
-        let out = render("{a}\n{?..:json}", r#"{"a":"X","b":"Y"}"#);
+        let out = render("${a}\n${?..:json}", r#"{"a":"X","b":"Y"}"#);
         assert!(out.starts_with("X\n{"), "got: {out:?}");
     }
 
     #[test]
     fn plain_rest_still_prints_empty_object() {
-        // only the `?` form collapses; plain {..} is unchanged
-        assert_eq!(render("{a} {..:json}", r#"{"a":"X"}"#), "X {}\n");
+        // only the `?` form collapses; plain ${..} is unchanged
+        assert_eq!(render("${a} ${..:json}", r#"{"a":"X"}"#), "X {}\n");
     }
 }
 
@@ -522,19 +520,19 @@ mod recipes_config {
     #[test]
     fn named_field_recipe_inlines_and_filters() {
         let cfg = "[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n";
-        // inline {@level}
-        assert_eq!(run_in_cfg(cfg, &["{@level} {message}"], LOGS), "info a\nerror b <c>\n");
+        // inline ${@level}
+        assert_eq!(run_in_cfg(cfg, &["${@level} ${message}"], LOGS), "info a\nerror b <c>\n");
     }
 
     #[test]
     fn preset_recipe_runs_with_filter_and_body() {
-        let cfg = "[recipe.errors]\nfilter = \"level=error\"\nbody = \"{ts} {message}\"\n";
+        let cfg = "[recipe.errors]\nfilter = \"level=error\"\nbody = \"${ts} ${message}\"\n";
         assert_eq!(run_in_cfg(cfg, &["@errors"], LOGS), "t2 b <c>\n");
     }
 
     #[test]
     fn format_recipe_frames_and_escapes() {
-        let cfg = "[recipe.report]\nescape = \"html\"\nheader = \"<table>\\n\"\nbody = \"<tr><td>{message}</td></tr>\"\nfooter = \"</table>\\n\"\n";
+        let cfg = "[recipe.report]\nescape = \"html\"\nbody = \"<table>\\n$rows( <tr><td>${message}</td></tr> )*</table>\\n\"\n";
         let out = run_in_cfg(cfg, &["@report"], LOGS);
         assert!(out.starts_with("<table>\n"), "got:\n{out}");
         assert!(out.contains("<tr><td>b &lt;c&gt;</td></tr>\n"), "got:\n{out}");
@@ -543,19 +541,19 @@ mod recipes_config {
 
     #[test]
     fn shorthand_recipes_table() {
-        let cfg = "[recipes]\nline = \"{level}: {message}\"\n";
+        let cfg = "[recipes]\nline = \"${level}: ${message}\"\n";
         assert_eq!(run_in_cfg(cfg, &["@line"], LOGS), "info: a\nerror: b <c>\n");
     }
 
     #[test]
     fn conditional_override_on_compact() {
-        let cfg = "[recipe.g]\nbody = \"BIG {message}\"\n[recipe.g.compact]\nbody = \"sm {message}\"\n";
+        let cfg = "[recipe.g]\nbody = \"BIG ${message}\"\n[recipe.g.compact]\nbody = \"sm ${message}\"\n";
         assert_eq!(run_in_cfg(cfg, &["@g"], LOGS), "BIG a\nBIG b <c>\n");
         assert_eq!(run_in_cfg(cfg, &["@g", "-c"], LOGS), "sm a\nsm b <c>\n");
     }
 }
 
-/// Phase 6: optional variable include `{?@name}` collapses when its field is
+/// Phase 6: optional variable include `${?@name}` collapses when its field is
 /// absent (so the recipe-style default works).
 mod recipes_optional_include {
     use super::run;
@@ -563,7 +561,7 @@ mod recipes_optional_include {
     #[test]
     fn optional_include_renders_when_present() {
         let out = run(
-            &["-v", "lvl={lvl|level:level}", "-v", "o={?@lvl}{msg}", "{&o}"],
+            &["-v", "lvl=${lvl|level:level}", "-v", "o=${?@lvl}${msg}", "${@o}"],
             "{\"level\":\"INFO\",\"msg\":\"hi\"}\n",
         )
         .0;
@@ -573,7 +571,7 @@ mod recipes_optional_include {
     #[test]
     fn optional_include_collapses_when_absent() {
         let out = run(
-            &["-v", "lvl={lvl|level:level}", "-v", "o={?@lvl} {msg}", "{&o}"],
+            &["-v", "lvl=${lvl|level:level}", "-v", "o=${?@lvl} ${msg}", "${@o}"],
             "{\"msg\":\"hi\"}\n",
         )
         .0;
@@ -587,14 +585,14 @@ mod undefined_variable {
 
     #[test]
     fn undefined_include_does_not_crash() {
-        let (out, code) = run(&["-v", "o={@nope}{a}", "{&o}"], "{\"a\":\"x\"}\n");
+        let (out, code) = run(&["-v", "o=${@nope}${a}", "${@o}"], "{\"a\":\"x\"}\n");
         assert_eq!(code, 0);
         assert_eq!(out, "x\n");
     }
 
     #[test]
     fn undefined_optional_include_does_not_crash() {
-        let (_out, code) = run(&["-v", "o={?@nope} {a}", "{&o}"], "{\"a\":\"x\"}\n");
+        let (_out, code) = run(&["-v", "o=${?@nope} ${a}", "${@o}"], "{\"a\":\"x\"}\n");
         assert_eq!(code, 0);
     }
 }
@@ -608,7 +606,7 @@ mod recipe_override_sources {
     const CFG: &str = concat!(
         "[recipe.sep]\nbody = \"[normal]\"\n",
         "[recipe.sep.compact]\nbody = \"[compact]\"\n",
-        "[preset.cmp]\ncompact = true\ntemplate = \"{&sep}\"\n",
+        "[preset.cmp]\ncompact = true\ntemplate = \"${@sep}\"\n",
     );
 
     fn run_in(args: &[&str]) -> String {
@@ -635,12 +633,12 @@ mod recipe_override_sources {
 
     #[test]
     fn compact_flag_triggers_override() {
-        assert_eq!(run_in(&["-c", "{&sep}"]), "[compact]\n");
+        assert_eq!(run_in(&["-c", "${@sep}"]), "[compact]\n");
     }
 
     #[test]
     fn normal_uses_base() {
-        assert_eq!(run_in(&["{&sep}"]), "[normal]\n");
+        assert_eq!(run_in(&["${@sep}"]), "[normal]\n");
     }
 
     #[test]
@@ -650,8 +648,9 @@ mod recipe_override_sources {
     }
 }
 
-/// Output-format unification: `--csv/--tsv/--md` are predefined table recipes,
-/// and users can define new table formats with `separator`/`escape`/wrapping.
+/// Output-format unification: `csv/tsv/md` are predefined table recipes run via
+/// `@csv`/`@tsv`/`@md`, and users can define new table formats with repetition
+/// templates.
 mod table_recipes {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -682,30 +681,32 @@ mod table_recipes {
 
     #[test]
     fn builtin_csv_unchanged() {
-        let out = run_in("", &["--csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
+        let out = run_in("", &["@csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
         assert_eq!(out, "a,b\nx,y\n");
     }
 
     #[test]
     fn builtin_md_unchanged() {
-        let out = run_in("", &["--md", "a"], "{\"a\":\"x\"}\n");
+        let out = run_in("", &["@md", "a"], "{\"a\":\"x\"}\n");
         assert_eq!(out, "| a |\n| --- |\n| x |\n");
     }
 
     #[test]
     fn custom_separator_table_with_csv_quoting() {
-        // pipe-separated; a cell containing the separator gets csv-quoted
-        let cfg = "[recipe.psv]\nseparator = \"|\"\nescape = \"csv\"\n";
-        let out = run_in(cfg, &["--format", "psv", "-f", "a,b"], "{\"a\":\"x\",\"b\":\"y|z\"}\n");
-        assert_eq!(out, "a|b\nx|\"y|z\"\n");
+        let cfg = concat!(
+            "[recipe.psv]\n",
+            "body = \"$cols( ${key} )|*\\n$rows( $cols( ${value:csv} )|* )*\"\n",
+        );
+        let out = run_in(cfg, &["--format", "psv", "-f", "a,b"], "{\"a\":\"x\",\"b\":\"y,z\"}\n");
+        assert_eq!(out, "a|b\nx|\"y,z\"\n");
     }
 
     #[test]
     fn custom_table_run_by_name_with_saved_fields_and_filter() {
         let cfg = concat!(
             "[recipe.grid]\n",
-            "separator = \" | \"\nrow_prefix = \"| \"\nrow_suffix = \" |\"\n",
-            "rule = \"===\"\nescape = \"md\"\nfields = \"a,b\"\nfilter = \"keep=1\"\n",
+            "body = \"| $cols( ${key} )\\\" | \\\"* |\\n| $cols( === )\\\" | \\\"* |\\n$rows( | $cols( ${value:md} )\\\" | \\\"* | )*\"\n",
+            "fields = \"a,b\"\nfilter = \"keep=1\"\n",
         );
         let logs = concat!(
             "{\"a\":\"1\",\"b\":\"x\",\"keep\":1}\n",
@@ -718,8 +719,8 @@ mod table_recipes {
     #[test]
     fn user_can_override_builtin_csv() {
         // redefine csv to use semicolons
-        let cfg = "[recipe.csv]\nseparator = \";\"\nescape = \"csv\"\n";
-        let out = run_in(cfg, &["--csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
+        let cfg = "[recipe.csv]\nbody = \"$cols( ${key} );*\\n$rows( $cols( ${value:csv} );* )*\"\n";
+        let out = run_in(cfg, &["@csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
         assert_eq!(out, "a;b\nx;y\n");
     }
 }

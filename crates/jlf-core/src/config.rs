@@ -52,16 +52,7 @@ pub struct Recipe {
     pub redact: Option<String>,
     /// Reference an output format (built-in `csv`/`tsv`/`md` or another recipe).
     pub format: Option<String>,
-    pub header: Option<String>,
-    pub footer: Option<String>,
     pub escape: Option<String>,
-    /// Table format: the cell separator (`,`, `\t`, ` | `). Its presence marks
-    /// this recipe as a column table (with dynamic `-f`/`fields` columns).
-    pub separator: Option<String>,
-    /// Optional per-row wrapper and Markdown-style rule (`---`) for tables.
-    pub row_prefix: Option<String>,
-    pub row_suffix: Option<String>,
-    pub rule: Option<String>,
     pub count: Option<String>,
     pub stats: Option<String>,
     pub top: Option<String>,
@@ -77,22 +68,22 @@ pub struct Recipe {
 }
 
 impl Recipe {
-    /// The string used when this recipe is inlined (`{@name}`) or used as a
-    /// render template: `body`, else `{field[:style]}`, else a `{a} {b}` from
+    /// The string used when this recipe is inlined (`${@name}`) or used as a
+    /// render template: `body`, else `${field[:style]}`, else a `${a} ${b}` from
     /// `fields`, else empty.
     fn inline_body(&self) -> Option<String> {
         if let Some(body) = &self.body {
             Some(body.clone())
         } else if let Some(field) = &self.field {
             Some(match &self.style {
-                Some(style) => format!("{{{field}:{style}}}"),
-                None => format!("{{{field}}}"),
+                Some(style) => format!("${{{field}:{style}}}"),
+                None => format!("${{{field}}}"),
             })
         } else if let Some(fields) = &self.fields {
             Some(
                 fields
                     .split(',')
-                    .map(|f| format!("{{{}}}", f.trim()))
+                    .map(|f| format!("${{{}}}", f.trim()))
                     .collect::<Vec<_>>()
                     .join(" "),
             )
@@ -107,33 +98,19 @@ impl Recipe {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(body, fields, field, style, filter, redact, format, header, footer,
-              escape, separator, row_prefix, row_suffix, rule,
-              count, stats, top, uniq, by, n, base);
+        take!(body, fields, field, style, filter, redact, format,
+              escape, count, stats, top, uniq, by, n, base);
     }
 
-    /// A column table format (`--csv`-like): driven by a cell `separator`.
-    fn is_table(&self) -> bool {
-        self.separator.is_some()
-    }
-
-    /// Does this recipe describe a custom *framed* output format (header/footer,
-    /// or an `escape` without a table separator)?
+    /// Does this recipe describe a custom output format — one with a global
+    /// `escape`, or a `body` that emits its own frame/table via `$rows(`/`$cols(`?
     fn is_format(&self) -> bool {
-        !self.is_table() && (self.header.is_some() || self.footer.is_some() || self.escape.is_some())
+        self.escape.is_some()
+            || self
+                .body
+                .as_deref()
+                .is_some_and(|b| b.contains("$rows(") || b.contains("$cols("))
     }
-}
-
-/// A column table output format (`csv`/`tsv`/`md` or a user-defined one): cells
-/// joined by `separator`, each escaped per `escape`, optionally wrapped per row
-/// and preceded by a Markdown-style `rule` row.
-#[derive(Debug, Default, Clone)]
-pub struct TableDef {
-    pub separator: String,
-    pub escape: Option<String>,
-    pub row_prefix: Option<String>,
-    pub row_suffix: Option<String>,
-    pub rule: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -142,7 +119,8 @@ pub struct ConfigFile {
     pub config: Config,
     #[serde(default, deserialize_with = "de_map_to_list")]
     pub variables: Option<Vec<(String, String)>>,
-    /// User-defined output formats from `[format.NAME]` tables.
+    /// Output formats: the built-ins `csv`/`tsv`/`md` plus any `[recipe.*]` with
+    /// a `header`/`footer`/`escape`. Rendered as header + per-record body + footer.
     #[serde(default, rename = "format")]
     pub formats: HashMap<String, FormatDef>,
     /// Saved argument bundles from `[preset.NAME]` tables.
@@ -154,45 +132,44 @@ pub struct ConfigFile {
     /// Full recipes from `[recipe.NAME]` tables.
     #[serde(default, rename = "recipe")]
     pub recipe: HashMap<String, Recipe>,
-    /// Column table formats — the built-ins `csv`/`tsv`/`md` plus any defined by
-    /// a recipe with a `separator`. Populated by `resolve_recipes`.
-    #[serde(skip)]
-    pub tables: HashMap<String, TableDef>,
 }
 
-/// The built-in `csv`/`tsv`/`md` table formats, seeded so they're selectable by
-/// name (`--format csv`, a recipe's `format = "md"`) and overridable in config.
-pub fn builtin_tables() -> HashMap<String, TableDef> {
+/// The built-in `csv`/`tsv`/`md` output formats, as single `$`-DSL templates:
+/// a `$cols( $key )` header row, then `$rows( … )` per record. Seeded so they're
+/// runnable by name (`@csv`, `--format md`) and overridable by a `[recipe.*]`.
+pub fn builtin_formats() -> HashMap<String, FormatDef> {
     HashMap::from([
         (
             "csv".to_owned(),
-            TableDef { separator: ",".into(), escape: Some("csv".into()), ..Default::default() },
+            FormatDef {
+                escape: None,
+                body: "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*".to_owned(),
+            },
         ),
         (
             "tsv".to_owned(),
-            TableDef { separator: "\t".into(), escape: Some("tsv".into()), ..Default::default() },
+            FormatDef {
+                escape: None,
+                body: "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*".to_owned(),
+            },
         ),
         (
             "md".to_owned(),
-            TableDef {
-                separator: " | ".into(),
-                escape: Some("md".into()),
-                row_prefix: Some("| ".into()),
-                row_suffix: Some(" |".into()),
-                rule: Some("---".into()),
+            FormatDef {
+                escape: None,
+                body: "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*".to_owned(),
             },
         ),
     ])
 }
 
-/// A custom output format: `header`/`footer` printed once, `row` rendered per
-/// record, with interpolated values escaped per `escape`.
+/// A custom output format: one `$`-DSL `body` template (a `$rows( … )` marks the
+/// per-record part; text around it prints once), with interpolated values
+/// escaped per `escape`.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct FormatDef {
     pub escape: Option<String>,
-    pub header: Option<String>,
-    pub row: String,
-    pub footer: Option<String>,
+    pub body: String,
 }
 
 /// A saved bundle of arguments invoked by name (`@name` / `-p name`). Keys
@@ -227,12 +204,12 @@ pub fn default_variables() -> Vec<(String, String)> {
     [
         (
             "output",
-            "{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{&data}",
+            "${@timestamp}${@level}${@message}${config compact} ${else}\\n${/}${@data}",
         ),
-        ("timestamp", "{?timestamp:dimmed} "),
-        ("level", "{?lvl|level|severity:level} "),
-        ("message", "{?message|msg|body|fields.message}"),
-        ("data", "{?..:json}"),
+        ("timestamp", "${?timestamp:dimmed} "),
+        ("level", "${?lvl|level|severity:level} "),
+        ("message", "${?message|msg|body|fields.message}"),
+        ("data", "${?..:json}"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -300,7 +277,6 @@ impl ConfigFile {
             presets: presets2,
             recipes: recipes2,
             recipe: recipe2,
-            tables: tables2,
         } = other;
 
         if let Some(format) = config2.format {
@@ -321,7 +297,6 @@ impl ConfigFile {
         self.presets.extend(presets2);
         self.recipes.extend(recipes2);
         self.recipe.extend(recipe2);
-        self.tables.extend(tables2);
 
         match (&mut self.variables, variables2) {
             (_, None) => (),
@@ -348,10 +323,14 @@ impl ConfigFile {
     /// set of currently-true condition flags (e.g. `["compact"]`), used to apply
     /// `[recipe.NAME.<cond>]` overrides. Idempotent; call once flags are known.
     pub fn resolve_recipes(&mut self, active: &[&str]) {
-        // Seed the built-in csv/tsv/md tables first, so a user recipe of the
-        // same name can override them.
-        for (name, def) in builtin_tables() {
-            self.tables.entry(name).or_insert(def);
+        // Seed the built-in csv/tsv/md formats first, so a user recipe of the
+        // same name can override them. Each is also runnable by name (`@csv`).
+        for (name, def) in builtin_formats() {
+            self.formats.entry(name.clone()).or_insert(def);
+            self.presets.entry(name.clone()).or_insert_with(|| PresetDef {
+                format: Some(name),
+                ..Default::default()
+            });
         }
 
         // Body-only shorthand: a variable, and a runnable preset (template=body).
@@ -397,52 +376,44 @@ impl ConfigFile {
         resolved
     }
 
-    /// Register a resolved recipe as a variable (inline), a preset (run), a
-    /// framed format, and/or a column table.
+    /// Register a resolved recipe as a variable (inline), a preset (run), and/or
+    /// a custom output format (header/body/footer).
     fn install_recipe(&mut self, name: &str, r: &Recipe) {
         if let Some(body) = r.inline_body() {
             self.set_variable(name.to_owned(), body);
-        }
-        if r.is_table() {
-            self.tables.insert(
-                name.to_owned(),
-                TableDef {
-                    separator: r.separator.clone().unwrap_or_default(),
-                    escape: r.escape.clone(),
-                    row_prefix: r.row_prefix.clone(),
-                    row_suffix: r.row_suffix.clone(),
-                    rule: r.rule.clone(),
-                },
-            );
         }
         if r.is_format() {
             self.formats.insert(
                 name.to_owned(),
                 FormatDef {
                     escape: r.escape.clone(),
-                    header: r.header.clone(),
-                    row: r.inline_body().unwrap_or_default(),
-                    footer: r.footer.clone(),
+                    body: r.inline_body().unwrap_or_default(),
                 },
             );
         }
-        // Any recipe with content is runnable as a preset.
+        // Any recipe with content is runnable as a preset. A format recipe's
+        // body lives in the formats map, so don't also set it as the template
+        // (that would shadow its saved `fields`, which drive `$cols`).
         let preset = PresetDef {
             filter: r.filter.clone(),
-            template: r.body.clone().or_else(|| {
-                r.field.as_ref().map(|f| match &r.style {
-                    Some(s) => format!("{{{f}:{s}}}"),
-                    None => format!("{{{f}}}"),
+            template: if r.is_format() {
+                None
+            } else {
+                r.body.clone().or_else(|| {
+                    r.field.as_ref().map(|f| match &r.style {
+                        Some(s) => format!("${{{f}:{s}}}"),
+                        None => format!("${{{f}}}"),
+                    })
                 })
-            }),
+            },
             fields: r.fields.clone(),
             redact: r.redact.clone(),
             compact: None,
-            // A format/table recipe runs through its own named output format.
+            // A format recipe runs through its own named output format.
             format: r
                 .format
                 .clone()
-                .or_else(|| (r.is_format() || r.is_table()).then(|| name.to_owned())),
+                .or_else(|| r.is_format().then(|| name.to_owned())),
             count: r.count.clone(),
             stats: r.stats.clone(),
             top: r.top.clone(),
@@ -529,39 +500,39 @@ mod tests {
 
     #[test]
     fn shorthand_recipe_becomes_variable_and_preset() {
-        let mut c = parse("[recipes]\noneline = \"{level} {msg}\"\n");
+        let mut c = parse("[recipes]\noneline = \"${level} ${msg}\"\n");
         c.resolve_recipes(&[]);
-        assert_eq!(var(&c, "oneline"), Some("{level} {msg}"));
-        assert_eq!(c.presets["oneline"].template.as_deref(), Some("{level} {msg}"));
+        assert_eq!(var(&c, "oneline"), Some("${level} ${msg}"));
+        assert_eq!(c.presets["oneline"].template.as_deref(), Some("${level} ${msg}"));
     }
 
     #[test]
     fn field_style_recipe_becomes_field_variable() {
         let mut c = parse("[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n");
         c.resolve_recipes(&[]);
-        assert_eq!(var(&c, "level"), Some("{lvl|level|severity:level}"));
+        assert_eq!(var(&c, "level"), Some("${lvl|level|severity:level}"));
     }
 
     #[test]
     fn filter_body_recipe_becomes_preset() {
         let mut c = parse(
-            "[recipe.errors]\nfilter = \"level=error\"\nbody = \"{ts} {msg}\"\n",
+            "[recipe.errors]\nfilter = \"level=error\"\nbody = \"${ts} ${msg}\"\n",
         );
         c.resolve_recipes(&[]);
         let p = &c.presets["errors"];
         assert_eq!(p.filter.as_deref(), Some("level=error"));
-        assert_eq!(p.template.as_deref(), Some("{ts} {msg}"));
+        assert_eq!(p.template.as_deref(), Some("${ts} ${msg}"));
     }
 
     #[test]
     fn format_recipe_becomes_format() {
         let mut c = parse(
-            "[recipe.report]\nescape = \"html\"\nheader = \"<h>\"\nbody = \"<r>{msg}</r>\"\nfooter = \"<f>\"\n",
+            "[recipe.report]\nescape = \"html\"\nbody = \"<table>\\n$rows( <r>${msg}</r> )*</table>\"\n",
         );
         c.resolve_recipes(&[]);
         let f = &c.formats["report"];
         assert_eq!(f.escape.as_deref(), Some("html"));
-        assert_eq!(f.row, "<r>{msg}</r>");
+        assert_eq!(f.body, "<table>\n$rows( <r>${msg}</r> )*</table>");
         // and it's runnable as a preset that points at its own format
         assert_eq!(c.presets["report"].format.as_deref(), Some("report"));
     }
@@ -581,11 +552,11 @@ mod tests {
     #[test]
     fn base_inheritance_overlays_keys() {
         let mut c = parse(
-            "[recipe.base]\nbody = \"{a}\"\nfilter = \"x=1\"\n[recipe.child]\nbase = \"@base\"\nbody = \"{b}\"\n",
+            "[recipe.base]\nbody = \"${a}\"\nfilter = \"x=1\"\n[recipe.child]\nbase = \"@base\"\nbody = \"${b}\"\n",
         );
         c.resolve_recipes(&[]);
         // child overrides body, inherits filter
-        assert_eq!(c.presets["child"].template.as_deref(), Some("{b}"));
+        assert_eq!(c.presets["child"].template.as_deref(), Some("${b}"));
         assert_eq!(c.presets["child"].filter.as_deref(), Some("x=1"));
     }
 }

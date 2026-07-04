@@ -3,7 +3,7 @@ members = ["crates/jlf-core", "crates/jlf", "crates/jlf-tui", "crates/jlf-it"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0-dev"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
 license = "MIT OR Apache-2.0"

@@ -56,7 +56,7 @@ impl App {
             }
             Err(_) => jlf_core::default_variables(),
         };
-        let expanded = expanded_format("{&output}", &variables);
+        let expanded = expanded_format("${@output}", &variables);
         let row_fmt = Formatter::new(&expanded, true, true)?;
 
         Ok(Self {

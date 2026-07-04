@@ -3,21 +3,21 @@
 # See docs/RECIPES.md for the full recipe model.
 
 [config]
-format   = "{&output}"   # the default format renders the `output` recipe
+format   = "${@output}"   # the default format renders the `output` recipe
 compact  = false
 no_color = false
 strict   = false
 
 # `output` is the entry point: it joins the field recipes below. Each field is
-# optional ({?@...}), so an absent one collapses its space; output.compact only
+# optional (${?@...}), so an absent one collapses its space; output.compact only
 # changes the separator before the JSON.
 [recipe.output]
-body = "{?@timestamp} {?@level} {?@message}\n{?@data}"
+body = "${?@timestamp} ${?@level} ${?@message}\n${?@data}"
 
 [recipe.output.compact]
-body = "{?@timestamp} {?@level} {?@message} {?@data}"
+body = "${?@timestamp} ${?@level} ${?@message} ${?@data}"
 
-# Field recipes - reusable as {@name} in a template, name=... in a filter, or
+# Field recipes - reusable as ${@name} in a template, name=... in a filter, or
 # `stats name` in a summary. Override one (e.g. -v level=...) to restyle.
 [recipe.timestamp]
 field = "timestamp"

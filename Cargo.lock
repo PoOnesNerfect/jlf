@@ -663,7 +663,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jlf"
-version = "0.3.0"
+version = "0.4.0-dev"
 dependencies = [
  "clap",
  "color-eyre",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "jlf-core"
-version = "0.3.0"
+version = "0.4.0-dev"
 dependencies = [
  "color-eyre",
  "criterion",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "jlf-it"
-version = "0.3.0"
+version = "0.4.0-dev"
 dependencies = [
  "console",
  "dialoguer",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "jlf-tui"
-version = "0.3.0"
+version = "0.4.0-dev"
 dependencies = [
  "color-eyre",
  "jlf-core",

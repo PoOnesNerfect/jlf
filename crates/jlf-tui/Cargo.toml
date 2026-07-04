@@ -11,6 +11,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-jlf-core = { version = "0.3.0", path = "../jlf-core" }
+jlf-core = { version = "0.4.0-dev", path = "../jlf-core" }
 ratatui = "0.29"
 color-eyre = "0.6.5"

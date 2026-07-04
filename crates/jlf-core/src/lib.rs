@@ -4,12 +4,12 @@ mod json;
 pub use json::{parse_json, Json, ParseError};
 
 mod format;
-pub use format::{Escape, FormattedLog, Formatter};
+pub use format::{column, Column, Escape, FormattedLog, Formatter};
 
 mod config;
 pub use config::{
-    builtin_tables, default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef,
-    Recipe, TableDef,
+    builtin_formats, default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef,
+    Recipe,
 };
 
 mod expand;

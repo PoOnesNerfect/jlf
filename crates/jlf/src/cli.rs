@@ -16,7 +16,7 @@ enum ColorWhen {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    /// Format template, filters (key=value), and fields. [default: {&output}]
+    /// Format template, filters (key=value), and fields. [default: ${@output}]
     args: Vec<String>,
 
     #[command(flatten)]
@@ -55,22 +55,12 @@ pub struct Args {
     #[arg(short = 'r', long = "redact", value_name = "FIELDS", value_delimiter = ',')]
     redact: Vec<String>,
 
-    /// Output as CSV (columns from a comma-list arg, e.g. `jlf --csv ts,level,msg`).
-    #[arg(long)]
-    csv: bool,
-    /// Output as TSV.
-    #[arg(long)]
-    tsv: bool,
-    /// Output as a Markdown table.
-    #[arg(long)]
-    md: bool,
-
-    /// Render with a named output format: a built-in (`csv`/`tsv`/`md`) or a
-    /// custom `[format.NAME]` from your config.
-    #[arg(long = "format", value_name = "NAME")]
+    /// Select an output format by name — a table (`csv`/`tsv`/`md` or a custom
+    /// recipe) or a framed `[recipe.NAME]`. Usually written as `@NAME`.
+    #[arg(long = "format", value_name = "NAME", global = true)]
     format_name: Option<String>,
 
-    /// Use a saved preset from `[preset.NAME]` (also: `@NAME` as a bare arg).
+    /// Use a saved recipe from `[recipe.NAME]` (also: `@NAME` as a bare arg).
     #[arg(short = 'p', long = "preset", value_name = "NAME")]
     preset: Option<String>,
 
@@ -96,61 +86,25 @@ enum Command {
     },
     /// Count lines, or a frequency breakdown of a field's values.
     Count {
-        #[command(flatten)]
-        out: OutFmt,
         /// Optional field to break down by; bare args without `{}` or operators.
-        /// Tokens with operators are filters.
+        /// A `@name` token selects a table output. Tokens with operators are filters.
         args: Vec<String>,
     },
     /// Numeric summary of a field: count/min/max/mean/p50/p90/p99.
     Stats {
-        #[command(flatten)]
-        out: OutFmt,
-        /// The numeric field, optional `by <group>`, and key=value filters.
+        /// The numeric field, optional `by <group>`, `@name` output, and filters.
         args: Vec<String>,
     },
     /// Most frequent values of a field (top N, default 10).
     Top {
-        #[command(flatten)]
-        out: OutFmt,
-        /// Field, optional N, and key=value filters.
+        /// Field, optional N, `@name` output, and key=value filters.
         args: Vec<String>,
     },
     /// Number of distinct values of a field.
     Uniq {
-        #[command(flatten)]
-        out: OutFmt,
         /// Field and key=value filters.
         args: Vec<String>,
     },
-}
-
-#[derive(Debug, Clone, Copy, Default, clap::Args)]
-struct OutFmt {
-    /// Output summary as CSV.
-    #[arg(long)]
-    csv: bool,
-    /// Output summary as TSV.
-    #[arg(long)]
-    tsv: bool,
-    /// Output summary as a Markdown table.
-    #[arg(long)]
-    md: bool,
-}
-
-impl OutFmt {
-    fn mode(&self) -> Option<Table> {
-        let name = if self.csv {
-            "csv"
-        } else if self.tsv {
-            "tsv"
-        } else if self.md {
-            "md"
-        } else {
-            return None;
-        };
-        Table::builtin(name)
-    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -174,19 +128,18 @@ pub fn run() -> Result<(), color_eyre::Report> {
         input,
         fields: fields_flag,
         redact,
-        csv,
-        tsv,
-        md,
         format_name,
         preset,
         command,
     } = Args::parse();
 
-    // Classify bare args: `@name` is a preset, a token with `{` the template, one
-    // with an operator a filter, a comma-list the field/column list.
+    // Classify bare args: `@name` is a recipe, a token with `{` the template, one
+    // with an operator a filter, a comma-list the field/column list. Remaining
+    // bare words are kept as `columns` — used as fields if a table is selected.
     let mut format = None;
     let mut filter_strs: Vec<String> = Vec::new();
     let mut fields: Vec<String> = fields_flag;
+    let mut columns: Vec<String> = Vec::new();
     let mut preset_name = preset;
     for a in args {
         if let Some(name) = a.strip_prefix('@').filter(|n| !n.is_empty()) {
@@ -195,8 +148,10 @@ pub fn run() -> Result<(), color_eyre::Report> {
             format = Some(a);
         } else if jlf_core::Filter::parse(&a).is_some() {
             filter_strs.push(a);
-        } else if a.contains(',') || (csv || tsv || md) {
+        } else if a.contains(',') {
             fields = a.split(',').map(str::to_owned).collect();
+        } else {
+            columns.push(a);
         }
     }
 
@@ -227,7 +182,6 @@ pub fn run() -> Result<(), color_eyre::Report> {
         variables: config_variables,
         formats,
         presets,
-        tables,
         ..
     } = cfg;
 
@@ -241,7 +195,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     // explicit template/fields/format/redact wins.
     if let Some(name) = &preset_name {
         let Some(def) = presets.get(name) else {
-            eprintln!("jlf: unknown preset `{name}` (no [preset.{name}] in config)");
+            eprintln!("jlf: unknown recipe `{name}` (no [recipe.{name}] in config)");
             std::process::exit(2);
         };
         filter_strs = merge_filter_tokens(def.filter.as_deref().unwrap_or(""), filter_strs);
@@ -258,7 +212,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
             }
         }
         compact = compact || def.compact.unwrap_or(false);
-        if format_name.is_none() && !(csv || tsv || md) {
+        if format_name.is_none() {
             format_name = def.format.clone();
         }
         if command.is_none() {
@@ -271,9 +225,23 @@ pub fn run() -> Result<(), color_eyre::Report> {
         .filter_map(|s| jlf_core::Filter::parse(s))
         .collect();
 
+    // Columns for bare `$( … )` repetition and table formats: an explicit `-f`
+    // list, else leftover bare words.
+    let column_fields: Vec<String> = if !fields.is_empty() {
+        fields.clone()
+    } else {
+        columns.clone()
+    };
+    let cols: Vec<jlf_core::Column> = column_fields
+        .iter()
+        .map(|f| jlf_core::column(f.clone()))
+        .collect();
+
+    let interactive = io::stdout().is_terminal();
+
     // A preset can run a summary directly (`stats = "latency_ms"`, etc.).
     if let Some((verb, field, by, n)) = preset_summary {
-        let mode = resolve_table(format_name.as_deref(), csv, tsv, md, &tables);
+        let mode = format_name.as_deref().and_then(TableFmt::by_name);
         let mut sargs = Vec::new();
         if !field.is_empty() {
             sargs.push(field);
@@ -294,24 +262,32 @@ pub fn run() -> Result<(), color_eyre::Report> {
         };
     }
 
-    // `--csv/--tsv/--md`, `--format NAME`, or a preset's `format` that names a
-    // column table (built-in or a recipe with a `separator`) export directly.
-    if let Some(table) = resolve_table(format_name.as_deref(), csv, tsv, md, &tables) {
-        return run_export(fields, filters, table, &input);
-    }
-
-    // A bare -f/--fields with no template builds a simple "{a} {b}" template.
-    if format.is_none() && !fields.is_empty() {
-        format = Some(fields.iter().map(|f| format!("{{{f}}}")).collect::<Vec<_>>().join(" "));
-    }
-
-    // A non-built-in `--format NAME` selects a custom `[format.NAME]`.
-    if let Some(name) = format_name {
-        let Some(def) = formats.get(&name) else {
-            eprintln!("jlf: unknown format `{name}` (not a built-in and no [format.{name}] in config)");
+    // Resolve the output template + its escape: a `@name`/`--format` output
+    // format's body, else the per-record template (arg / preset / `-f` / default).
+    // Summary subcommands handle their own output below.
+    let mut escape = jlf_core::Escape::None;
+    if let Some(name) = &format_name {
+        if let Some(def) = formats.get(name) {
+            if let Some(e) = def.escape.as_deref() {
+                escape = jlf_core::Escape::from_name(e).unwrap_or_else(|| {
+                    eprintln!("jlf: unknown escape `{e}` (expected none/html/csv/tsv/md)");
+                    std::process::exit(2);
+                });
+            }
+            format = Some(def.body.clone());
+        } else if command.is_none() {
+            eprintln!("jlf: unknown format `{name}` (not a built-in and no [recipe.{name}] in config)");
             std::process::exit(2);
-        };
-        return run_custom_format(def, filters, redact, &input, &config_variables);
+        }
+    } else if format.is_none() && !fields.is_empty() {
+        // A bare -f/--fields with no template builds a simple "${a} ${b}" template.
+        format = Some(
+            fields
+                .iter()
+                .map(|f| format!("${{{f}}}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
 
     if let Some(format) = format {
@@ -326,9 +302,9 @@ pub fn run() -> Result<(), color_eyre::Report> {
     if strict {
         config.strict = Some(true);
     }
-    let format = config.format.unwrap_or_else(|| "{&output}".to_owned());
+    let template = config.format.unwrap_or_else(|| "${@output}".to_owned());
     let compact = config.compact.unwrap_or(false);
-    let no_color = config.no_color.unwrap_or(false);
+    let no_color_cfg = config.no_color.unwrap_or(false);
     let strict = config.strict.unwrap_or(false);
 
     if let Some(command) = command {
@@ -338,9 +314,9 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 variables: Variables { variables },
             } => {
                 let variables = get_variables(config_variables, variables);
-                let format = variable.map(|e| format!("{{&{e}}}")).unwrap_or(format);
+                let t = variable.map(|e| format!("${{@{e}}}")).unwrap_or(template);
 
-                println!("{}", expanded_format(&format, &variables));
+                println!("{}", expanded_format(&t, &variables));
             }
             Command::List { variables } => {
                 let variables = get_variables(config_variables, variables.variables);
@@ -350,16 +326,20 @@ pub fn run() -> Result<(), color_eyre::Report> {
                 }
             }
             // Preset filters (if any) apply to an explicit summary subcommand too.
-            Command::Count { args, out } => {
-                return run_count(prepend(&filter_strs, args), out.mode(), &input)
+            // A `@name` token in args or the global `--format` selects a table.
+            Command::Count { mut args } => {
+                let mode = take_output_table(&mut args, format_name.as_deref());
+                return run_count(prepend(&filter_strs, args), mode, &input);
             }
-            Command::Stats { args, out } => {
-                return run_stats(prepend(&filter_strs, args), out.mode(), &input)
+            Command::Stats { mut args } => {
+                let mode = take_output_table(&mut args, format_name.as_deref());
+                return run_stats(prepend(&filter_strs, args), mode, &input);
             }
-            Command::Top { args, out } => {
-                return run_top(prepend(&filter_strs, args), out.mode(), &input)
+            Command::Top { mut args } => {
+                let mode = take_output_table(&mut args, format_name.as_deref());
+                return run_top(prepend(&filter_strs, args), mode, &input);
             }
-            Command::Uniq { args, out: _ } => {
+            Command::Uniq { args } => {
                 return run_uniq(prepend(&filter_strs, args), &input)
             }
         }
@@ -367,51 +347,158 @@ pub fn run() -> Result<(), color_eyre::Report> {
         return Ok(());
     }
 
-    let stdout = io::stdout();
     let no_color = match color {
         ColorWhen::Always => false,
         ColorWhen::Never => true,
-        ColorWhen::Auto => no_color || !stdout.is_terminal(),
+        ColorWhen::Auto => no_color_cfg || !interactive,
     };
 
-    // Buffer stdout: the formatter emits many small writes per record, and a
-    // bare StdoutLock is line-buffered (a flush per '\n'). A BufWriter
-    // collapses those into a few large writes.
-    let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
-
     let variables = get_variables(config_variables, variables.variables);
-    let expanded = expanded_format(&format, &variables);
-    let formatter = Formatter::new(&expanded, no_color, compact)?;
+    let expanded = expanded_format(&template, &variables);
+    // A `$rows( … )` marks the per-record part: text before it is a once-header,
+    // text after it a once-footer. No `$rows` -> the whole template is per record.
+    let (header, body, footer) = split_rows(&expanded);
 
-    let mut buf = open_input(&input)?;
+    render_output(
+        RenderOutput {
+            header: &header,
+            body: &body,
+            footer: &footer,
+            cols,
+            escape,
+            filters,
+            redact,
+            take,
+            no_color,
+            compact,
+            strict,
+            interactive,
+        },
+        &input,
+    )
+}
 
-    // input line read from stdin (allocation reused across iterations)
+/// Split a template on a top-level `$rows( … )OP`: the text before it prints
+/// once (header), the body inside repeats per record, and the text after prints
+/// once (footer). With no `$rows(`, the whole template is the per-record body.
+fn split_rows(t: &str) -> (String, String, String) {
+    let Some(start) = t.find("$rows(") else {
+        return (String::new(), t.to_owned(), String::new());
+    };
+    let b = t.as_bytes();
+    let mut i = start + "$rows(".len();
+    let body_start = i;
+    let mut depth = 0usize;
+    let mut body_end = t.len();
+    while i < b.len() {
+        match b[i] {
+            b'(' => depth += 1,
+            b')' if depth == 0 => {
+                body_end = i;
+                break;
+            }
+            b')' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    // Consume the separator (optional `"quoted"` or bare) and operator after `)`.
+    let mut j = body_end + 1;
+    if b.get(j) == Some(&b'"') {
+        j += 1;
+        while j < b.len() && b[j] != b'"' {
+            j += if b[j] == b'\\' { 2 } else { 1 };
+        }
+        j += 1; // closing quote
+    } else {
+        while j < b.len() && !matches!(b[j], b'*' | b'+' | b'?') {
+            j += 1;
+        }
+    }
+    if matches!(b.get(j), Some(b'*' | b'+' | b'?')) {
+        j += 1;
+    }
+    (
+        t[..start].to_owned(),
+        t[body_start..body_end].trim().to_owned(),
+        t.get(j..).unwrap_or("").to_owned(),
+    )
+}
+
+/// Inputs for [`render_output`], grouped to keep the signature manageable.
+struct RenderOutput<'a> {
+    header: &'a str,
+    body: &'a str,
+    footer: &'a str,
+    cols: Vec<jlf_core::Column>,
+    escape: jlf_core::Escape,
+    filters: Vec<jlf_core::Filter>,
+    redact: Vec<String>,
+    take: Option<usize>,
+    no_color: bool,
+    compact: bool,
+    strict: bool,
+    interactive: bool,
+}
+
+/// The single output path: render `header` once, `body` per record (streaming,
+/// with filters/redaction/take), and `footer` once. Used for the default view,
+/// presets, and every output format.
+fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Report> {
+    let RenderOutput {
+        header,
+        body,
+        footer,
+        cols,
+        escape,
+        filters,
+        redact,
+        take,
+        no_color,
+        compact,
+        strict,
+        interactive,
+    } = o;
+
+    let mk = |t: &str| -> Result<Formatter, color_eyre::Report> {
+        let mut f = Formatter::new(t, no_color, compact)?.with_columns(cols.clone());
+        if escape != jlf_core::Escape::None {
+            f = f.with_escape(escape);
+        }
+        Ok(f)
+    };
+    let header_fmt = (!header.is_empty()).then(|| mk(header)).transpose()?;
+    let body_fmt = mk(body)?;
+    let footer_fmt = (!footer.is_empty()).then(|| mk(footer)).transpose()?;
+
+    let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
+    let null = Json::Null;
+
+    if let Some(h) = &header_fmt {
+        let mut s = String::new();
+        h.as_log(&null).write_fmt(&mut s)?;
+        stdout.write_all(s.as_bytes())?;
+    }
+
+    let mut buf = open_input(input)?;
     let mut line = String::new();
-
-    // formatted output for one record (allocation reused across iterations)
     let mut out = String::new();
-
-    // how many records have we emitted?
     let mut taken = 0;
 
     while buf.read_line(&mut line)? != 0 {
-        // Only run the (allocating) ANSI strip when the line actually
-        // contains an escape byte. JSON logs almost never do, so this skips
-        // a per-line allocation + full-line scan on the common path.
+        // Only run the (allocating) ANSI strip when the line actually contains an
+        // escape byte. JSON logs almost never do.
         let stripped;
-        let input: &str = if line.as_bytes().contains(&0x1b) {
+        let inp: &str = if line.as_bytes().contains(&0x1b) {
             stripped = strip_ansi_escapes::strip_str(&line);
             &stripped
         } else {
             &line
         };
 
-        if !input.trim().is_empty() {
-            // `json` is scoped to this iteration so its borrows of `input`
-            // end before the next read; this is what lets us avoid the
-            // previous lifetime-laundering `unsafe` block.
+        if !inp.trim().is_empty() {
             let mut json = Json::Null;
-            match json.parse_replace(input) {
+            match json.parse_replace(inp) {
                 Ok(()) => {
                     if !filters.is_empty() && !jlf_core::matches_all(&filters, &json) {
                         line.clear();
@@ -421,7 +508,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
                         jlf_core::redact(&mut json, &redact);
                     }
                     out.clear();
-                    formatter.as_log(&json).write_fmt(&mut out)?;
+                    body_fmt.as_log(&json).write_fmt(&mut out)?;
                     out.push('\n');
                     stdout.write_all(out.as_bytes())?;
                 }
@@ -435,21 +522,24 @@ pub fn run() -> Result<(), color_eyre::Report> {
                         stdout.flush()?;
                         std::process::exit(1);
                     }
-
-                    // not strict: echo the line unchanged (already includes
-                    // its trailing newline from read_line)
+                    // not strict: echo the line unchanged.
                     if no_color {
-                        stdout.write_all(input.as_bytes())?;
+                        stdout.write_all(inp.as_bytes())?;
                     } else {
                         stdout.write_all(line.as_bytes())?;
                     }
                 }
             }
 
-            // take only N emitted records if specified
-            if let Some(take) = take.as_ref() {
+            // Live-tail: flush each record to a terminal so slow streams appear
+            // immediately; pipes/files keep block buffering.
+            if interactive {
+                stdout.flush()?;
+            }
+
+            if let Some(t) = take.as_ref() {
                 taken += 1;
-                if taken >= *take {
+                if taken >= *t {
                     line.clear();
                     break;
                 }
@@ -459,8 +549,13 @@ pub fn run() -> Result<(), color_eyre::Report> {
         line.clear();
     }
 
-    stdout.flush()?;
+    if let Some(ft) = &footer_fmt {
+        let mut s = String::new();
+        ft.as_log(&null).write_fmt(&mut s)?;
+        stdout.write_all(s.as_bytes())?;
+    }
 
+    stdout.flush()?;
     Ok(())
 }
 
@@ -509,32 +604,19 @@ fn preset_summary_from(
     }
 }
 
-/// The output-format name selected by `--csv/--tsv/--md` or `--format NAME`.
-/// `None` means the default (template) output.
-fn table_name(format_name: Option<&str>, csv: bool, tsv: bool, md: bool) -> Option<String> {
-    if md {
-        Some("md".into())
-    } else if tsv {
-        Some("tsv".into())
-    } else if csv {
-        Some("csv".into())
-    } else {
-        format_name.map(str::to_owned)
-    }
-}
-
-/// Resolve the selected output format to a column [`Table`], if it names one
-/// (built-in `csv`/`tsv`/`md` or a user recipe with a `separator`). A framed
-/// format name (e.g. `report`) resolves to `None` here and is handled elsewhere.
-fn resolve_table(
-    format_name: Option<&str>,
-    csv: bool,
-    tsv: bool,
-    md: bool,
-    tables: &std::collections::HashMap<String, jlf_core::TableDef>,
-) -> Option<Table> {
-    let name = table_name(format_name, csv, tsv, md)?;
-    tables.get(&name).map(Table::from_def)
+/// Pull a `@name` output-format token (or fall back to `--format`) out of a
+/// summary subcommand's args and resolve it to a built-in [`TableFmt`]. The
+/// `@name` token is removed so it isn't mistaken for a field or filter.
+fn take_output_table(args: &mut Vec<String>, format_name: Option<&str>) -> Option<TableFmt> {
+    let mut name = format_name.map(str::to_owned);
+    args.retain(|a| match a.strip_prefix('@').filter(|n| !n.is_empty()) {
+        Some(n) => {
+            name = Some(n.to_owned());
+            false
+        }
+        None => true,
+    });
+    name.as_deref().and_then(TableFmt::by_name)
 }
 
 /// Open the input: stdin when no files are given, otherwise the files chained in
@@ -607,7 +689,7 @@ fn get_variables(
 }
 
 /// `count` subcommand: count matching lines, or a field's value frequencies.
-fn run_count(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_count(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut filters = Vec::new();
     for a in args {
@@ -667,7 +749,7 @@ fn write_table(
     w: &mut impl Write,
     head: &[&str],
     rows: impl Iterator<Item = Vec<String>>,
-    table: &Table,
+    table: &TableFmt,
 ) -> io::Result<()> {
     let head: Vec<String> = head.iter().map(|s| s.to_string()).collect();
     table.write_header(w, &head)?;
@@ -695,7 +777,7 @@ fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
 }
 
 /// `stats <field> [by <group>]`: numeric summary, optionally grouped.
-fn run_stats(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_stats(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Result<(), color_eyre::Report> {
     let mut field: Option<Vec<String>> = None;
     let mut group: Option<Vec<String>> = None;
     let mut filters = Vec::new();
@@ -829,7 +911,7 @@ fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, col
     Ok((by.into_iter().collect(), total, n))
 }
 
-fn run_top(args: Vec<String>, fmt: Option<Table>, input: &[String]) -> Result<(), color_eyre::Report> {
+fn run_top(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Result<(), color_eyre::Report> {
     let (mut rows, total, n) = collect_field(args, input)?;
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -858,162 +940,64 @@ fn run_uniq(args: Vec<String>, input: &[String]) -> Result<(), color_eyre::Repor
 
 /// A column table output format built from a [`jlf_core::TableDef`]: cells are
 /// escaped per `quote`, joined by `sep`, wrapped per row, with an optional
-/// Markdown-style `rule` row after the header.
-#[derive(Clone)]
-struct Table {
-    sep: String,
-    quote: Quote,
-    prefix: String,
-    suffix: String,
-    rule: Option<String>,
-}
-
+/// The built-in table dialects used for *summary* output (`count`/`stats`/`top`
+/// with `@csv`/`@tsv`/`@md`). Record output goes through the template engine
+/// (`run_format`); summaries render fixed rows, so a small dedicated writer keeps
+/// them simple.
 #[derive(Clone, Copy, PartialEq)]
-enum Quote {
+enum TableFmt {
     Csv,
     Tsv,
     Md,
-    None,
 }
 
-impl Table {
-    fn from_def(def: &jlf_core::TableDef) -> Table {
-        Table {
-            sep: def.separator.clone(),
-            quote: match def.escape.as_deref() {
-                Some("csv") => Quote::Csv,
-                Some("tsv") => Quote::Tsv,
-                Some("md") => Quote::Md,
-                _ => Quote::None,
-            },
-            prefix: def.row_prefix.clone().unwrap_or_default(),
-            suffix: def.row_suffix.clone().unwrap_or_default(),
-            rule: def.rule.clone(),
+impl TableFmt {
+    fn by_name(name: &str) -> Option<TableFmt> {
+        match name {
+            "csv" => Some(TableFmt::Csv),
+            "tsv" => Some(TableFmt::Tsv),
+            "md" => Some(TableFmt::Md),
+            _ => None,
         }
     }
 
-    /// A built-in table by name (`csv`/`tsv`/`md`), for summary output which
-    /// doesn't consult user config.
-    fn builtin(name: &str) -> Option<Table> {
-        jlf_core::builtin_tables().get(name).map(Table::from_def)
+    fn sep(&self) -> &'static str {
+        match self {
+            TableFmt::Csv => ",",
+            TableFmt::Tsv => "\t",
+            TableFmt::Md => " | ",
+        }
     }
 
-    /// Escape one cell for this table's quoting style.
     fn esc(&self, s: &str) -> String {
-        match self.quote {
-            Quote::Csv => {
-                if s.contains('"') || s.contains('\n') || s.contains('\r') || s.contains(&self.sep) {
+        match self {
+            TableFmt::Csv => {
+                if s.contains('"') || s.contains('\n') || s.contains('\r') || s.contains(',') {
                     format!("\"{}\"", s.replace('"', "\"\""))
                 } else {
                     s.to_owned()
                 }
             }
-            Quote::Tsv => s.replace(['\t', '\n', '\r'], " "),
-            Quote::Md => s.replace('|', "\\|").replace('\n', "<br>"),
-            Quote::None => s.to_owned(),
+            TableFmt::Tsv => s.replace(['\t', '\n', '\r'], " "),
+            TableFmt::Md => s.replace('|', "\\|").replace('\n', "<br>"),
         }
     }
 
-    /// Render one row: prefix + escaped cells joined by sep + suffix.
     fn row(&self, cells: impl Iterator<Item = String>) -> String {
-        let body = cells.map(|c| self.esc(&c)).collect::<Vec<_>>().join(&self.sep);
-        format!("{}{}{}", self.prefix, body, self.suffix)
+        let body = cells.map(|c| self.esc(&c)).collect::<Vec<_>>().join(self.sep());
+        match self {
+            TableFmt::Md => format!("| {body} |"),
+            _ => body,
+        }
     }
 
-    /// Write the header row (unescaped column names) and any rule row.
     fn write_header(&self, w: &mut impl Write, cols: &[String]) -> io::Result<()> {
         writeln!(w, "{}", self.row(cols.iter().cloned()))?;
-        if let Some(rule) = &self.rule {
-            let cells = cols.iter().map(|_| rule.clone());
-            let body = cells.collect::<Vec<_>>().join(&self.sep);
-            writeln!(w, "{}{}{}", self.prefix, body, self.suffix)?;
+        if *self == TableFmt::Md {
+            let rule = cols.iter().map(|_| "---".to_owned()).collect::<Vec<_>>().join(self.sep());
+            writeln!(w, "| {rule} |")?;
         }
         Ok(())
     }
 }
 
-/// CSV/TSV/Markdown export with per-cell escaping. Columns from `fields`.
-/// Render records with a user-defined `[format.NAME]`: `header` and `footer`
-/// emitted once around per-record `row` templates, with interpolated values
-/// escaped per `escape`.
-fn run_custom_format(
-    def: &jlf_core::FormatDef,
-    filters: Vec<jlf_core::Filter>,
-    redact: Vec<String>,
-    input: &[String],
-    config_variables: &Option<Vec<(String, String)>>,
-) -> Result<(), color_eyre::Report> {
-    let escape = match def.escape.as_deref() {
-        None => jlf_core::Escape::None,
-        Some(name) => {
-            let Some(e) = jlf_core::Escape::from_name(name) else {
-                eprintln!("jlf: unknown escape `{name}` (expected `none` or `html`)");
-                std::process::exit(2);
-            };
-            e
-        }
-    };
-
-    let variables = get_variables(config_variables.clone(), None);
-    let expanded = expanded_format(&def.row, &variables);
-    let formatter = Formatter::new(&expanded, true, false)?.with_escape(escape);
-
-    let mut buf = open_input(input)?;
-    let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
-
-    if let Some(header) = &def.header {
-        write!(stdout, "{header}")?;
-    }
-
-    let mut line = String::new();
-    let mut out = String::new();
-    while buf.read_line(&mut line)? != 0 {
-        if !line.trim().is_empty() {
-            let mut json = Json::Null;
-            if json.parse_replace(&line).is_ok()
-                && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
-            {
-                if !redact.is_empty() {
-                    jlf_core::redact(&mut json, &redact);
-                }
-                out.clear();
-                formatter.as_log(&json).write_fmt(&mut out)?;
-                out.push('\n');
-                stdout.write_all(out.as_bytes())?;
-            }
-        }
-        line.clear();
-    }
-
-    if let Some(footer) = &def.footer {
-        write!(stdout, "{footer}")?;
-    }
-    stdout.flush()?;
-    Ok(())
-}
-
-fn run_export(fields: Vec<String>, filters: Vec<jlf_core::Filter>, table: Table, input: &[String]) -> Result<(), color_eyre::Report> {
-    let cols: Vec<Vec<String>> = fields.iter().map(|f| f.split('.').map(str::to_owned).collect()).collect();
-    let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
-
-    table.write_header(&mut stdout, &fields)?;
-
-    let mut buf = open_input(input)?;
-    let mut line = String::new();
-    while buf.read_line(&mut line)? != 0 {
-        if !line.trim().is_empty() {
-            let mut json = Json::Null;
-            if json.parse_replace(&line).is_ok()
-                && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
-            {
-                let cells = cols
-                    .iter()
-                    .map(|p| scalar(resolve(&json, p)).unwrap_or("").to_owned());
-                writeln!(stdout, "{}", table.row(cells))?;
-            }
-        }
-        line.clear();
-    }
-    stdout.flush()?;
-    Ok(())
-}

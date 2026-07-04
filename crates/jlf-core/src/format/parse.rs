@@ -3,12 +3,19 @@ use std::num::ParseIntError;
 use owo_colors::Style;
 use smallvec::SmallVec;
 
-use super::{Arg, Cond, Field, FieldOptions, FieldType, Format, Piece};
+use super::{Arg, Cond, Escape, Field, FieldOptions, FieldType, Format, Piece, RepOp, RepSource};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
 };
 
+/// Parse a `$`-DSL template into render pieces + args. Plain text is literal;
+/// `$` introduces interpolation. Forms:
+///   `$name`             a bare field
+///   `${ … }`            a field (path/fallbacks/modifiers) or a directive
+///   `$( … )"sep"op`     repetition over the selected columns (`-f`/args)
+///   `$path( … )"sep"op` repetition over the object/array at `path`
+///   `$$`                a literal `$`
 pub(super) fn crunch_input(
     pieces: &mut Vec<Piece>,
     args: &mut Vec<Arg>,
@@ -16,226 +23,393 @@ pub(super) fn crunch_input(
     no_color: bool,
     compact: bool,
 ) -> Result<(), FormatError> {
-    let mut chunks = input.split('\\');
+    let mut sc = Scanner {
+        b: input.as_bytes(),
+        i: 0,
+        no_color,
+        compact,
+    };
+    sc.scan(pieces, args, 0, false)
+}
 
-    if let Some(chunk) = chunks.next() {
-        crunch_chunk(pieces, args, chunk, no_color, compact)?;
-    }
+struct Scanner<'a> {
+    b: &'a [u8],
+    i: usize,
+    no_color: bool,
+    compact: bool,
+}
 
-    let mut prev_was_backslash = false;
-
-    for chunk in chunks {
-        if !chunk.is_empty() {
-            if prev_was_backslash {
-                crunch_chunk(pieces, args, chunk, no_color, compact)?;
-            } else {
-                let (escaped, rest) = chunk.split_at(1);
-                pieces.push(parse_escaped(escaped.chars().next().unwrap())?);
-                if !rest.is_empty() {
-                    crunch_chunk(pieces, args, rest, no_color, compact)?;
+impl Scanner<'_> {
+    /// Scan into `pieces`. When `in_rep`, stop after the matching (paren-balanced)
+    /// `)` and leave the cursor just past it.
+    fn scan(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        in_rep: bool,
+    ) -> Result<(), FormatError> {
+        let mut lit = String::new();
+        let mut paren_depth: usize = 0;
+        while self.i < self.b.len() {
+            match self.b[self.i] {
+                b'\\' => self.take_escape(&mut lit)?,
+                b'$' => match self.b.get(self.i + 1).copied() {
+                    Some(b'$') => {
+                        lit.push('$');
+                        self.i += 2;
+                    }
+                    Some(b'(') => {
+                        flush_lit(pieces, &mut lit);
+                        self.i += 2;
+                        self.parse_rep(pieces, args, rep_depth, RepSource::Record)?;
+                    }
+                    Some(b'{') => {
+                        flush_lit(pieces, &mut lit);
+                        self.i += 2;
+                        self.parse_brace(pieces, args, rep_depth)?;
+                    }
+                    Some(x) if is_ident_start(x) => {
+                        flush_lit(pieces, &mut lit);
+                        self.i += 1;
+                        self.parse_bare(pieces, args, rep_depth)?;
+                    }
+                    _ => {
+                        lit.push('$');
+                        self.i += 1;
+                    }
+                },
+                b')' if in_rep => {
+                    if paren_depth == 0 {
+                        flush_lit(pieces, &mut lit);
+                        self.i += 1;
+                        return Ok(());
+                    }
+                    paren_depth -= 1;
+                    lit.push(')');
+                    self.i += 1;
+                }
+                b'(' if in_rep => {
+                    paren_depth += 1;
+                    lit.push('(');
+                    self.i += 1;
+                }
+                _ => {
+                    let start = self.i;
+                    while self.i < self.b.len() {
+                        let c = self.b[self.i];
+                        if c == b'\\' || c == b'$' || (in_rep && (c == b'(' || c == b')')) {
+                            break;
+                        }
+                        self.i += 1;
+                    }
+                    lit.push_str(std::str::from_utf8(&self.b[start..self.i]).unwrap());
                 }
             }
-            prev_was_backslash = false;
-        } else {
-            pieces.push(parse_escaped('\\')?);
-            prev_was_backslash = true;
         }
-    }
-
-    Ok(())
-}
-
-#[inline]
-fn parse_escaped(c: char) -> Result<Piece, FormatError> {
-    match c {
-        'n' => Ok(Piece::Escaped('\n')),
-        'r' => Ok(Piece::Escaped('\r')),
-        't' => Ok(Piece::Escaped('\t')),
-        '\'' => Ok(Piece::Escaped('\'')),
-        '"' => Ok(Piece::Escaped('\"')),
-        '{' => Ok(Piece::Escaped('{')),
-        '}' => Ok(Piece::Escaped('}')),
-        '\\' => Ok(Piece::Escaped('\\')),
-        _ => Err(FormatError::UnknownCharEscape(c)),
-    }
-}
-
-fn crunch_chunk(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    chunk: &str,
-    no_color: bool,
-    compact: bool,
-) -> Result<(), FormatError> {
-    let mut parts = chunk.split('{');
-
-    if let Some(part) = parts.next() {
-        if !part.is_empty() {
-            pieces.push(Piece::Literal(part.to_owned()));
+        if in_rep {
+            return Err(FormatError::UnclosedRep);
         }
+        flush_lit(pieces, &mut lit);
+        Ok(())
     }
 
-    for part in parts {
-        if let Some(end) = part.find('}') {
-            let content = &part[..end];
+    fn take_escape(&mut self, lit: &mut String) -> Result<(), FormatError> {
+        self.i += 1;
+        let Some(&e) = self.b.get(self.i) else {
+            lit.push('\\');
+            return Ok(());
+        };
+        self.i += 1;
+        lit.push(match e {
+            b'n' => '\n',
+            b'r' => '\r',
+            b't' => '\t',
+            b'\\' => '\\',
+            b'$' => '$',
+            b'(' => '(',
+            b')' => ')',
+            b'\'' => '\'',
+            b'"' => '"',
+            b'{' => '{',
+            b'}' => '}',
+            other => return Err(FormatError::UnknownCharEscape(other as char)),
+        });
+        Ok(())
+    }
 
-            // '#' means param is a conditional
-            if let Some(content) = content.strip_prefix('#') {
-                crunch_cond(pieces, args, content, no_color, compact)?;
-            } else if let Some(content) = content.strip_prefix(':') {
-                // ':' means `else` of conditional
-                crunch_cond_else(pieces, args, content, no_color, compact)?;
-            } else if content.starts_with('/') {
-                // '/' means end of conditional
-                crunch_cond_end(pieces)?;
-            } else {
-                crunch_arg(pieces, args, content, no_color, compact)?;
-            }
+    /// After `$` + identifier start: read a path. If followed by `(` it's a
+    /// `$path( … )` repetition source; otherwise a plain field.
+    fn parse_bare(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+    ) -> Result<(), FormatError> {
+        let start = self.i;
+        while self.i < self.b.len() && is_path_byte(self.b[self.i]) {
+            self.i += 1;
+        }
+        let name = std::str::from_utf8(&self.b[start..self.i]).unwrap();
+        if self.b.get(self.i) == Some(&b'(') {
+            self.i += 1;
+            let src = match name {
+                "cols" => RepSource::Columns,
+                _ => RepSource::Path(parse_field(name)?),
+            };
+            return self.parse_rep(pieces, args, rep_depth, src);
+        }
+        let mut fields = FieldOptions::new();
+        push_field(&mut fields, name, rep_depth)?;
+        args.push((fields, parse_format(None, self.no_color, self.compact)?));
+        pieces.push(Piece::Arg(args.len() - 1));
+        Ok(())
+    }
 
-            let literal = &part[end + 1..];
-            if !literal.is_empty() {
-                pieces.push(Piece::Literal(literal.to_owned()));
-            }
-        } else {
+    /// Parse a `${ … }` group: a directive (if/key/config/else/end) or a field.
+    fn parse_brace(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+    ) -> Result<(), FormatError> {
+        let start = self.i;
+        while self.i < self.b.len() && self.b[self.i] != b'}' {
+            self.i += 1;
+        }
+        if self.i >= self.b.len() {
             return Err(FormatError::ClosingBrace);
         }
+        let content = std::str::from_utf8(&self.b[start..self.i]).unwrap().trim();
+        self.i += 1; // consume '}'
+
+        if let Some(c) = content.strip_prefix("if ") {
+            self.push_cond(pieces, args, c, Cond::If, false)
+        } else if let Some(c) = content.strip_prefix("key ") {
+            self.push_cond(pieces, args, c, Cond::Key, false)
+        } else if let Some(c) = content.strip_prefix("config ") {
+            let b = match c.trim() {
+                "compact" => self.compact,
+                "no_color" => self.no_color,
+                other => {
+                    return Err(FormatError::UnsupportedConfig {
+                        config: other.to_owned(),
+                    })
+                }
+            };
+            pieces.push(Piece::CondStart(Cond::IfConfig(b), 0));
+            Ok(())
+        } else if content == "else" {
+            pieces.push(Piece::Else);
+            Ok(())
+        } else if let Some(c) = content.strip_prefix("else if ") {
+            self.push_cond(pieces, args, c, Cond::If, true)
+        } else if let Some(c) = content.strip_prefix("else key ") {
+            self.push_cond(pieces, args, c, Cond::Key, true)
+        } else if content.starts_with('/') {
+            pieces.push(Piece::CondEnd);
+            Ok(())
+        } else {
+            self.push_arg(pieces, args, content, rep_depth)
+        }
     }
 
-    Ok(())
-}
-
-#[inline]
-fn crunch_cond(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    content: &str,
-    no_color: bool,
-    compact: bool,
-) -> Result<(), FormatError> {
-    let (content, cond) = if let Some(content) = content.strip_prefix("if ") {
-        (content, Cond::If)
-    } else if let Some(content) = content.strip_prefix("key ") {
-        (content, Cond::Key)
-    } else if let Some(content) = content.strip_prefix("config ") {
-        let b = if content == "compact" {
-            compact
-        } else if content == "no_color" {
-            no_color
+    fn push_cond(
+        &self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        content: &str,
+        cond: Cond,
+        is_else: bool,
+    ) -> Result<(), FormatError> {
+        let mut fo = FieldOptions::new();
+        crunch_field_options(content.trim(), &mut fo)?;
+        args.push((fo, parse_format(None, self.no_color, self.compact)?));
+        let idx = args.len() - 1;
+        pieces.push(if is_else {
+            Piece::ElseCond(cond, idx)
         } else {
-            return Err(FormatError::UnsupportedConfig {
-                config: content.to_owned(),
-            });
+            Piece::CondStart(cond, idx)
+        });
+        Ok(())
+    }
+
+    fn push_arg(
+        &self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        content: &str,
+        rep_depth: usize,
+    ) -> Result<(), FormatError> {
+        let (name_part, mut format) = match content.split_once(':') {
+            Some((n, styles)) => (n.trim(), parse_format(Some(styles), self.no_color, self.compact)?),
+            None => (content, parse_format(None, self.no_color, self.compact)?),
         };
-        pieces.push(Piece::CondStart(Cond::IfConfig(b), 0));
+        let name_part = match name_part.strip_prefix('?') {
+            Some(rest) => {
+                format.optional = true;
+                rest.trim()
+            }
+            None => name_part,
+        };
+        let mut fields = FieldOptions::new();
+        push_field(&mut fields, name_part, rep_depth)?;
+        args.push((fields, format));
+        pieces.push(Piece::Arg(args.len() - 1));
+        Ok(())
+    }
 
-        return Ok(());
-    } else {
-        return Err(FormatError::UnsupportedConditional {
-            cond: format!("#{content}"),
-        });
-    };
+    /// Parse a repetition body (cursor just past `(`), then its separator and
+    /// operator; emit RepStart/body/RepEnd.
+    fn parse_rep(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        src: RepSource,
+    ) -> Result<(), FormatError> {
+        let mut body = Vec::new();
+        self.scan(&mut body, args, rep_depth + 1, true)?;
+        trim_body_edges(&mut body);
+        let sep = self.read_separator()?;
+        let op = self.read_op()?;
+        pieces.push(Piece::RepStart(src, sep, op));
+        pieces.extend(body);
+        pieces.push(Piece::RepEnd);
+        Ok(())
+    }
 
-    let mut field_options = FieldOptions::new();
-    crunch_field_options(content, &mut field_options)?;
-
-    args.push((field_options, parse_format(None, no_color, compact)?));
-    pieces.push(Piece::CondStart(cond, args.len() - 1));
-
-    Ok(())
-}
-
-#[inline]
-fn crunch_cond_else(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    content: &str,
-    no_color: bool,
-    compact: bool,
-) -> Result<(), FormatError> {
-    let (content, cond) = if let Some(content) = content.strip_prefix("else if ") {
-        (content, Cond::If)
-    } else if let Some(content) = content.strip_prefix("else key ") {
-        (content, Cond::Key)
-    } else if content == "else" {
-        pieces.push(Piece::Else);
-        return Ok(());
-    } else {
-        return Err(FormatError::UnsupportedConditional {
-            cond: format!(":{content}"),
-        });
-    };
-
-    let mut field_options = FieldOptions::new();
-    crunch_field_options(content, &mut field_options)?;
-
-    args.push((field_options, parse_format(None, no_color, compact)?));
-    pieces.push(Piece::ElseCond(cond, args.len() - 1));
-
-    Ok(())
-}
-
-#[inline]
-fn crunch_cond_end(pieces: &mut Vec<Piece>) -> Result<(), FormatError> {
-    pieces.push(Piece::CondEnd);
-
-    Ok(())
-}
-
-#[inline]
-fn crunch_arg(
-    pieces: &mut Vec<Piece>,
-    args: &mut Vec<Arg>,
-    content: &str,
-    no_color: bool,
-    compact: bool,
-) -> Result<(), FormatError> {
-    let content = content.trim();
-
-    // param is a field
-    let (name_part, mut format) = match content.split_once(':') {
-        Some((name, styles)) => (name, parse_format(Some(styles), no_color, compact)?),
-        None => (content, parse_format(None, no_color, compact)?),
-    };
-
-    // `{?field}`: optional — collapse one adjacent space when it renders empty.
-    let name_part = match name_part.strip_prefix('?') {
-        Some(rest) => {
-            format.optional = true;
-            rest
-        }
-        None => name_part,
-    };
-
-    let mut fields = FieldOptions::new();
-    crunch_field_options(name_part, &mut fields)?;
-
-    args.push((fields, format));
-    pieces.push(Piece::Arg(args.len() - 1));
-
-    Ok(())
-}
-
-fn crunch_field_options(
-    content: &str,
-    field_options: &mut FieldOptions,
-) -> Result<(), FormatError> {
-    if content.is_empty() {
-        return Ok(());
-    } else {
-        for field in content.split('|') {
-            if !field.is_empty() {
-                field_options.push(parse_field(field)?);
+    /// Read the separator that sits between `)` and the operator: an optional
+    /// `"quoted"` string (spaces/escapes preserved) or a bare run up to the op.
+    fn read_separator(&mut self) -> Result<String, FormatError> {
+        match self.b.get(self.i) {
+            None | Some(b'*') | Some(b'+') | Some(b'?') => Ok(String::new()),
+            Some(b'"') => {
+                self.i += 1;
+                let mut bytes = Vec::new();
+                loop {
+                    let Some(&c) = self.b.get(self.i) else {
+                        return Err(FormatError::UnterminatedSep);
+                    };
+                    self.i += 1;
+                    match c {
+                        b'"' => break,
+                        b'\\' => {
+                            let Some(&e) = self.b.get(self.i) else {
+                                return Err(FormatError::UnterminatedSep);
+                            };
+                            self.i += 1;
+                            bytes.push(match e {
+                                b'n' => b'\n',
+                                b't' => b'\t',
+                                b'r' => b'\r',
+                                other => other,
+                            });
+                        }
+                        other => bytes.push(other),
+                    }
+                }
+                String::from_utf8(bytes).map_err(|_| FormatError::UnterminatedSep)
+            }
+            Some(_) => {
+                let start = self.i;
+                while let Some(&c) = self.b.get(self.i) {
+                    if c == b'*' || c == b'+' || c == b'?' {
+                        break;
+                    }
+                    self.i += 1;
+                }
+                Ok(std::str::from_utf8(&self.b[start..self.i]).unwrap().to_owned())
             }
         }
     }
 
+    fn read_op(&mut self) -> Result<RepOp, FormatError> {
+        let op = match self.b.get(self.i) {
+            Some(b'*') => RepOp::Star,
+            Some(b'+') => RepOp::Plus,
+            Some(b'?') => RepOp::Question,
+            _ => return Err(FormatError::MissingRepOp),
+        };
+        self.i += 1;
+        Ok(op)
+    }
+}
+
+fn flush_lit(pieces: &mut Vec<Piece>, lit: &mut String) {
+    if !lit.is_empty() {
+        pieces.push(Piece::Literal(std::mem::take(lit)));
+    }
+}
+
+/// Trim whitespace on the inner edges of a repetition body, so `$( $key )` reads
+/// as `$key` (edges next to `(`/`)` are cosmetic; inner spacing is preserved).
+fn trim_body_edges(body: &mut Vec<Piece>) {
+    if let Some(Piece::Literal(s)) = body.first_mut() {
+        let t = s.trim_start().to_owned();
+        if t.is_empty() {
+            body.remove(0);
+        } else {
+            *s = t;
+        }
+    }
+    if let Some(Piece::Literal(s)) = body.last_mut() {
+        let t = s.trim_end().to_owned();
+        if t.is_empty() {
+            body.pop();
+        } else {
+            *s = t;
+        }
+    }
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
+
+/// Bytes allowed in a bare field path: identifiers plus `.`/`[`/`]` for nesting.
+fn is_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'[' || b == b']'
+}
+
+/// Map a field name to a [`Field`], honouring the `$key`/`$value` loop locals
+/// inside a repetition.
+fn push_field(fields: &mut FieldOptions, name: &str, rep_depth: usize) -> Result<(), FormatError> {
+    if rep_depth > 0 {
+        if name == "value" {
+            fields.push(Field::ColValue);
+            return Ok(());
+        }
+        if name == "key" {
+            fields.push(Field::ColKey);
+            return Ok(());
+        }
+        if let Some(rest) = name.strip_prefix("value.") {
+            if let Field::Names(names) = parse_field(rest)? {
+                fields.push(Field::ColValuePath(names));
+                return Ok(());
+            }
+        }
+    }
+    crunch_field_options(name, fields)
+}
+
+fn crunch_field_options(content: &str, field_options: &mut FieldOptions) -> Result<(), FormatError> {
+    if content.is_empty() {
+        return Ok(());
+    }
+    for field in content.split('|') {
+        if !field.is_empty() {
+            field_options.push(parse_field(field)?);
+        }
+    }
     Ok(())
 }
 
 // parse a field str into list of possible names and/or index
 // e.g. "field1.field2[0].field3" -> [Name("field1"), Name("field2"), Index(0),
 // Name("field3")]
-fn parse_field(name: &str) -> Result<Field, FormatError> {
+pub(super) fn parse_field(name: &str) -> Result<Field, FormatError> {
     // field is whole or rest
     if name == "." {
         return Ok(Field::Whole);
@@ -274,6 +448,7 @@ pub fn parse_format(
     let mut is_json = false;
     let mut indent = 0;
     let mut is_level = false;
+    let mut escape = Escape::None;
     let mut markup_styles = MarkupStyles::default();
 
     let Some(input) = input else {
@@ -284,12 +459,13 @@ pub fn parse_format(
             indent,
             is_level,
             optional: false,
-            escape: super::Escape::None,
+            escape,
             markup_styles,
         });
     };
 
     for part in input.split(',') {
+        let part = part.trim();
         if part.is_empty() {
             continue;
         }
@@ -310,6 +486,23 @@ pub fn parse_format(
                 }
                 "json" => {
                     is_json = true;
+                    continue;
+                }
+                // per-cell escapes for output formats
+                "html" => {
+                    escape = Escape::Html;
+                    continue;
+                }
+                "csv" => {
+                    escape = Escape::Csv;
+                    continue;
+                }
+                "tsv" => {
+                    escape = Escape::Tsv;
+                    continue;
+                }
+                "md" => {
+                    escape = Escape::Md;
                     continue;
                 }
                 "dimmed" => {
@@ -376,7 +569,7 @@ pub fn parse_format(
         indent,
         is_level,
         optional: false,
-        escape: super::Escape::None,
+        escape,
         markup_styles,
     })
 }
@@ -387,16 +580,14 @@ use tosserror::Toss;
 #[derive(Debug, Error, Toss)]
 pub enum FormatError {
     #[error("Failed to parse color")]
-    ParseColor {
-        source: ParseColorError,
-    },
+    ParseColor { source: ParseColorError },
     #[error("Invalid indent value in format string '{0}'")]
     ParseIndent(String),
     #[error("Invalid modifier in format string '{0}'")]
     InvalidModifier(String),
     #[error("Unknown character escape in format string '\\{0}'")]
     UnknownCharEscape(char),
-    #[error("Closing brace not found in format string")]
+    #[error("Closing brace '}}' not found in format string")]
     ClosingBrace,
     #[error("Index closing bracket not found")]
     IndexBracket,
@@ -405,8 +596,12 @@ pub enum FormatError {
         source: ParseIntError,
         value: String,
     },
-    #[error("Unsupported conitional '{cond}'")]
-    UnsupportedConditional { cond: String },
     #[error("Unsupported config value in formatter '{config}'")]
     UnsupportedConfig { config: String },
+    #[error("Unclosed repetition: missing ')' for a '$(' group")]
+    UnclosedRep,
+    #[error("A '$( … )' repetition needs an operator ('*', '+', or '?') after it")]
+    MissingRepOp,
+    #[error("Unterminated quoted separator in a repetition")]
+    UnterminatedSep,
 }
