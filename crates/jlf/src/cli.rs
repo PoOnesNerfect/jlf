@@ -461,7 +461,9 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
     } = o;
 
     let mk = |t: &str| -> Result<Formatter, color_eyre::Report> {
-        let mut f = Formatter::new(t, no_color, compact)?.with_columns(cols.clone());
+        let mut f = Formatter::new(t, no_color, compact)
+            .map_err(|e| color_eyre::eyre::eyre!("{e}\n\nwhile parsing the output template:\n{t}"))?
+            .with_columns(cols.clone());
         if escape != jlf_core::Escape::None {
             f = f.with_escape(escape);
         }

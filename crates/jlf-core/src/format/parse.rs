@@ -666,7 +666,7 @@ pub enum FormatError {
     },
     #[error("Unsupported config value in formatter '{config}'")]
     UnsupportedConfig { config: String },
-    #[error("Unclosed repetition: missing ')' for a '$(' group")]
+    #[error("A `$( … )` block is missing its closing `)` — check your `$(`, `$path(`, `$cols(`, `$rows(`, and `$name?(` blocks all have a matching `)`")]
     UnclosedRep,
     #[error("A '$( … )' repetition needs an operator ('*', '+', or '?') after it")]
     MissingRepOp,
