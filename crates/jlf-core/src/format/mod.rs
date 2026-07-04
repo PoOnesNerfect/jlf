@@ -272,4 +272,21 @@ mod dsl_tests {
             "[a] [b]"
         );
     }
+    #[test]
+    fn rep_skips_consumed_key() {
+        // referencing fields.message first drops it from the $fields flatten
+        assert_eq!(
+            render(r#"${fields.message} | $fields( $key=$value )" "*"#, &[],
+                r#"{"fields":{"message":"hi","a":"1","b":"2"}}"#),
+            "hi | a=1 b=2"
+        );
+    }
+
+    #[test]
+    fn rep_body_keeps_newlines() {
+        assert_eq!(
+            render("head$( \n  $key )*", &[], r#"{"a":"1","b":"2"}"#),
+            "head\n  a\n  b"
+        );
+    }
 }

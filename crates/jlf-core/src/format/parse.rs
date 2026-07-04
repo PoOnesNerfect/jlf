@@ -342,11 +342,13 @@ fn flush_lit(pieces: &mut Vec<Piece>, lit: &mut String) {
     }
 }
 
-/// Trim whitespace on the inner edges of a repetition body, so `$( $key )` reads
-/// as `$key` (edges next to `(`/`)` are cosmetic; inner spacing is preserved).
+/// Trim spaces/tabs on the inner edges of a repetition body, so `$( $key )`
+/// reads as `$key`. Newlines are preserved, so a multiline rep body (each item
+/// on its own indented line) keeps its layout.
 fn trim_body_edges(body: &mut Vec<Piece>) {
+    const SP: [char; 2] = [' ', '\t'];
     if let Some(Piece::Literal(s)) = body.first_mut() {
-        let t = s.trim_start().to_owned();
+        let t = s.trim_start_matches(SP).to_owned();
         if t.is_empty() {
             body.remove(0);
         } else {
@@ -354,7 +356,7 @@ fn trim_body_edges(body: &mut Vec<Piece>) {
         }
     }
     if let Some(Piece::Literal(s)) = body.last_mut() {
-        let t = s.trim_end().to_owned();
+        let t = s.trim_end_matches(SP).to_owned();
         if t.is_empty() {
             body.pop();
         } else {

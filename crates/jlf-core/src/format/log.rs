@@ -223,8 +223,17 @@ fn render_rep<'a>(
                 RepSource::Path(field) => resolve_field(json, field),
                 _ => json,
             };
+            // The base path of this iteration, so an object key already shown by
+            // an earlier `${base.key}` reference is skipped here (like `${..}`).
+            let base: &[FieldType] = match src {
+                RepSource::Path(Field::Names(names)) => names,
+                _ => &[],
+            };
             if let Some(obj) = target.as_object() {
                 for (k, v) in obj.iter() {
+                    if key_consumed(used_fields, base, k) {
+                        continue;
+                    }
                     bindings.push(Binding {
                         key: BindKey::Str(k),
                         value: v,
@@ -270,6 +279,23 @@ fn walk<'a>(mut val: &'a Json<'a>, names: &FieldNames) -> &'a Json<'a> {
         };
     }
     val
+}
+
+/// True when `base + key` was already consumed by an earlier field reference, so
+/// a repetition over `base` should skip that entry (e.g. `${fields.message}` up
+/// top drops `message` from a later `$fields( … )`).
+fn key_consumed(used_fields: &SmallVec<[&Field; 5]>, base: &[FieldType], key: &str) -> bool {
+    with_excluded(used_fields, |excluded| {
+        excluded.iter().any(|path| {
+            path.len() == base.len() + 1
+                && base.iter().zip(path.iter()).all(|(b, p)| match (b, p) {
+                    (FieldType::Name(n), PathToken::Name(x)) => x == n,
+                    (FieldType::Index(i), PathToken::Index(x)) => x == i,
+                    _ => false,
+                })
+                && matches!(&path[base.len()], PathToken::Name(x) if *x == key)
+        })
+    })
 }
 
 /// Resolve a field accessor to the pointed-at `Json` (no rest handling).
