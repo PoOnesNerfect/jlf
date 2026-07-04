@@ -233,10 +233,10 @@ A sub-table `[recipe.NAME.<condition>]` overrides individual keys of
 
 ```toml
 [recipe.output]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message } ${ ?@data }"
+body = "${@timestamp} ${@level} ${@message} ${@data}"
 ```
 
 Use per-record directives inside `body` when a branch depends on record content.

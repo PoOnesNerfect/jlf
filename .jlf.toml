@@ -8,17 +8,17 @@ compact  = false
 no_color = false
 strict   = false
 
-# `output` is the entry point: it joins the field recipes below. Each field is
-# optional (${?@...}), so an absent one collapses its space; output.compact only
-# changes the separator before the JSON.
+# `output` is the entry point: it joins the field recipes below. Field recipes
+# are optional by default, so an absent field collapses its space — you write
+# ${@name}, not ${?@name}. output.compact only changes the separator before JSON.
 [recipe.output]
-body = "${?@timestamp} ${?@level} ${?@message}\n${?@data}"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-body = "${?@timestamp} ${?@level} ${?@message} ${?@data}"
+body = "${@timestamp} ${@level} ${@message} ${@data}"
 
-# Field recipes - reusable as ${@name} in a template, name=... in a filter, or
-# `stats name` in a summary. Override one (e.g. -v level=...) to restyle.
+# Field recipes - reusable as ${@name} in a template (optional by default), or
+# overridable to restyle (e.g. -v level=...).
 [recipe.timestamp]
 field = "timestamp"
 style = "dimmed"

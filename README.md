@@ -575,10 +575,10 @@ branches can stay out of template strings:
 
 ```toml
 [recipe.output]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]         # only the join text changes under --compact
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message } ${ ?@data }"
+body = "${@timestamp} ${@level} ${@message} ${@data}"
 ```
 
 The repo's `.jlf.toml` shows the default recipes.
@@ -696,7 +696,7 @@ echo '{"level":"info","msg":"ok"}'                | jlf '$level ${ ?req_id } $ms
 
 Optional fields support fallbacks and modifiers like any other field, such as
 `${ ?trace_id|span_id }` and `${ ?level:level }`. Optional includes use the same
-prefix form, for example `${ ?@data }`.
+prefix form, for example `${@data}`.
 
 ### Styling and escape modifiers
 
@@ -810,13 +810,15 @@ duplication — e.g. `${fields.message}` on the first line, then `$fields( … )
 
 ### Includes
 
-Use an include directive such as `${ @name }` to inline another recipe's `body`
-inside a template. The optional form `${ ?@name }` renders empty when the included
-recipe renders empty and collapses one adjacent space.
+Use an include directive such as `${@name}` to inline another recipe's `body`
+inside a template. A recipe defined with `field`/`fields` is **optional by
+default** — an absent field collapses one adjacent space — so you write
+`${@name}`, not `${?@name}`. The explicit optional form `${?@name}` is still
+available for including a `body` recipe you want to optionalize.
 
 ```toml
 [recipe.output]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.timestamp]
 field = "timestamp"
@@ -854,7 +856,7 @@ strict   = false
 
 # Default recipes
 [recipe.output]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.timestamp]
 field = "timestamp"

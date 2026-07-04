@@ -224,7 +224,7 @@ Recipes store a layout once and let you override one piece; the default output i
 
 ```toml
 [recipe.output]
-body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+body = "${@timestamp} ${@level} ${@message}\n${@data}"
 ```
 
 To recolor levels, redefine the relevant recipe (or pass `-v level=…`); nothing

@@ -69,21 +69,23 @@ pub struct Recipe {
 
 impl Recipe {
     /// The string used when this recipe is inlined (`${@name}`) or used as a
-    /// render template: `body`, else `${field[:style]}`, else a `${a} ${b}` from
-    /// `fields`, else empty.
+    /// render template: `body`, else `${?field[:style]}`, else a `${?a} ${?b}`
+    /// from `fields`, else empty. A `field`/`fields` recipe is optional by
+    /// default, so an absent field collapses its space when included — you write
+    /// `${@name}`, not `${?@name}`.
     fn inline_body(&self) -> Option<String> {
         if let Some(body) = &self.body {
             Some(body.clone())
         } else if let Some(field) = &self.field {
             Some(match &self.style {
-                Some(style) => format!("${{{field}:{style}}}"),
-                None => format!("${{{field}}}"),
+                Some(style) => format!("${{?{field}:{style}}}"),
+                None => format!("${{?{field}}}"),
             })
         } else if let Some(fields) = &self.fields {
             Some(
                 fields
                     .split(',')
-                    .map(|f| format!("${{{}}}", f.trim()))
+                    .map(|f| format!("${{?{}}}", f.trim()))
                     .collect::<Vec<_>>()
                     .join(" "),
             )
@@ -510,7 +512,8 @@ mod tests {
     fn field_style_recipe_becomes_field_variable() {
         let mut c = parse("[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n");
         c.resolve_recipes(&[]);
-        assert_eq!(var(&c, "level"), Some("${lvl|level|severity:level}"));
+        // Field recipes are optional by default, so `${@level}` collapses when absent.
+        assert_eq!(var(&c, "level"), Some("${?lvl|level|severity:level}"));
     }
 
     #[test]
