@@ -159,10 +159,39 @@ impl Scanner<'_> {
             };
             return self.parse_rep(pieces, args, rep_depth, src);
         }
+        // `$path?( … )` — a conditional block: render the body when `path` is
+        // truthy (shorthand for `${if path} … ${/}`).
+        if self.b.get(self.i) == Some(&b'?') && self.b.get(self.i + 1) == Some(&b'(') {
+            self.i += 2;
+            return self.parse_cond_block(pieces, args, rep_depth, name);
+        }
         let mut fields = FieldOptions::new();
         push_field(&mut fields, name, rep_depth)?;
         args.push((fields, parse_format(None, self.no_color, self.compact)?));
         pieces.push(Piece::Arg(args.len() - 1));
+        Ok(())
+    }
+
+    /// Parse a `$path?( body )` conditional block (cursor just past `?(`): emit
+    /// `CondStart(If, path)` + body + `CondEnd`, so the body renders only when
+    /// `path` is truthy.
+    fn parse_cond_block(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        path: &str,
+    ) -> Result<(), FormatError> {
+        let mut fo = FieldOptions::new();
+        crunch_field_options(path, &mut fo)?;
+        args.push((fo, parse_format(None, self.no_color, self.compact)?));
+        pieces.push(Piece::CondStart(Cond::If, args.len() - 1));
+
+        let mut body = Vec::new();
+        self.scan(&mut body, args, rep_depth, true)?;
+        trim_body_edges(&mut body);
+        pieces.extend(body);
+        pieces.push(Piece::CondEnd);
         Ok(())
     }
 

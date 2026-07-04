@@ -289,4 +289,10 @@ mod dsl_tests {
             "head\n  a\n  b"
         );
     }
+    #[test]
+    fn path_cond_block() {
+        let t = r#"${level}$span.method?( -> ${span.method})"#;
+        assert_eq!(render(t, &[], r#"{"level":"INFO","span":{"method":"GET"}}"#), "INFO-> GET");
+        assert_eq!(render(t, &[], r#"{"level":"WARN"}"#), "WARN");
+    }
 }

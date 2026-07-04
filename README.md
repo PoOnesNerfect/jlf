@@ -744,6 +744,14 @@ echo "$line" | jlf '${key body}body = $body${else}no body${/}'
 echo "$line" | jlf '$message${config compact} ${else}\n${/}${..}'
 ```
 
+`$path?( … )` is a shorthand for a truthy guard — it renders the body only when
+`path` is truthy, without an explicit `${/}`. It's handy for optional structure:
+
+```sh
+# render the request line only when there is a span
+echo "$line" | jlf '${level}$span.method?(\n  ${span.method} ${span.uri})'
+```
+
 ### Repetition
 
 Repetition has four sources. The identifier between `$` and `(` selects what is
