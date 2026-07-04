@@ -792,6 +792,22 @@ For a record with `fields = {"message":"ok","dir":"/d","n":5}`, this flattens
 the nested entries, such as `message=ok dir=/d n=5`. Array fields use the same
 form, for example `$errors( [$key]=$value )", "*`.
 
+A repetition (or `$path?( … )`) written on its own indented line absorbs the
+preceding line break, so the body renders on a fresh line — per item for a
+repetition, once for a conditional. This lets a multiline TOML `'''…'''` body
+read top-to-bottom like its output:
+
+```toml
+[recipe.output]
+body = '''${timestamp:dimmed} ${level:level} ${target:fg=cyan} ${?fields.message:bold}
+  $span.method?(${span.method:fg=green,bold} ${span.uri:fg=yellow})
+  $fields(${key:fg=blue}: ${value:dimmed} )*'''
+```
+
+A repetition already consumed via an earlier `${base.key}` reference is skipped
+(like `${..}`), so you can pull one field up and flatten the rest without
+duplication — e.g. `${fields.message}` on the first line, then `$fields( … )`.
+
 ### Includes
 
 Use an include directive such as `${ @name }` to inline another recipe's `body`

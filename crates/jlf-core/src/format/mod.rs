@@ -295,4 +295,15 @@ mod dsl_tests {
         assert_eq!(render(t, &[], r#"{"level":"INFO","span":{"method":"GET"}}"#), "INFO-> GET");
         assert_eq!(render(t, &[], r#"{"level":"WARN"}"#), "WARN");
     }
+    #[test]
+    fn block_on_its_own_line_absorbs_indent() {
+        // a rep on its own indented line -> newline+indent renders per item
+        assert_eq!(
+            render("head\n  $(${key}: ${value})*", &[], r#"{"a":"1","b":"2"}"#),
+            "head\n  a: 1\n  b: 2"
+        );
+        // a conditional on its own line -> the line renders once, or not at all
+        assert_eq!(render("L\n  $span?(has)", &[], r#"{"span":{"x":1}}"#), "L\n  has");
+        assert_eq!(render("L\n  $span?(has)", &[], r#"{}"#), "L");
+    }
 }

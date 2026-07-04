@@ -29,7 +29,44 @@ pub(super) fn crunch_input(
         no_color,
         compact,
     };
-    sc.scan(pieces, args, 0, false)
+    sc.scan(pieces, args, 0, false)?;
+    absorb_line_prefixes(pieces);
+    Ok(())
+}
+
+/// When a `$( … )` / `$path( … )` / `$path?( … )` block starts its own line in the
+/// template, pull the preceding newline + indentation into the front of the
+/// block's body. That way each block can be written on its own indented source
+/// line for readability, while the line break renders per iteration (reps) or
+/// once (conditionals) — not unconditionally before the block.
+fn absorb_line_prefixes(pieces: &mut Vec<Piece>) {
+    let mut i = 0;
+    while i < pieces.len() {
+        let is_block = matches!(pieces[i], Piece::RepStart(..) | Piece::CondStart(..));
+        if is_block && i > 0 {
+            if let Piece::Literal(prev) = &pieces[i - 1] {
+                if let Some(cut) = line_prefix_start(prev) {
+                    let prefix = prev[cut..].to_owned();
+                    if let Piece::Literal(p) = &mut pieces[i - 1] {
+                        p.truncate(cut);
+                    }
+                    pieces.insert(i + 1, Piece::Literal(prefix));
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Byte index where a trailing `\n[ \t]*` run begins (block sits at a line start),
+/// or `None` if the literal doesn't end that way.
+fn line_prefix_start(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut j = b.len();
+    while j > 0 && (b[j - 1] == b' ' || b[j - 1] == b'\t') {
+        j -= 1;
+    }
+    (j > 0 && b[j - 1] == b'\n').then(|| j - 1)
 }
 
 struct Scanner<'a> {
