@@ -56,7 +56,7 @@ error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"xyz"}
 ...
 
 # filter to errors, custom template
-$ jlf level=error '{ts} {msg} ({user})'
+$ jlf level=error '$ts $msg ($user)'
 10:00:02 db timeout (bob)
 10:00:05 db timeout (alice)
 
@@ -75,7 +75,7 @@ info                            2      33.00      37.50      42.00      42.00
 error                           2     510.00     565.00     620.00     620.00
 
 # export to CSV
-$ jlf --csv ts,level,user
+$ jlf @csv ts,level,user
 ts,level,user
 10:00:01,info,alice
 10:00:02,error,bob
@@ -142,14 +142,12 @@ cargo install --path crates/jlf --locked
   - [Strict](#strict)
 - [Custom Formatting](#custom-formatting)
   - [Accessing Fields](#accessing-fields)
-  - [Styling Fields](#styling-fields)
+  - [Optional fields](#optional-fields)
+  - [Styling and escape modifiers](#styling-and-escape-modifiers)
     - [Available Styles](#available-styles)
-  - [Conditionals](#conditionals)
-    - [{#if cond1}{:else if cond2}{:else}{/if}](#if-cond1else-if-cond2elseif)
-    - [{#key field1}{:else key field2}{:else}{/key}](#key-field1else-key-field2elsekey)
-    - [{#config config1}{:else}{/config}](#config-config1elseconfig)
-  - [Variables](#variables)
-    - [Storing Variables](#storing-variables)
+  - [Directives](#directives)
+  - [Repetition](#repetition)
+  - [Includes](#includes)
 - [Config File](#config-file)
 - [Neat Trick](#neat-trick)
 - [Implementation](#implementation)
@@ -170,8 +168,8 @@ CLI for converting JSON logs to human-readable format
 Usage: jlf [OPTIONS] [ARGS]... [COMMAND]
 
 Commands:
-  expand  Print variable with its inner variables expanded. If no variable is specified, the default format string will be used
-  list    List all variables
+  expand  Print a recipe with included recipes expanded. If none is specified, the default output is used
+  list    List recipes
   count   Count lines, or a frequency breakdown of a field's values
   stats   Numeric summary of a field: count/min/max/mean/p50/p90/p99
   top     Most frequent values of a field (top N, default 10)
@@ -179,10 +177,10 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [ARGS]...  Format template, filters (key=value), and fields. [default: {&output}]
+  [ARGS]...  Format template, filters (key=value), and fields. [default: @output]
 
 Options:
-  -v, --variable <KEY=VALUE>  Pass variable as KEY=VALUE format; can be passed multiple times
+  -v, --variable <KEY=VALUE>  Override a recipe/variable as KEY=VALUE; can be passed multiple times
       --color <COLOR>         Color output: auto (default), always, or never [default: auto] [possible values: auto, always, never]
   -n, --no-color              Disable color output (shortcut for --color=never)
   -c, --compact               Display log in a compact format
@@ -191,9 +189,8 @@ Options:
   -i, --input <FILE>          Input file(s); repeatable. Defaults to stdin
   -f, --fields <FIELDS>       Fields/columns to show (comma-separated), e.g. -f ts,level,msg
   -r, --redact <FIELDS>       Redact fields by name; comma-separated globs (e.g. password,token,*.email)
-      --csv                   Output as CSV
-      --tsv                   Output as TSV
-      --md                    Output as a Markdown table
+      --format <NAME>         Select an output format recipe by name (csv/tsv/md or custom). Usually written as @NAME
+  -p, --preset <NAME>         Use a saved recipe from [recipe.NAME] (also: @NAME as a bare arg)
   -h, --help                  Print help
   -V, --version               Print version
 ```
@@ -209,7 +206,7 @@ jlf -i app.log -i app.log.1 count    # concatenate files, then summarize
 ```
 
 `-f`/`--fields` is a shortcut for projecting a few fields without writing a
-template: `-f a,b,c` is equivalent to the template `'{a} {b} {c}'`.
+template: `-f a,b,c` is equivalent to the template `'$a $b $c'`.
 
 ```sh
 $ jlf -i examples/sample.ndjson -f ts,level,user
@@ -244,12 +241,12 @@ jlf message~timeout             # substring match
 Worked example — keep only ERROR lines and show fields:
 
 ```sh
-$ jlf level=error '{ts} {msg} ({user})' < examples/sample.ndjson
+$ jlf level=error '$ts $msg ($user)' < examples/sample.ndjson
 10:00:02 db timeout (bob)
 10:00:05 db timeout (alice)
 
 # numeric comparison — slow requests (quote filters with > or < for the shell)
-$ jlf 'latency_ms>100' '{ts} {user} {latency_ms}ms' < examples/sample.ndjson
+$ jlf 'latency_ms>100' '$ts $user ${latency_ms}ms' < examples/sample.ndjson
 10:00:02 bob 510ms
 10:00:05 alice 620ms
 
@@ -398,21 +395,43 @@ extensions.
 
 ## Export
 
-Render records to a column table from a comma-list of columns. `--csv`/`--tsv`/
-`--md` are the built-in table formats (they're predefined recipes — see
-[Recipes](#recipes) to define your own dialect):
+Output formats are recipes with one `body` template. The built-in `csv`, `tsv`,
+and `md` formats are recipes, so they run the same way as any saved recipe:
 
 ```sh
-jlf --csv ts,level,message       # CSV with header (cells escaped)
-jlf --tsv ts,level,message       # TSV
-jlf --md ts,level,message        # Markdown table
-jlf --csv ts,level level=error   # filters apply
+jlf @csv ts,level,message        # CSV with header; cells use :csv escaping
+jlf @tsv ts,level,message        # TSV
+jlf @md ts,level,message         # Markdown table
+jlf @csv ts,level level=error    # filters apply
+jlf @csv -f ts,level             # columns via -f also work
 ```
+
+Columns come from a comma-list, `-f`/`--fields`, or leftover bare words. A table
+format needs columns because its `$cols(...)` repetitions iterate the selected
+column list. Bare `$(...)` repeats the current record's fields instead. A single
+column can be a bare word: `jlf @csv ts`.
+
+The built-in output formats are seeded from these definitions:
+
+```toml
+[recipe.csv]
+body = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+
+[recipe.tsv]
+body = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+
+[recipe.md]
+body = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+```
+
+In these templates, `$cols( $key ),*` before `$rows(` writes the column-name
+header row once, and `$rows( $cols( ${value:csv} ),* )*` writes one data row per
+record.
 
 Worked example — selected columns to CSV (RFC-4180 quoting):
 
 ```sh
-$ jlf --csv ts,level,user < examples/sample.ndjson
+$ jlf @csv ts,level,user < examples/sample.ndjson
 ts,level,user
 10:00:01,info,alice
 10:00:02,error,bob
@@ -421,7 +440,7 @@ ts,level,user
 10:00:05,error,alice
 
 # Markdown table
-$ jlf --md level,user < examples/sample.ndjson
+$ jlf @md level,user < examples/sample.ndjson
 | level | user |
 | --- | --- |
 | info | alice |
@@ -431,8 +450,11 @@ $ jlf --md level,user < examples/sample.ndjson
 | error | alice |
 
 # filters apply; pipe to a file/spreadsheet
-$ jlf --csv ts,latency_ms level=error > errors.csv
+$ jlf @csv ts,latency_ms level=error > errors.csv
 ```
+
+Summaries take the same `@name` token: `jlf count level @md`,
+`jlf stats latency_ms by level @csv`.
 
 ## Redaction
 
@@ -454,19 +476,20 @@ error db timeout {"ts":"10:00:02","user":"bob","latency_ms":510,"token":"***"}
 
 ## Recipes
 
-A **recipe** is one named, reusable definition — it replaces what used to be
-separate "variables", "presets", and "custom formats". Define recipes in config
-and refer to them as `@name`:
+A recipe is a named, reusable definition. It replaces separate variables,
+presets, and custom output formats with one config shape. Refer to recipes as
+`@name`:
 
-- `jlf @name` **runs** a recipe (filter → summarize/render → frame).
-- `{@name}` **inlines** a recipe's layout inside another template.
+- `jlf @name` runs a recipe (filter → summarize/render → `body` template).
+- Use an include directive such as `${ @name }` inside another template to inline
+  that recipe's `body`.
 
 ```toml
 # .jlf.toml — a recipe can be as small as a fragment or as full as a command
 
 [recipe.errors]                 # a saved command: filter + layout
 filter = "lvl|level|severity=error,fatal"
-body   = "{ts} {level} {message}"
+body   = "$ts $level $message"
 
 [recipe.latency]                # a named field (one place for its aliases)
 field  = "latency_ms|duration|elapsed"
@@ -477,22 +500,19 @@ stats  = "latency_ms"
 by     = "endpoint"
 format = "md"
 
-[recipe.report]                 # a custom output format
-escape = "html"
-header = "<table>\n  <tbody>\n"
-body   = "    <tr><td>{ts}</td><td>{message}</td></tr>"
-footer = "  </tbody>\n</table>\n"
+[recipe.htable]                 # an output format with dynamic columns
+body = "<table>\n$rows( <tr>$cols( <td>${value:html}</td> )*</tr> )*</table>"
 ```
 
 ```sh
 jlf @errors                     # filter to errors/fatals, render with body
 jlf @slow                       # grouped latency stats as a Markdown table
-jlf @report < app.log           # an HTML table (values HTML-escaped)
-jlf '{@level} {message}'        # inline a recipe's layout
+jlf @htable ts,level,msg        # HTML table using selected columns
+jlf '${ @level } $message'      # inline a recipe's layout
 
 # named fields work in render, filter, and summary positions:
-jlf '{@latency}ms {message}'
-jlf latency_ms|duration|elapsed>500
+jlf '${ @latency }ms $message'
+jlf 'latency_ms|duration|elapsed>500'
 jlf stats latency_ms
 ```
 
@@ -501,75 +521,67 @@ Recipes are a starting point, not a fixed command — explicit args layer on top
 ```sh
 jlf @errors status=500          # add a filter (AND with the recipe's)
 jlf @errors level=warn          # override the same-field filter
-jlf @errors '{ts} {msg}'        # override the recipe's body
+jlf @errors '$ts $msg'          # override the recipe's body
 ```
 
 ### Recipe keys
 
 | key | purpose |
 | --- | ------- |
-| `body` | per-record layout (a template); `{@other}` inlines another recipe |
-| `fields` | shorthand for a `{a} {b} {c}` body (and the columns of a table) |
+| `body` | template; per-record by default, or whole-stream when it uses `$rows(...)`; `${ @other }` inlines another recipe body |
+| `fields` | comma list; shorthand for a `$a $b $c` body and the columns used by `$cols(...)` |
 | `field` / `style` | name a value (`a\|b.c`) and how to render it (`level`, `dimmed`, `json`) |
 | `filter` | records to keep (same operators as CLI filters) |
 | `redact`, `compact` | mask fields; force compact |
-| `header` / `footer` / `escape` | frame the output once; `escape = "html"` makes values safe |
-| `separator` / `row_prefix` / `row_suffix` / `rule` | define a **column table** (see below); `escape` here is cell quoting (`csv`/`tsv`/`md`) |
+| `escape` | default escape modifier for interpolated values; also marks the recipe as a format |
 | `count` / `stats` / `top` / `uniq`, `by`, `n` | run a summary |
-| `format` | render through another output format (a built-in `csv`/`tsv`/`md` or a recipe) |
+| `format` | render through another output format recipe (`csv`/`tsv`/`md` or custom) |
 | `base` | inherit another recipe (`@other`), then override its keys |
 
-A `[recipes]` table is shorthand for body-only recipes (`name = "{a} {b}"`).
+A `[recipes]` table is shorthand for body-only recipes (`name = "$a $b"`).
 
 ### Output formats are recipes too
 
-There are three ways a recipe shapes output, and they're all just recipes:
+A `[recipe.NAME]` is treated as an output format when it has `escape` or its
+single `body` template uses `$rows(...)` or `$cols(...)`. `$rows(...)` is the
+stream-framing mechanism: anything before it is written once before the first
+record, the body inside it is written once per record, and anything after it is
+written once after the stream.
 
-- **template** (default) — a `body` per record, e.g. the built-in `output`.
-- **column table** — a `separator` (and optional wrapping) with dynamic columns
-  from `-f`/`--fields`. `--csv`/`--tsv`/`--md` are **predefined table recipes**;
-  define your own the same way:
+`$cols( body )"sep"OP` repeats over the selected columns. Inside the repetition,
+`$key` is the column name and `$value` is the cell value. `OP` is required and is
+`*`, `+`, or `?`; the join text sits between `)` and the operator. Use quotes
+when the join text contains spaces.
 
-  ```toml
-  [recipe.psv]              # pipe-separated, csv-style quoting
-  separator = "|"
-  escape    = "csv"
+```toml
+[recipe.psv]
+body = "$cols( $key )\"|\"*\n$rows( $cols( ${value:csv} )\"|\"* )*"
+```
 
-  [recipe.grid]            # a custom Markdown-ish table
-  separator  = " | "
-  row_prefix = "| "
-  row_suffix = " |"
-  rule       = "---"
-  escape     = "md"
-  ```
-  ```sh
-  jlf --format psv -f ts,level,msg      # your table dialect, dynamic columns
-  jlf --csv ts,level,msg                # built-in — same mechanism
-  ```
-  A recipe with a `separator` of the same name as a built-in (`csv`/`tsv`/`md`)
-  overrides it.
+```sh
+jlf @psv -f ts,level,msg      # custom dialect, dynamic columns
+jlf @csv ts,level,msg         # built-in, same mechanism
+```
 
-- **framed format** — `header`/`body`/`footer`/`escape` with a **fixed** row
-  template, for HTML/reports (see the `report` example above).
+Escaping is a value modifier: `:csv`, `:tsv`, `:md`, `:html`, or `:none`. A
+recipe may also set `escape = "html"` to apply a default to all interpolations in
+that recipe.
 
 ### Conditional overrides
 
 A `[recipe.NAME.<cond>]` sub-table overrides keys when a condition holds (a
-config flag — `compact`, `no_color`, or `strict`), so conditionals stay out of
-the template strings:
+config flag — `compact`, `no_color`, or `strict`), so simple configuration
+branches can stay out of template strings:
 
 ```toml
 [recipe.output]
-body = "{?@timestamp} {?@level} {?@message}\n{?@data}"
+body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
 
-[recipe.output.compact]         # only the separator changes under --compact
-body = "{?@timestamp} {?@level} {?@message} {?@data}"
+[recipe.output.compact]         # only the join text changes under --compact
+body = "${ ?@timestamp } ${ ?@level } ${ ?@message } ${ ?@data }"
 ```
 
-This is exactly how the built-in default is defined — see
-[docs/RECIPES.md](docs/RECIPES.md) and the repo's
-[.jlf.toml](.jlf.toml). The older `[variables]`, `[preset.*]`, and `[format.*]`
-tables still work as aliases.
+The repo's `.jlf.toml` shows the default recipes.
 
 ## Usage
 
@@ -624,366 +636,181 @@ cat ./examples/dummy_logs | jlf -s
 
 ## Custom Formatting
 
-You can optionally provide your custom format of the output line.
+Templates use a `$`-based DSL. Plain text is literal. `$` introduces
+interpolation, and `{`/`}` are ordinary characters unless they are part of a
+`${ … }` interpolation. Use `$$` for a literal dollar sign.
 
 ```sh
-# Provide custom format. If `data` field exists, print `data` field as `json`; if not, print "`data` field not found".
-cat ./examples/dummy_logs | jlf '{#if data}{data:json}{:else}`data` field not found{/if}'
+# Provide custom format. If `data` exists, print it as JSON; otherwise print a fallback.
+cat ./examples/dummy_logs | jlf '${if data}${data:json}${else}`data` field not found${/}'
 ```
 
-<img width="700" alt="Screenshot 2025-03-03 at 11 32 02 PM" src="https://github.com/user-attachments/assets/a24cee4d-c1af-4dec-801c-88f118566278" />
-
-Isn't it neat? The formatting syntax is very simple and readble, inspired by popular formatting syntax from the likes of rust and svelte.
-
-We'll go over all the formatting rules now: fields, styles, conditionals, and variables.
-
-Especially, `variables` is a new addition in `jlf v0.2.0` which unlocked the power of granular customization.
+The formatting rules cover fields, modifiers, conditionals, includes, and
+repetition.
 
 ### Accessing Fields
 
-To print the fields of JSON log, simple write the field name in braces `{field1}`.
+Use `$name` for a simple field. Use `${ … }` for nested paths, fallback chains,
+modifiers, whole-record output, and rest output.
 
 ```sh
 # the commands below pipe in this example line:
 line='{"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}'
 
-# access the field by writing the field in braces
-echo "$line" | jlf 'Msg: {message}!' # -> Msg: User logged in successfully!
+# bare field
+echo "$line" | jlf 'Msg: $message!' # -> Msg: User logged in successfully!
 
-# if field may not exist, provide fallback fields separated by '|'. It will print the first field that exits.
-echo "$line" | jlf 'Msg: {msg|body|message}!' # -> Msg: My Body!
+# fallback chain: first present field wins
+echo "$line" | jlf 'Msg: ${msg|body|message}!' # -> Msg: My Body!
 
-# access nested field using '.' as a separator.
-echo "$line" | jlf 'User {data.user_id} logged in!' # -> User 3175 logged in!
+# nested field
+echo "$line" | jlf 'User ${data.user_id} logged in!' # -> User 3175 logged in!
 
-# access array items using '[n]' to index at `n`.
-echo "$line" | jlf 'My girl friend is {data.friends[1]}.' # -> My girl friend is Jill.
+# array index
+echo "$line" | jlf 'My friend is ${data.friends[1]}.' # -> My friend is Jill.
 
-# if the field is an object or array, it will it as pretty json by default.
-echo "$line" | jlf 'user data: {data}'
-# ->
-# user data: {
-#  "user_id": 3175,
-#  "session_id": "Nsb3P5mZ7971NFIt",
-#  "ip_address": "149.215.200.169",
-#  "friends": [
-#     "Jack",
-#     "Jill"
-#   ]
-# }
+# objects and arrays render as JSON by default
+echo "$line" | jlf 'user data: $data'
 
-# print the entire json by writing `{.}`
-echo "$line" | jlf 'user({data.user_id}): {message}\n{.}'
-# ->
-# user(3175): User logged in successfully
-# {
-#   "message": "User logged in successfully",
-#   "body": "My Body",
-#   "data": {
-#     "user_id": 3175,
-#     "session_id": "Nsb3P5mZ7971NFIt",
-#     "ip_address": "149.215.200.169",
-#     "friends": [
-#       "Jack",
-#       "Jill"
-#     ]
-#   }
-# }
+# whole record
+echo "$line" | jlf 'user(${data.user_id}): $message\n${.}'
 
-# print only the un-printed fields by writing `{..}`
-echo "$line" | jlf 'user({data.user_id}): {message}\n{..}'
-# ->
-# user(3175): User logged in successfully
-# {
-#   "body": "My Body",
-#   "data": {
-#     "session_id": "Nsb3P5mZ7971NFIt",
-#     "ip_address": "149.215.200.169",
-#     "friends": [
-#       "Jack",
-#       "Jill"
-#     ]
-#   }
-# }
+# fields not already consumed by the template
+echo "$line" | jlf 'user(${data.user_id}): $message\n${..}'
 ```
 
-### Optional fields (`{?field}`)
+### Optional fields
 
-Prefix a field with `?` to make it _optional_: when it renders empty (the field
-is absent, `null`, or an empty string) **jlf** collapses one adjacent space, so a
-missing field leaves no stray gap. Plain `{field}` is unchanged, so spacing you
-add on purpose (such as indentation) is preserved.
+Prefix a braced field expression with `?` to make it optional. When an optional
+interpolation renders empty because the field is absent, `null`, or an empty
+string, **jlf** collapses one adjacent space so missing fields leave no extra gap.
 
 ```sh
 # `req_id` is optional: present on some lines, missing on others
-echo '{"level":"info","req_id":"abc","msg":"ok"}' | jlf '{level} {?req_id} {msg}'
+echo '{"level":"info","req_id":"abc","msg":"ok"}' | jlf '$level ${ ?req_id } $msg'
 # -> info abc ok
 
-echo '{"level":"info","msg":"ok"}'                | jlf '{level} {?req_id} {msg}'
+echo '{"level":"info","msg":"ok"}'                | jlf '$level ${ ?req_id } $msg'
 # -> info ok          (no double space where req_id would be)
 ```
 
-Optional fields support fallbacks and modifiers like any other field
-(`{?trace_id|span_id}`, `{?level:level}`).
+Optional fields support fallbacks and modifiers like any other field, such as
+`${ ?trace_id|span_id }` and `${ ?level:level }`. Optional includes use the same
+prefix form, for example `${ ?@data }`.
 
-### Styling Fields
+### Styling and escape modifiers
 
-You can provide styles to the values by providing styles after the `:`.
+Modifiers follow `:` in a braced interpolation. Styling modifiers include
+`dimmed`, `bold`, colors, and `level`. Escape modifiers make per-cell output safe
+for a target format: `:csv`, `:tsv`, `:md`, `:html`, and `:none`.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
+cat ./examples/dummy_logs | jlf '${timestamp:bright blue,bg=red,bold} ${level|lvl:level} ${message|msg|body:fg=bright white}'
 ```
 
-If you have multiple styles, you can separate them with `,`, like `fg=red,bg=blue`.
-
-You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
-
-<img width="700" alt="Screenshot 2025-03-04 at 12 18 28 AM" src="https://github.com/user-attachments/assets/acc21974-695b-4cf7-ba27-c873f944356d" />
-
-`level` is a special style that is only applied to `level` field; it will print in different colors for different levels.
+If you have multiple styles, separate them with `,`, like `fg=red,bg=blue`. If
+you omit the style type before `=`, it defaults to `fg`.
 
 #### Available Styles
 
 - `dimmed`: make the text dimmed
 - `bold`: make the text bold
-- `fg={color}`: set the text color
-- `{color}`: same as `fg={color}`
-- `bg={color}`: set the background color
-- `indent={n}`: indent the value by `n` spaces
-- `key={color}`: sets the color of the key in JSON object
-- `value={color}`: sets the color of the non-string types in JSON object
-- `str={color}`: sets the color of the string data type in JSON object
-- `syntax={color}`: sets the color of the syntax characters in JSON object
-- `json`: print the json value as json; this is the default and only available format, so you don't have to specify it
-- `compact`: print in a single line
+- `fg=<color>`: set the text color
+- `<color>`: same as `fg=<color>`
+- `bg=<color>`: set the background color
+- `indent=<n>`: indent the value by `n` spaces
+- `key=<color>`: sets the color of the key in JSON object
+- `value=<color>`: sets the color of the non-string types in JSON object
+- `str=<color>`: sets the color of the string data type in JSON object
+- `syntax=<color>`: sets the color of the syntax characters in JSON object
+- `json`: print the JSON value as JSON
+- `compact`: print JSON on a single line
 - `level`: color the level based on the level (debug = green, info = cyan, etc.)
-
-In the above list, `{color}` is a placeholder for any color value.
 
 You can view all available colors in [colors.md](https://github.com/PoOnesNerfect/jlf/blob/main/colors.md).
 
-### Conditionals
+### Directives
 
-For conditionals, main conditional starts with `#` like `{#if ..}`, else conditions start with `:` like `{:else ..}`, and ending symbols start with `/` like `{/if}`.
-
-#### {#if cond1}{:else if cond2}{:else}{/if}
-
-**if** condition accepts a single field or multiple fields separated by '|'.
-
-**if** checks for the `truthy`ness of the given field values; one difference with Javascript truthiness is that empty object and array is evaluated to `false`.
+Directives use `${ … }` forms. Conditions end with `${/}`.
 
 ```sh
-# the commands below pipe in this example line:
-line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
+# if: truthy check; empty strings, empty arrays/objects, null, missing, and 0 are false
+echo "$line" | jlf '${if msg}msg: $msg${else if message}message: $message${/}'
 
-# if field doesn't exist, or is null, it's `false`.
-echo "$line" | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully
+# key: existence check; falsey values still count when the key exists
+echo "$line" | jlf '${key body}body = $body${else}no body${/}'
 
-# empty string is also `false`.
-echo "$line" | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
-
-# number 0 is also 'false'.
-echo "$line" | jlf '{#if data.count}count = {data.count}{:else}count is zero{/if}' # -> count is zero
-
-# empty object or arrays are also 'false'.
-echo "$line" | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
-
-# nesting is allowed
-echo "$line" | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
-
-# if multiple fields are given, it will return `true` if at least one of them is `truthy`.
-echo "$line" | jlf "{#if msg|body|data.count|message}I'm still here{/if}" # -> I'm still here
+# config: branch on compact/no_color/strict
+echo "$line" | jlf '$message${config compact} ${else}\n${/}${..}'
 ```
 
-#### {#key field1}{:else key field2}{:else}{/key}
+### Repetition
 
-**key** condition accepts a single field or multiple fields separated by '|'.
+Repetition has four sources. The identifier between `$` and `(` selects what is
+iterated; omitting the identifier means the current record itself.
 
-**key** checks the existence of the given field; even when the field value is `falsey`, it will evaluate to `true` if the field exists, and is not null.
+`$( body )"sep"OP` repeats over the current record's top-level fields. Inside,
+`$key` is the field name and `$value` is the field value.
 
-```sh
-# the commands below pipe in this example line:
-line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
+`$path( body )"sep"OP` repeats over an object or array in each record. `$key` is
+the object key or array index, and `$value` is the entry value. Sub-paths of the
+value work, for example `$spans( ${value.name} )", "*`.
 
-# if field doesn't exist, or is null, it's `false`.
-echo "$line" | jlf '{#key msg}msg: {msg}{:else key message}message: {message}{/key}' # -> message: User logged in successfully
+`$cols( body )"sep"OP` repeats over the CLI-selected columns from a comma-list,
+`-f`/`--fields`, or leftover bare words. Inside, `$key` is the column name and
+`$value` is the column value. `$cols(...)` has no entries unless columns are
+selected.
 
-# empty string is still `true`.
-echo "$line" | jlf '{#key body}body = {body}{:else}no body{/key}' # -> body = 
+`$rows( body )"sep"OP` repeats over the record stream. Text before `$rows(` is
+written once before the first record, text after it is written once after the
+stream, and the body is rendered once per record. This is how a format writes a
+once-only header row or final wrapper.
 
-# number 0 is also 'true'.
-echo "$line" | jlf '{#key data.count}count = {data.count}{:else}count is zero{/key}' # -> count = 0
-
-# empty object or arrays are also 'true'.
-echo "$line" | jlf '{#key data.friends}friends: {data.friends}{:else}I have no friends{/key}' # -> friends: []
-
-# nesting is allowed
-echo "$line" | jlf '{#key data.user_id}user ({data.user_id}) {#key message}has a message{:else}has no message{/key}{/key}.' # -> user (3175) has a message.
-
-# if multiple fields are given, it will return `true` if at least one of them exists.
-echo "$line" | jlf "{#key msg|no_field|message}I'm still here{/key}" # -> I'm still here
-```
-
-#### {#config config1}{:else}{/config}
-
-**config** condition accepts a config: `compact`, `no_color`, or `strict`.
-
-**config** returns `true` if the given config is set.
-
-```sh
-# the commands below pipe in this example line:
-line='{"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}'
-
-# If `compact` is set, print ` `; if `compact` is not set, print `\n`
-echo "$line" | jlf -c '{message}{#config compact} {:else}\n{/config}{..}'
-# -> User logged in successfully {"body":"","data":{"user_id":3175,"count":0,"friends":[]}}
-
-echo "$line" | jlf '{message}{#config compact} {:else}\n{/config}{..}'
-# ->
-# User logged in successfully
-# {
-#   "body": "",
-#   "data": {
-#     "user_id": 3175,
-#     "count": 0,
-#     "friends": []
-#   }
-# }
-
-# {:else config ..} is not supported.
-echo "$line" | jlf '{message}{#config compact} {:else config strict}strict{:else}\n{/config}{..}' # -> INVALID
-```
-
-### Variables
-
-**variable** are key=value pairs, where `key` is a string, and `value` is a format string.
-
-You can reference a variable in the format string or in another variable as `{&variable}`.
-
-Here is the list of all default variables:
+For all repetition forms, `OP` is required: `*` for zero or more, `+` for one or
+more, `?` for zero or one. The join text sits between `)` and the operator;
+quote it when spaces should be visible.
 
 ```toml
-output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
-timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
-level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
-message   = "{message|msg|body|fields.message}"
-data      = "{..:json}"
+[recipe.csv]
+body = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
 ```
-
-Each variable is the whole rendered piece named for what it is — no `name`/`name_fmt`
-twins. A trailing space inside a `{#key …}{/key}` guard is omitted when the field is
-absent, so missing fields leave no stray gap. You can see the variables with
-`jlf list`.
-
-When expanded, variable `output` will look like this:
-
-```sh
-{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{#key timestamp}{timestamp:dimmed} {/key}{#key level|lvl|severity}{level|lvl|severity:level} {/key}{message|msg|body|fields.message}{#config compact} {:else}\n{/config}{/key}{..:json}
-```
-
-You can view the expanded variables by calling `jlf expand VARIABLE`.
-
-For example, `jlf expand level` will output `{#key level|lvl|severity}{level|lvl|severity:level} {/key}`.
-
-If you don't provide at variable, `jlf expand`, it will print the fully expanded format string.
-
-```sh
-# the commands below pipe in this example line:
-line='{"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175}}'
-
-echo "$line" | jlf
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
-# {
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# override variable `message`
-echo "$line" | jlf -v message="Message: {message}"
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG Message: User logged in successfully
-# {
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# don't print timestamp by resetting variable `timestamp`
-echo "$line" | jlf -v timestamp=
-# ->
-# DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# pass multiple variables
-echo "$line" | jlf -v timestamp= -v message="Message: {message}"
-# ->
-# DEBUG Message: User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# print the entire json instead of only unused fields
-echo "$line" | jlf -v data="{.:json}"
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "message": "User logged in successfully",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# replace the entire format (default is `{&output}`)
-echo "$line" | jlf -v output="{message}: {&data}"
-# ->
-# User logged in successfully: {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-```
-
-As you can see, it's extremely easy to update the format either partially or wholly by replacing the default variables.
-
-#### Storing Variables
-
-This is all and good, but it may still become annoying to specify variables as commands options everytime.
-
-Instead we can set the variables in the config file.
-
-**jlf** looks for the config file `$XDG_CONFIG_HOME/jlf/config.toml` and `jlf.toml`/`.jlf.toml` in the current workspace.
-
-Priority of config and variables is `Command options` > `jlf.toml`|`.jlf.toml` > `$XDG_CONFIG_HOME/jlf/config.toml`.
-
-Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
-You can copy this file into your config directory as `jlf/config.toml` or to your workspace as `.jlf.toml` or `jlf.toml`.
-
-_**jlf.toml**_
 
 ```toml
-# Default variables
-# Replace or add variables as needed
-[variables]
-output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
-timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
-level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
-message   = "{message|msg|body|fields.message}"
-data      = "{..:json}"
+[recipe.output]
+body = "${?timestamp:dimmed} ${?level:level} ${?target:dimmed}  $fields( $key=${value:dimmed} )\" \"*"
 ```
+
+For a record with `fields = {"message":"ok","dir":"/d","n":5}`, this flattens
+the nested entries, such as `message=ok dir=/d n=5`. Array fields use the same
+form, for example `$errors( [$key]=$value )", "*`.
+
+### Includes
+
+Use an include directive such as `${ @name }` to inline another recipe's `body`
+inside a template. The optional form `${ ?@name }` renders empty when the included
+recipe renders empty and collapses one adjacent space.
+
+```toml
+[recipe.output]
+body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+
+[recipe.timestamp]
+field = "timestamp"
+style = "dimmed"
+
+[recipe.level]
+field = "level|lvl|severity"
+style = "level"
+
+[recipe.message]
+field = "message|msg|body|fields.message"
+
+[recipe.data]
+field = ".."
+style = "json"
+```
+
+You can inspect recipes with `jlf list` and expand one with `jlf expand NAME`.
 
 ## Config File
 
@@ -996,18 +823,29 @@ _**jlf.toml**_
 ```toml
 # Default config values
 [config]
-format   = "{&output}"
+format   = "@output"
 compact  = false
 no_color = false
 strict   = false
 
-# Default variables
-[variables]
-output    = "{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{&timestamp}{&level}{&message}{#config compact} {:else}\\n{/config}{/key}{&data}"
-timestamp = "{#key timestamp}{timestamp:dimmed} {/key}"
-level     = "{#key level|lvl|severity}{level|lvl|severity:level} {/key}"
-message   = "{message|msg|body|fields.message}"
-data      = "{..:json}"
+# Default recipes
+[recipe.output]
+body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
+
+[recipe.timestamp]
+field = "timestamp"
+style = "dimmed"
+
+[recipe.level]
+field = "level|lvl|severity"
+style = "level"
+
+[recipe.message]
+field = "message|msg|body|fields.message"
+
+[recipe.data]
+field = ".."
+style = "json"
 ```
 
 ## Neat Trick
@@ -1078,5 +916,4 @@ First section is the custom parse, second is the parsing into `serde_json::Value
 
 The time is how long it took to deserialize a single line of json log.
 
-As we can see, our custom parser is about 3x faster than the `serde_json::Value` parsing.
-Yes, it is still slower than the structured parsing, but our parser is still pretty darn fast for parsing a dynamic JSON data.
+The custom parser is about 3x faster than `serde_json::Value` parsing in this benchmark. It is still slower than structured parsing, but it keeps dynamic JSON support.

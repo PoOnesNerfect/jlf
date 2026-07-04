@@ -1,6 +1,13 @@
 # jlf — Vision & Strategy
 
 > Status: draft / working reference. A direction, not a commitment.
+>
+> Parts of this are now implemented: filters, summaries, redaction, export, the
+> workspace/plugin split, `jlf-tui`, and the **recipe** model — one `@name`
+> concept for variables, saved commands, and output formats (what this doc calls
+> "presets" and format flags). Output formats (`csv`/`tsv`/`md` and custom
+> formats) are recipes run with `@name`; see `docs/RECIPES.md` for the shipped
+> design. This vision doc keeps the original framing and the still-unbuilt parts.
 
 ## 1. Summary
 
@@ -63,9 +70,9 @@ position, nothing later in the line collides with one. The kinds:
 | Kind       | Example                             | Recognized by        |
 | ---------- | ----------------------------------- | -------------------- |
 | subcommand | `count`, `stats`, `serve`           | first token, bare    |
-| flag       | `--md`, `-f ts,level`, `-i app.log` | starts with `-`      |
-| preset     | `@errors`                           | starts with `@`      |
-| template   | `'{ts} {level}'`                    | contains `{ }`       |
+| flag       | `-f ts,level`, `-i app.log`, `-c`   | starts with `-`      |
+| recipe     | `@errors`, `@csv`                   | starts with `@`      |
+| template   | `'$ts $level'`                      | contains `$`         |
 | filter     | `level=error`                       | contains an operator |
 
 Fields and input are flags, not positionals: `-f`/`--fields` selects fields,
@@ -74,28 +81,28 @@ Fields and input are flags, not positionals: `-f`/`--fields` selects fields,
 1. A bare first token is the command: a verb (`count` `stats` `top` `uniq`) runs
    that summary; an installed `jlf-<word>` is an extension (`serve`, `tui`);
    neither → the default view command. The rest of the line follows.
-2. `-…` is a flag; `@…` a preset; `{` → template; a comparison operator
+2. `-…` is a flag; `@…` a recipe; `$` → template; a comparison operator
    (`=` `!=` `>` `<` `>=` `<=` `~` `!~`) → filter.
 
 ```sh
-jlf '{ts} {level}'              # template -> formatting
+jlf '$ts $level'                # template -> formatting
 jlf level=error                 # operator -> filtering
 jlf -f ts,level                 # --fields -> show these fields
 jlf count level                 # subcommand (first) -> summary
-jlf @errors                     # preset
+jlf @errors                     # recipe
 jlf -i app.log level=error      # --input file + filter
 ```
 
 Roles compose, and verbs stay first:
 
 ```sh
-jlf '{ts} {msg}' level=error            # filter + format
+jlf '$ts $msg' level=error            # filter + format
 jlf count endpoint level=error          # summarize + filter
 jlf -i app.log level=error -f ts,level  # input + filter + fields
 ```
 
-Because no verb appears after the first token, a tabular flag may take its columns
-inline — `jlf count latency --md ts,p99` — with `-f`/`--fields` as the explicit
+Because no verb appears after the first token, an output-format recipe may take its columns
+inline — `jlf count latency @md ts,p99` — with `-f`/`--fields` as the explicit
 alias. For scripts, the explicit flags are fully deterministic — `--where`,
 `--fields`, `--input`. The positional shapes (template, filter) are shorthand.
 
@@ -115,39 +122,37 @@ file never collides with a command.
 The template is both the field projection and the output format:
 
 ```sh
-jlf '{ts} {level}'                  # pick fields, pretty output
-jlf '{ts},{level},{latency_ms}'     # the same mechanism produces CSV
+jlf '$ts $level'                    # pick fields, pretty output
+jlf '${ts},${level},${latency_ms}'   # the same mechanism can produce delimited text
 jlf -f ts,level                     # fields, default format (no template)
 ```
 
 Output can be text, CSV/TSV, Markdown, HTML, XML, SQL inserts, or reshaped JSON,
-because all of these are just templates. Literal braces in a template are escaped
-as `\{` and `\}`, alongside the existing `\n` / `\t` escapes.
+because these are templates plus optional framing. Literal `{` and `}` no longer
+need escaping; `$` is the interpolation sigil, and `$$` writes a literal dollar.
 
-Built-in output shapes are template bundles, not separate code paths. Each is a
-header printed once, a row template per record, a footer printed once, and a
-per-cell escape for that format (`\|` for Markdown, HTML-escape for HTML). They
-are surfaced as flags for discoverability (`--csv`, `--tsv`, `--table`, `--md`,
-`--html`, `--json`) and can be inspected and copied to build a custom one.
+Built-in output shapes are recipe bundles, not separate code paths. Each uses a
+single `body` template; `$rows(...)` frames the record stream when a format needs
+once-before or once-after text. Escaping is unified as value modifiers (`:csv`,
+`:tsv`, `:md`, `:html`, or `:none`) or as a recipe-level `escape` default. They
+are runnable as recipes with `@name` (`@csv`, `@tsv`, `@md`; `@table`, `@html`,
+`@json` are future) and can be inspected and copied to build a custom one.
 
-Tabular shapes need a column list, which comes from, in order:
+Tabular shapes need a selected column list for `$cols(...)`. It comes from, in
+order:
 
-1. the flag's own value or `-f` / `--fields` — `jlf --md ts,level,message`;
-2. a template, if one is written — `jlf '{ts},{level}'`;
-3. otherwise auto-derived from the first record's keys (nested flattened to dotted
-   paths like `user.id`), then streamed.
+1. a comma-list arg or `-f` / `--fields` — `jlf @md ts,level,message`;
+2. leftover bare words after a recipe or summary.
 
-Auto-derivation reads the schema from the first record because a header must be
-printed before the rows and the whole stream cannot be buffered. Records with extra
-keys drop them unless fields are given, so variable-schema input should pass a list.
+If no columns are selected, `$cols(...)` has no entries. Variable-schema input
+should pass a list when the output shape depends on specific columns.
 
-Cell widths are not computed: CSV/Markdown cells are written ragged
-(`{ts} | {level} | {msg}`) — valid, and renderers/editors align them; the padded
-example below is only for reading. The one exception is a pretty terminal `--table`
-with aligned columns, which must buffer rows (or sample the first N) to size them —
-the only non-streaming output.
+Cell widths are not computed: CSV/Markdown cells are written ragged — valid, and
+renderers/editors align them; the padded example below is only for reading. The
+one exception is a pretty terminal `@table` with aligned columns, which must
+buffer rows (or sample the first N) to size them — the only non-streaming output.
 
-`jlf --md ts,level,message`:
+`jlf @md ts,level,message`:
 
 ```
 | ts                       | level | message    |
@@ -156,89 +161,75 @@ the only non-streaming output.
 | 2024-02-06T23:52:49.001Z | ERROR | timeout    |
 ```
 
-`jlf --html ts,level,message` (wrapped by the header/footer parts, values
-HTML-escaped):
-
-```html
-<!doctype html>
-<table>
-  <thead><tr><th>ts</th><th>level</th><th>message</th></tr></thead>
-  <tbody>
-    <tr><td>2024-02-06T23:52:48.349Z</td><td>INFO</td><td>request ok</td></tr>
-    <tr><td>2024-02-06T23:52:49.001Z</td><td>ERROR</td><td>timeout</td></tr>
-  </tbody>
-</table>
-```
-
-For a non-tabular layout (one list item per record, a custom page), write the
-template and header/footer yourself; the format flags are the convenience path for
-the common table case. Per-format edges: a missing field is an empty cell, `|` and
-newlines are escaped in Markdown, and summaries render through the same shapes
-(`jlf stats latency_ms by endpoint --md`).
-
-A user-defined output format lives in `.jlf.toml` as the same header / row / footer
-/ escape bundle the built-ins use — for example a custom HTML report:
+A user-defined output format lives in `.jlf.toml` as a single `body` template,
+with optional `escape`. Dynamic columns use `$cols(...)`; inside the repetition
+`$key` is the column name and `$value` is the cell value. `$rows(...)` repeats
+over the record stream and provides once-before and once-after framing.
 
 ```toml
-# .jlf.toml
-[format.report]
-escape = "html"            # HTML-escape interpolated field values
-header = """
-<!doctype html>
-<table>
-  <thead><tr><th>time</th><th>level</th><th>message</th></tr></thead>
-  <tbody>
-"""
-row = "    <tr><td>{ts}</td><td>{level}</td><td>{message}</td></tr>"
-footer = """
-  </tbody>
-</table>
-"""
+[recipe.htable]
+body = "<table>\n$rows( <tr>$cols( <td>${value:html}</td> )*</tr> )*</table>"
 ```
 
-Invoke it with `jlf --format report` (the built-in `--md` is shorthand for
-`--format md`); a preset can also reference it with `format = "report"`. This
-covers formats whose columns are fixed in the `row` template. The built-in tables
-(`--md`, `--csv`, `--table`) additionally generate their header and cells from a
-dynamic column list (`-f`/`--fields` or auto-derived), which a static `row` template
-cannot do on its own; making that user-definable would need a per-column construct
-in the template language (§12).
+Invoke it with `jlf @htable ts,level,message` (`--format htable` also works).
+The built-in formats use the same mechanism:
+
+```toml
+[recipe.csv]
+body = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+
+[recipe.tsv]
+body = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+
+[recipe.md]
+body = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+```
+
+For a non-tabular layout, write a per-record `body`. For a custom page or report,
+wrap the repeated record template in `$rows(...)`. Per-format edges: a missing
+field is an empty cell, Markdown escaping handles `|` and newlines, and summaries
+render through the same shapes (`jlf stats latency_ms by endpoint @md`).
 
 ### The template language
 
-A template is plain text with `{…}` fields. These pieces are the whole language;
-everything else (filters, summaries, output formats) sits around them.
+A template is plain text with `$` interpolation. These pieces are the whole
+language; everything else (filters, summaries, output formats) sits around them.
 
-| Piece                              | Meaning                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------- |
-| `{field}`, `{a.b.c}`               | a field, nested by `.`                                                    |
-| `{a\|b\|c}`                        | first present wins (fallback)                                             |
-| `{field:mod}`                      | a modifier — styling (`:dimmed`, `:red`, `:level`) or rendering (`:json`) |
-| `{..}`                             | the "rest": fields not already used                                       |
-| `{&name}`                          | include a variable (a named, reusable, overridable fragment)              |
-| `{#key f}…{/key}`                  | render the block only if `f` is present (precise control)                 |
-| `{#config flag}…{:else}…{/config}` | branch on a config/CLI flag such as `compact`                             |
+| Piece | Meaning |
+| ----- | ------- |
+| `$field`, `${a.b.c}` | a field, nested by `.` |
+| `${a|b|c}` | first present wins (fallback) |
+| `${field:mod}` | a modifier — styling (`:dimmed`, `:red`, `:level`) or escaping (`:csv`, `:html`) |
+| `${.}` | the whole record |
+| `${..}` | the rest: fields not already used |
+| `${ ?field }` | optional field; if empty, one adjacent space collapses |
+| `${ @name }` | include a recipe body |
+| `${if f}…${else}…${/}` | branch on truthiness |
+| `${key f}…${else key g}…${/}` | branch on field presence |
+| `${config flag}…${else}…${/}` | branch on a config/CLI flag such as `compact` |
+| `$( body )"join"*` | repeat over the current record's top-level fields |
+| `$path( body )"join"*` | repeat over an object or array at `path` |
+| `$cols( body )"join"*` | repeat over CLI-selected columns |
+| `$rows( body )"join"*` | repeat over the record stream; text before/after it is written once |
 
-`\n`, `\t`, and `\{` / `\}` are escapes. An empty field collapses one adjacent
-space, so plain fields separated by spaces just work — an absent field takes its
-gap with it, and no per-field conditional is needed:
+`\n` and `\t` are string escapes. Empty optional fields collapse one adjacent
+space, so common log layouts do not need per-field conditional blocks:
 
 ```sh
-jlf '{timestamp:dimmed} {level|lvl|severity:level} {message} {..:json}'
+jlf '${ ?timestamp:dimmed } ${ ?level|lvl|severity:level } ${ ?message } ${ ?..:json }'
 ```
 
-Variables store a layout once and let you override one piece; the default output is
-`{&output}`:
+Recipes store a layout once and let you override one piece; the default output is
+`@output`:
 
 ```toml
-[variables]
-output = "{timestamp:dimmed} {level|lvl|severity:level} {message}{#config compact} {:else}\n{/config}{..:json}"
+[recipe.output]
+body = "${ ?@timestamp } ${ ?@level } ${ ?@message }\n${ ?@data }"
 ```
 
-To recolor levels, redefine the relevant variable (or pass `-v level=…`); nothing
-else changes. Collapse-on-empty covers the common case, and `{#key f}…{/key}`
-remains for blocks that need exact control. The variable system is otherwise
-unchanged.
+To recolor levels, redefine the relevant recipe (or pass `-v level=…`); nothing
+else changes. Optional collapse covers the common case, and `${key f}…${/}`
+remains for blocks that need exact control.
 
 ### Filter — `key=value`
 
@@ -376,7 +367,7 @@ Memory is bounded or controllable, not unbounded:
 
 ```sh
 jlf --redact password,token,authorization,'*.email'   # glob on field paths
-{user.email:redact}                                   # inline, same :modifier slot
+${user.email:redact}                                   # inline, same :modifier slot
 ```
 
 This targets fields by path, which `sed`/`grep` cannot do reliably.
@@ -409,7 +400,7 @@ query=q=foo  status=200  bytes=1534  referer=-  user_agent=curl/8.4.0
 so the normal surface applies:
 
 ```sh
-jlf --as nginx '{status} {method} {path}'
+jlf --as nginx '$status $method $path'
 jlf count path --as nginx status>=500
 jlf stats bytes by path --as nginx
 ```
@@ -428,39 +419,39 @@ where it makes sense (`ts`, `status`, `ip`, `method`, `path`, `bytes`), so
   pattern = '^(?P<ts>\S+) (?P<level>\w+) (?P<msg>.*)$'
   ```
   ```sh
-  jlf --as myapp level=error '{ts} {msg}'
+  jlf --as myapp level=error '$ts $msg'
   ```
 - Formats must be inspectable (e.g. `jlf --as nginx --list-fields` lists the fields
   a format produces) so users can discover field names.
 - Lines that do not match are passed through unchanged (as today) and counted.
-  Multi-line records (stack traces) need line-joining rules in the format and are
+  Multi-line records (stack traces) need line-joining behavior in the format and are
   the harder case.
 
-### Presets
+### Recipes
 
-A preset is a saved bundle of arguments — filters, a template, and options —
-invoked by name. It is distinct from an input format (`--as`) and an output format
-(`--md`): those are built in, while a preset is something you save. Presets live in
-`.jlf.toml` (an extension of the existing config and variables system), so they can
-be committed and shared within a team:
+A recipe is a saved bundle of arguments — filters, a template, and options —
+invoked by name. It subsumes what were once separate "presets" and output
+"formats": a recipe can be a saved command, an inline variable, or an output
+format. Recipes live in `.jlf.toml` (an extension of the existing config and
+variables system), so they can be committed and shared within a team:
 
 ```sh
 jlf @errors
 jlf -p latency-report
 ```
 
-A complex invocation is written once (by hand or via the TUI builder), named, and
-reused. The keys mirror the explicit flag forms (`where`, `template` or `fields`,
+A complex invocation is written once (by hand or via the builder), named, and
+reused. The keys mirror the explicit flag forms (`filter`, `body` or `fields`,
 the summary verbs, `format`):
 
 ```toml
 # .jlf.toml
-[preset.errors]
-where = "level=error,fatal"
-template = "{ts} {level} {message}"
+[recipe.errors]
+filter = "level=error,fatal"
+body = "$ts $level $message"
 
-[preset.latency-report]
-where = "status>=500"
+[recipe.latency-report]
+filter = "status>=500"
 stats = "latency_ms"
 by = "endpoint"
 format = "md"
@@ -468,18 +459,18 @@ format = "md"
 
 `jlf @errors` runs the first; `jlf -p latency-report` runs the second.
 
-A preset is a set of defaults, not a fixed command — explicit arguments layer on
+A recipe is a set of defaults, not a fixed command — explicit arguments layer on
 top:
 
 ```sh
-jlf @errors status=500          # add a filter (AND with the preset's filters)
+jlf @errors status=500          # add a filter (AND with the recipe's filters)
 jlf @errors level=warn          # override a same-field filter
-jlf @errors '{ts} {msg}'        # override the preset's template
+jlf @errors '$ts $msg'        # override the recipe's template
 ```
 
-The rule matches config-to-CLI layering: a same-field filter overrides, a
+The precedence matches config-to-CLI layering: a same-field filter overrides, a
 different-field filter is added, and an explicit template or flag overrides the
-preset's.
+recipe's.
 
 ## 5. Architecture
 
@@ -542,7 +533,7 @@ job.
   live pipe, without a backend; updates live in place on a terminal and prints once
   when piped.
 - Browse (extension): TUI with live filter, facets, expand/collapse, follow,
-  save-as-preset.
+  save-as-recipe.
 - Serve (extension): local web UI; queries processed near the data.
 - Embed: `jlf-core` crate.
 
@@ -554,9 +545,9 @@ of several syntaxes.
 | Tool            | Used for                | Today                                             | jlf                                       |
 | --------------- | ----------------------- | ------------------------------------------------- | ----------------------------------------- |
 | grep            | find lines              | `grep error app.log` (also matches `"no errors"`) | `jlf level=error` / `jlf message~timeout` |
-| cut             | extract fields          | `cut -d, -f1,3`                                   | `jlf '{ts},{level}'` (by name)            |
-| awk             | field logic + condition | `awk -F, '$3>500{print $1}'`                      | `jlf latency>500 '{ts}'`                  |
-| jq              | JSON query/transform    | `jq 'select(.level=="error")\|{ts,msg}'`          | `jlf level=error '{ts} {msg}'`            |
+| cut             | extract fields          | `cut -d, -f1,3`                                   | `jlf '${ts},${level}'` (by name)            |
+| awk             | field logic + condition | `awk -F, '$3>500{print $1}'`                      | `jlf latency>500 '$ts'`                  |
+| jq              | JSON query/transform    | `jq 'select(.level=="error")\|{ts,msg}'`          | `jlf level=error '$ts $msg'`            |
 | sed             | substitute/redact       | `sed 's/token=[^ ]*/token=***/'`                  | `jlf --redact token` (by field)           |
 | awk (aggregate) | sums/counts             | `awk '{s+=$1}END{print s}'`                       | `jlf stats latency` / `jlf count level`   |
 
@@ -581,12 +572,12 @@ What it does not replace:
   `kubectl logs -f deploy/api | jlf request_id=r-83f`. (`grep` produces
   false positives; `jq` outputs raw JSON.)
 - Error-only follow: `tail -f app.log | jlf level=error,fatal`.
-- Latency outliers: `jlf latency_ms>500 '{ts} {endpoint} {latency_ms}'`.
+- Latency outliers: `jlf latency_ms>500 '$ts $endpoint $latency_ms'`.
 
 ### Templating (non-log)
 
-- NDJSON to CSV: `cat events.ndjson | jlf '{user.id},{event},{ts}' > events.csv`.
-- `kubectl get pods -o json | jlf '{metadata.name}\t{status.phase}'`
+- NDJSON to CSV: `cat events.ndjson | jlf '${user.id},$event,$ts' > events.csv`.
+- `kubectl get pods -o json | jlf '${metadata.name}\t${status.phase}'`
   (simpler than jsonpath / custom-columns).
 - Reports, release notes, Markdown or HTML tables.
 
@@ -608,7 +599,7 @@ is SQL and batch-oriented; the platforms are server-side.
 ### Browse (TUI)
 
 - `jlf tui -i app.log` or `kubectl logs -f | jlf tui`: scroll, live filter, expand
-  nested JSON, follow, facet sidebar, save-as-preset.
+  nested JSON, follow, facet sidebar, save-as-recipe.
 
 ## 9. Roadmap and action steps
 
@@ -632,7 +623,7 @@ Goal: a light core, plugin dispatch, and a reusable engine.
 
 ### Phase 1 — Core features
 
-Goal: filter, summarize, redact, export, plus the disambiguation rule.
+Goal: filter, summarize, redact, export, plus grammar disambiguation.
 
 - [ ] Filters: parse positional `key <op> value` (`= != > < >= <= ~ !~`); AND
       across tokens, `a,b` OR within a value; apply as a streaming predicate.
@@ -643,28 +634,29 @@ Goal: filter, summarize, redact, export, plus the disambiguation rule.
       `by <field>` grouping. Live in-place display when stdout is a TTY, single
       print when piped, `--window` for tumbling-window output. t-digest by default
       so `stats` stays bounded; approximate `top`/`uniq` modes for high cardinality.
-- [ ] Redaction: `--redact <globs>` and inline `{x:redact}`.
-- [ ] Export shapes as built-in template bundles (header/row/footer + escape),
-      surfaced as flags `--csv`, `--tsv`, `--table`, `--md`, `--html`, `--json`;
-      columns from `-f`/`--fields` or auto-derived from the first record; `:html`
-      escape modifier.
-- [ ] Implement and document the disambiguation rule; add examples to `jlf help`.
+- [ ] Redaction: `--redact <globs>` and inline `${x:redact}`.
+- [ ] Export shapes as built-in recipe bundles (single `body` templates with
+      `$rows(...)`, `$cols(...)`, and escape modifiers), run as recipes `@csv`,
+      `@tsv`, `@md` (`@table`, `@html`, `@json` future); columns from a
+      comma-list, `-f`/`--fields`, or leftover bare words; `:html` escape
+      modifier.
+- [ ] Implement and document grammar disambiguation; add examples to `jlf help`.
 - Acceptance: documented examples work; golden-output tests; throughput close to
   the current core.
 
-### Phase 2 — Presets and the first extension (`jlf-tui`)
+### Phase 2 — Recipes and the first extension (`jlf-tui`)
 
-Goal: a low-friction entry point and shareable presets.
+Goal: a low-friction entry point and shareable recipes.
 
-- [ ] Presets as named bundles in `.jlf.toml`, with user / workspace / project
+- [ ] Recipes as named bundles in `.jlf.toml`, with user / workspace / project
       scopes (reusing the existing config and workspace discovery). `jlf @name`,
-      with explicit CLI args layering over the preset's defaults.
+      with explicit CLI args layering over the recipe's defaults.
 - [ ] `jlf-tui` extension (ratatui/crossterm): browse, follow, live filter,
       expand/collapse, facets; an interactive builder that previews output, prints
-      the equivalent command, and saves a preset. (Replaces the earlier
+      the equivalent command, and saves a recipe. (Replaces the earlier
       interactive-flag idea.)
 - [ ] Distribution: `cargo install jlf-tui`; brew; an optional `jlf-full` bundle.
-- Acceptance: `jlf tui` runs when installed; preset round-trip (build -> save ->
+- Acceptance: `jlf tui` runs when installed; recipe round-trip (build -> save ->
   `jlf @name`); the builder emits a valid core command.
 
 ### Phase 3 — `jlf-serve`
@@ -722,14 +714,14 @@ Input model:
 
 Grammar and templates:
 
-- **Require `{}` for templates.** A bare positional is currently a literal format
-  string; the new grammar makes bare words commands and requires braces for
-  templates — the foundation for filters, verbs, and `-f`/`--fields`.
-- **Collapse empty fields, simplify the default variables.** Keep the variable
-  system as-is (named, reusable, overridable fragments via `{&name}` plus the
-  `{#key}` / `{#config}` conditionals), but make an empty field swallow one adjacent
-  space so the default is a few plainly-named variables instead of ~12 with
-  `name`/`name_fmt` twins. No new syntax; `{#key}` stays for exact control.
+- **Use `$` for templates.** A bare positional is no longer a literal format
+  string; the grammar uses `$` interpolation for templates and leaves bare words
+  available for commands, fields, recipes, and filters.
+- **Collapse optional empty fields, simplify the default recipes.** Keep named,
+  reusable fragments via recipes and include directives, but make an optional
+  empty field swallow one adjacent space so the default is a few plainly named
+  recipes instead of many `name`/`name_fmt` twins. `${key f}…${/}` stays for exact
+  control.
 - **Rework `expand` / `list`** into one inspection surface (`--list-fields`, an
   `explain` that prints the resolved command/format).
 
@@ -737,8 +729,8 @@ Smaller:
 
 - **Fix or drop `--take`**, which currently counts blank and error lines, not
   emitted records; prefer `| head` or a `--limit` that counts output rows.
-- **Settle the config schema** now: `[config]`, `[as.*]`, `[format.*]`,
-  `[preset.*]`, and `[variables]`.
+- **Settle the config schema** now: `[config]`, `[as.*]`, `[recipe.*]`, and
+  `[variables]` (recipes subsume the old format/preset tables).
 - **`~` / `!~` are literal substring** (decided), not regex.
 
 ## 10. Risks and mitigations
@@ -758,21 +750,19 @@ Smaller:
 - Share of common tasks doable without opening `--help`.
 - Core binary size and cold-start staying small.
 - Adoption: installs, third-party `jlf-*` plugins.
-- Presets committed per repository (a sign of team use).
+- Recipes committed per repository (a sign of team use).
 
 ## 12. Open questions
 
 - Grammar for `by` and `--window` time bucketing (keep it plain, avoid cron-like
   syntax).
 - Percentile method (t-digest vs. exact for bounded inputs) and memory budget.
-- Whole-document output: header/footer template parts vs. a dedicated `--report`
-  mode.
-- Preset precedence and merging across user/workspace/project scopes, and how CLI
-  args override or clear a preset's filters (e.g. `level=` to clear).
-- Tabular column auto-derivation: first-record schema vs. a sampled prefix, and
-  how to surface dropped/extra keys.
-- Whether to make column-generic tables (`--md`/`--csv` over a dynamic column list)
-  user-definable, which would need a per-column construct in the template language.
+- Whole-document output: whether `$rows(...)` framing is enough or a dedicated
+  `--report` mode is still useful.
+- Recipe precedence and merging across user/workspace/project scopes, and how CLI
+  args override or clear a recipe's filters (e.g. `level=` to clear).
+- Column selection errors: how to surface `$cols(...)` formats run without an
+  explicit column list.
 - General row sorting beyond the `top` / `stats by` defaults (a `sort` verb or
   flag) — deferred.
 - Case-insensitive filter matching (a flag or operator variant).
