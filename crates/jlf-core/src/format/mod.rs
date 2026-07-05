@@ -114,6 +114,11 @@ pub enum Piece {
     ElseCond(Cond, usize),
     Else,
     CondEnd,
+    /// Start of a `${match path}` block: `path` is the subject arg. The subject's
+    /// value is bound to `$value` for the arms in between, up to `MatchEnd`.
+    MatchStart(usize),
+    /// End of a `${match … }` block.
+    MatchEnd,
     /// Start of a `$( … )sep op` repetition: what to iterate, the separator
     /// emitted between iterations, and the repetition operator.
     RepStart(RepSource, String, RepOp),
@@ -131,11 +136,43 @@ pub enum RepOp {
     Question,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Cond {
     If,
     Key,
     IfConfig(bool),
+    /// `$if(field OP literal => …)` — compare the field's scalar value against a
+    /// literal. Numeric when both sides parse as numbers, else lexicographic.
+    Cmp(CmpOp, String),
+    /// A `${match}` arm: matches when the bound subject (`$value`) satisfies any
+    /// of the listed tests. An empty list is the `_` wildcard — it matches any
+    /// present (non-null) value, so a missing subject renders nothing.
+    Arm(Vec<ArmTest>),
+}
+
+/// One alternative in a `${match}` arm pattern (`a | b | …`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArmTest {
+    /// A comparison against the subject, e.g. `>= 500` or `== "GET"`.
+    Cmp(CmpOp, String),
+    /// A numeric range, e.g. `400..500` (half-open) or `500..` (from). `hi` is
+    /// inclusive only for `..=` forms.
+    Range {
+        lo: Option<f64>,
+        hi: Option<f64>,
+        hi_inclusive: bool,
+    },
+}
+
+/// Comparison operator for an `$if(field OP literal => …)` condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,9 +187,6 @@ pub struct Format {
     pub compact: bool,
     pub is_json: bool,
     pub indent: usize,
-    // special type of modifier only applicable to level field, where the style
-    // changes based on the level
-    pub is_level: bool,
     // `{?field}`: when this field renders empty, collapse one adjacent space so
     // an absent field leaves no stray gap.
     pub optional: bool,
@@ -252,18 +286,101 @@ mod dsl_tests {
 
     #[test]
     fn conditional_and_optional() {
-        assert_eq!(
-            render("${if warn}W${else}ok${/}", &[], r#"{"warn":true}"#),
-            "W"
-        );
+        assert_eq!(render("$if(warn => W)$else(ok)", &[], r#"{"warn":true}"#), "W");
         assert_eq!(render("a${?missing} b", &[], r#"{}"#), "ab");
     }
 
     #[test]
+    fn if_comparison_numeric() {
+        let t = "$if(status >= 500 => 5xx)$elif(status >= 400 => 4xx)$else(ok)";
+        assert_eq!(render(t, &[], r#"{"status":200}"#), "ok");
+        assert_eq!(render(t, &[], r#"{"status":429}"#), "4xx");
+        assert_eq!(render(t, &[], r#"{"status":503}"#), "5xx");
+    }
+
+    #[test]
+    fn if_comparison_operators() {
+        assert_eq!(render("$if(n == 200 => y)$else(n)", &[], r#"{"n":200}"#), "y");
+        assert_eq!(render("$if(n != 200 => y)$else(n)", &[], r#"{"n":201}"#), "y");
+        assert_eq!(render("$if(n <= 3 => y)$else(n)", &[], r#"{"n":3}"#), "y");
+        assert_eq!(render("$if(n < 3 => y)$else(n)", &[], r#"{"n":3}"#), "n");
+    }
+
+    #[test]
+    fn if_comparison_string_literal() {
+        let t = r#"$if(method == "GET" => read)$else(write)"#;
+        assert_eq!(render(t, &[], r#"{"method":"GET"}"#), "read");
+        assert_eq!(render(t, &[], r#"{"method":"POST"}"#), "write");
+    }
+
+    #[test]
+    fn if_comparison_missing_field_is_false() {
+        // an absent or non-scalar field never satisfies a comparison
+        assert_eq!(render("$if(n >= 1 => y)$else(n)", &[], r#"{}"#), "n");
+    }
+
+    #[test]
+    fn key_vs_if_and_config() {
+        // `$key` tests existence, `$if` truthiness — so a present `0` differs
+        assert_eq!(render("$key(body => has)$else(no)", &[], r#"{"body":0}"#), "has");
+        assert_eq!(render("$if(body => yes)$else(no)", &[], r#"{"body":0}"#), "no");
+        // an all-whitespace branch body is kept as an intentional separator
+        assert_eq!(render("a$config(compact =>  )$else(\n)b", &[], r#"{}"#), "a\nb");
+    }
+
+    #[test]
+    fn match_ranges() {
+        let t = "$match(status $when(500.. => 5xx) $when(400..500 => 4xx) $else(ok))";
+        assert_eq!(render(t, &[], r#"{"status":200}"#), "ok");
+        assert_eq!(render(t, &[], r#"{"status":404}"#), "4xx");
+        assert_eq!(render(t, &[], r#"{"status":503}"#), "5xx");
+        // a missing subject matches no arm — not even `$else`
+        assert_eq!(render(t, &[], r#"{}"#), "");
+    }
+
+    #[test]
+    fn match_value_binding_and_alternation() {
+        let t = r#"$match(method $when("GET"|"HEAD" => read:$value) $else(other:$value))"#;
+        assert_eq!(render(t, &[], r#"{"method":"GET"}"#), "read:GET");
+        assert_eq!(render(t, &[], r#"{"method":"HEAD"}"#), "read:HEAD");
+        assert_eq!(render(t, &[], r#"{"method":"POST"}"#), "other:POST");
+    }
+
+    #[test]
+    fn match_subject_fallback() {
+        let t = r#"$match(lvl|level $when("ERR" => !) $else($value))"#;
+        assert_eq!(render(t, &[], r#"{"level":"info"}"#), "info");
+        assert_eq!(render(t, &[], r#"{"lvl":"ERR"}"#), "!");
+    }
+
+    #[test]
+    fn match_multiline_layout() {
+        // decorative line breaks + indentation around arms are dropped
+        let t = "$match(lvl\n  $when(\"INFO\" => info)\n  $when(\"ERROR\" => err)\n)";
+        assert_eq!(render(t, &[], r#"{"lvl":"INFO"}"#), "info");
+        assert_eq!(render(t, &[], r#"{"lvl":"ERROR"}"#), "err");
+    }
+
+    #[test]
+    fn match_on_repetition_value() {
+        // `$match(value …)` inside `$( … )` dispatches on each entry's value
+        let t = r#"$( $key=$match(value $when(>=100 => big) $else(small)) )" "*"#;
+        assert_eq!(render(t, &[], r#"{"a":5,"b":500}"#), "a=small b=big");
+    }
+
+    #[test]
+    fn nested_match() {
+        let t = "$match(s $when(>=500 => $match(value $when(==503 => down) $else(5xx))) $else(ok))";
+        assert_eq!(render(t, &[], r#"{"s":200}"#), "ok");
+        assert_eq!(render(t, &[], r#"{"s":500}"#), "5xx");
+        assert_eq!(render(t, &[], r#"{"s":503}"#), "down");
+    }
+
+    #[test]
     fn include_expands() {
-        let vars = vec![("lvl".to_string(), "${level:level}".to_string())];
+        let vars = vec![("lvl".to_string(), "${level:dimmed}".to_string())];
         let expanded = expanded_format("[${@lvl}]", &vars);
-        assert_eq!(expanded, "[${level:level}]");
+        assert_eq!(expanded, "[${level:dimmed}]");
     }
     #[test]
     fn value_path_in_array_rep() {
@@ -307,3 +424,4 @@ mod dsl_tests {
         assert_eq!(render("L\n  $span?(has)", &[], r#"{}"#), "L");
     }
 }
+

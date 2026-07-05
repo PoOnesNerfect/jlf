@@ -35,7 +35,7 @@ pub fn get_config() -> color_eyre::Result<ConfigFile> {
 
 /// A unified recipe: one named, reusable definition that can act as a template
 /// fragment (`{@name}`), a saved command (`@name` / `-p`), a named field, or a
-/// custom output format. See docs/RECIPES.md. Recipes translate down to the
+/// custom output format. See the README (Recipes and configuration). Recipes translate down to the
 /// existing variable/preset/format machinery.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Recipe {
@@ -134,6 +134,11 @@ pub struct ConfigFile {
     /// Full recipes from `[recipe.NAME]` tables.
     #[serde(default, rename = "recipe")]
     pub recipe: HashMap<String, Recipe>,
+    /// Field recipes as `name -> value accessor` (e.g. `latency ->
+    /// latency_ms|duration|elapsed`), so `@name` resolves in filter and summary
+    /// positions. Filled by `resolve_recipes`; not read from config directly.
+    #[serde(skip)]
+    pub field_aliases: HashMap<String, String>,
 }
 
 /// The built-in `csv`/`tsv`/`md` output formats, as single `$`-DSL templates:
@@ -198,7 +203,7 @@ pub struct PresetDef {
 /// The built-in default template variables, used when no config overrides them.
 /// Shared by the CLI and the TUI so both render records identically.
 ///
-/// The recipe-style form (docs/RECIPES.md): `output` joins reusable field
+/// The recipe-style form (see README): `output` joins reusable field
 /// variables; each field is optional (`{?…}`) so an absent one collapses its
 /// space, and the separator before the JSON is chosen by the `compact` flag.
 /// Overriding any field variable (e.g. `-v level=…`) still recolors the output.
@@ -206,10 +211,27 @@ pub fn default_variables() -> Vec<(String, String)> {
     [
         (
             "output",
-            "${@timestamp}${@level}${@message}${config compact} ${else}\\n${/}${@data}",
+            "${@timestamp}${@level}${@message}$config(compact =>  )$else(\\n)${@data}",
         ),
         ("timestamp", "${?timestamp:dimmed} "),
-        ("level", "${?lvl|level|severity:level} "),
+        (
+            "level",
+            concat!(
+                "$match(lvl|level|severity\n",
+                r#"  $when("ERROR"|"error" => ${value:fg=red})"#,
+                "\n",
+                r#"  $when("WARN"|"warn"   => ${value:fg=yellow})"#,
+                "\n",
+                r#"  $when("INFO"|"info"   => ${value:fg=cyan})"#,
+                "\n",
+                r#"  $when("DEBUG"|"debug" => ${value:fg=green})"#,
+                "\n",
+                r#"  $when("TRACE"|"trace" => ${value:fg=cyan,dimmed})"#,
+                "\n",
+                r#"  $else(${value})"#,
+                "\n) ",
+            ),
+        ),
         ("message", "${?message|msg|body|fields.message}"),
         ("data", "${?..:json}"),
     ]
@@ -279,6 +301,7 @@ impl ConfigFile {
             presets: presets2,
             recipes: recipes2,
             recipe: recipe2,
+            field_aliases: _,
         } = other;
 
         if let Some(format) = config2.format {
@@ -381,6 +404,11 @@ impl ConfigFile {
     /// Register a resolved recipe as a variable (inline), a preset (run), and/or
     /// a custom output format (header/body/footer).
     fn install_recipe(&mut self, name: &str, r: &Recipe) {
+        // A `field` recipe is a named value accessor, usable as `@name` in filter
+        // and summary positions as well as `${@name}` in templates.
+        if let Some(field) = &r.field {
+            self.field_aliases.insert(name.to_owned(), field.clone());
+        }
         if let Some(body) = r.inline_body() {
             self.set_variable(name.to_owned(), body);
         }
@@ -510,10 +538,10 @@ mod tests {
 
     #[test]
     fn field_style_recipe_becomes_field_variable() {
-        let mut c = parse("[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n");
+        let mut c = parse("[recipe.host]\nfield = \"host|hostname\"\nstyle = \"dimmed\"\n");
         c.resolve_recipes(&[]);
-        // Field recipes are optional by default, so `${@level}` collapses when absent.
-        assert_eq!(var(&c, "level"), Some("${?lvl|level|severity:level}"));
+        // Field recipes are optional by default, so `${@host}` collapses when absent.
+        assert_eq!(var(&c, "host"), Some("${?host|hostname:dimmed}"));
     }
 
     #[test]

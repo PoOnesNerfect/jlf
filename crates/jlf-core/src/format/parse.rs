@@ -3,7 +3,10 @@ use std::num::ParseIntError;
 use owo_colors::Style;
 use smallvec::SmallVec;
 
-use super::{Arg, Cond, Escape, Field, FieldOptions, FieldType, Format, Piece, RepOp, RepSource};
+use super::{
+    Arg, ArmTest, CmpOp, Cond, Escape, Field, FieldOptions, FieldType, Format, Piece, RepOp,
+    RepSource,
+};
 use crate::{
     colors::{parse_color, ParseColorError},
     json::MarkupStyles,
@@ -29,7 +32,7 @@ pub(super) fn crunch_input(
         no_color,
         compact,
     };
-    sc.scan(pieces, args, 0, false)?;
+    sc.scan(pieces, args, 0, Stop::Eof)?;
     absorb_line_prefixes(pieces);
     Ok(())
 }
@@ -76,16 +79,33 @@ struct Scanner<'a> {
     compact: bool,
 }
 
+/// Where a `scan` pass stops.
+#[derive(Clone, Copy, PartialEq)]
+enum Stop {
+    /// Top level: scan to the end of input.
+    Eof,
+    /// Inside `$( … )`: stop just past the matching, paren-balanced `)`.
+    Rep,
+}
+
+/// Which `$if`/`$key`/`$config` opener a condition chain starts with.
+#[derive(Clone, Copy)]
+enum CondKind {
+    If,
+    Key,
+    Config,
+}
+
 impl Scanner<'_> {
-    /// Scan into `pieces`. When `in_rep`, stop after the matching (paren-balanced)
-    /// `)` and leave the cursor just past it.
+    /// Scan into `pieces` until `stop` is reached.
     fn scan(
         &mut self,
         pieces: &mut Vec<Piece>,
         args: &mut Vec<Arg>,
         rep_depth: usize,
-        in_rep: bool,
+        stop: Stop,
     ) -> Result<(), FormatError> {
+        let in_rep = stop == Stop::Rep;
         let mut lit = String::new();
         let mut paren_depth: usize = 0;
         while self.i < self.b.len() {
@@ -191,6 +211,15 @@ impl Scanner<'_> {
         if self.b.get(self.i) == Some(&b'(') {
             self.i += 1;
             let src = match name {
+                "match" => return self.parse_match(pieces, args, rep_depth),
+                "if" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::If),
+                "key" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Key),
+                "config" => {
+                    return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Config)
+                }
+                // `$elif`/`$else`/`$when` only appear as chain/arm continuations,
+                // parsed by their opener; standalone they are an error.
+                "elif" | "else" | "when" => return Err(FormatError::OrphanArm(name.to_owned())),
                 "cols" => RepSource::Columns,
                 _ => RepSource::Path(parse_field(name)?),
             };
@@ -225,14 +254,213 @@ impl Scanner<'_> {
         pieces.push(Piece::CondStart(Cond::If, args.len() - 1));
 
         let mut body = Vec::new();
-        self.scan(&mut body, args, rep_depth, true)?;
+        self.scan(&mut body, args, rep_depth, Stop::Rep)?;
         trim_body_edges(&mut body);
         pieces.extend(body);
         pieces.push(Piece::CondEnd);
         Ok(())
     }
+    /// Parse `$match( subject  $when(pat => body) … $else(body) )`. The subject
+    /// (first token, fallbacks allowed) is bound to `$value` for every arm body,
+    /// and the first arm whose pattern matches renders. A missing subject matches
+    /// no arm — not even `$else` — so it renders nothing. Cursor is just past
+    /// `$match(`.
+    fn parse_match(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+    ) -> Result<(), FormatError> {
+        self.skip_ws();
+        let start = self.i;
+        while self.i < self.b.len() && (is_path_byte(self.b[self.i]) || self.b[self.i] == b'|') {
+            self.i += 1;
+        }
+        if self.i == start {
+            return Err(FormatError::EmptyMatchSubject);
+        }
+        let subject = std::str::from_utf8(&self.b[start..self.i]).unwrap();
+        let mut fo = FieldOptions::new();
+        push_field(&mut fo, subject, rep_depth)?;
+        args.push((fo, parse_format(None, self.no_color, self.compact)?));
+        pieces.push(Piece::MatchStart(args.len() - 1));
 
-    /// Parse a `${ … }` group: a directive (if/key/config/else/end) or a field.
+        let mut first = true;
+        loop {
+            self.skip_ws();
+            match self.b.get(self.i) {
+                Some(b')') => {
+                    self.i += 1;
+                    break;
+                }
+                Some(b'$') if self.rest_is("$when(") => {
+                    self.i += 6;
+                    let pat = self.read_until_arrow()?;
+                    self.push_arm(pieces, args, rep_depth, parse_arm(&pat)?, first)?;
+                }
+                Some(b'$') if self.rest_is("$else(") => {
+                    self.i += 6;
+                    self.skip_hspace();
+                    self.push_arm(pieces, args, rep_depth, Cond::Arm(Vec::new()), first)?;
+                }
+                _ => return Err(FormatError::BadMatchArm),
+            }
+            first = false;
+        }
+        pieces.push(Piece::CondEnd);
+        pieces.push(Piece::MatchEnd);
+        Ok(())
+    }
+
+    /// Emit one match arm: the arm condition tests the bound subject (`$value`),
+    /// then the body is scanned up to the arm's closing `)`.
+    fn push_arm(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        cond: Cond,
+        first: bool,
+    ) -> Result<(), FormatError> {
+        let mut fo = FieldOptions::new();
+        fo.push(Field::ColValue);
+        args.push((fo, parse_format(None, self.no_color, self.compact)?));
+        let idx = args.len() - 1;
+        pieces.push(if first {
+            Piece::CondStart(cond, idx)
+        } else {
+            Piece::ElseCond(cond, idx)
+        });
+        let mut body = Vec::new();
+        self.scan(&mut body, args, rep_depth + 1, Stop::Rep)?;
+        trim_cond_body(&mut body);
+        pieces.extend(body);
+        Ok(())
+    }
+
+    /// True when the input at the cursor starts with `s`.
+    fn rest_is(&self, s: &str) -> bool {
+        self.b[self.i..].starts_with(s.as_bytes())
+    }
+
+    /// Read a `$when`/`$if`/… condition up to its `=>` (outside quotes),
+    /// consuming the `=>` and one following space/tab (the syntactic separator
+    /// before the body). Returns the condition text trimmed.
+    fn read_until_arrow(&mut self) -> Result<String, FormatError> {
+        let start = self.i;
+        let mut quote = 0u8;
+        while self.i < self.b.len() {
+            let c = self.b[self.i];
+            match c {
+                q @ (b'"' | b'\'') if quote == 0 => quote = q,
+                q if quote == q => quote = 0,
+                b'=' if quote == 0 && self.b.get(self.i + 1) == Some(&b'>') => {
+                    let pat = std::str::from_utf8(&self.b[start..self.i]).unwrap().trim().to_owned();
+                    self.i += 2; // consume `=>`
+                    self.skip_hspace();
+                    return Ok(pat);
+                }
+                b')' if quote == 0 => break,
+                _ => {}
+            }
+            self.i += 1;
+        }
+        Err(FormatError::MissingArrow)
+    }
+
+    /// Skip a single space or tab (the syntactic separator after `=>` / `(`),
+    /// leaving any deliberate extra spaces in the body.
+    fn skip_hspace(&mut self) {
+        if matches!(self.b.get(self.i), Some(b' ' | b'\t')) {
+            self.i += 1;
+        }
+    }
+
+    /// Skip spaces, tabs, and newlines (decorative layout between arms/branches).
+    fn skip_ws(&mut self) {
+        while matches!(self.b.get(self.i), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            self.i += 1;
+        }
+    }
+
+    /// Parse an `$if`/`$key`/`$config` condition chain: the opener plus any
+    /// adjacent `$elif( … )` / `$else( … )` continuations (whitespace between
+    /// them is ignored). Emits `CondStart` + `ElseCond*` + optional `Else` +
+    /// `CondEnd`, the same shape the renderer walks. Cursor is just past the
+    /// opener's `(`.
+    fn parse_cond_chain(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        kind: CondKind,
+    ) -> Result<(), FormatError> {
+        self.push_cond_open(pieces, args, rep_depth, kind, false)?;
+        loop {
+            let save = self.i;
+            self.skip_ws();
+            if self.rest_is("$elif(") {
+                self.i += 6;
+                self.push_cond_open(pieces, args, rep_depth, CondKind::If, true)?;
+            } else if self.rest_is("$else(") {
+                self.i += 6;
+                self.skip_hspace();
+                pieces.push(Piece::Else);
+                let mut body = Vec::new();
+                self.scan(&mut body, args, rep_depth, Stop::Rep)?;
+                trim_cond_body(&mut body);
+                pieces.extend(body);
+                break;
+            } else {
+                self.i = save; // no continuation — leave following text intact
+                break;
+            }
+        }
+        pieces.push(Piece::CondEnd);
+        Ok(())
+    }
+
+    /// Emit one `$if`/`$elif`/`$key`/`$config` branch: read `COND =>`, push the
+    /// condition marker, then scan the body up to the branch's `)`.
+    fn push_cond_open(
+        &mut self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        rep_depth: usize,
+        kind: CondKind,
+        is_else: bool,
+    ) -> Result<(), FormatError> {
+        let cond_text = self.read_until_arrow()?;
+        match kind {
+            CondKind::If => self.push_cond(pieces, args, &cond_text, Cond::If, is_else)?,
+            CondKind::Key => self.push_cond(pieces, args, &cond_text, Cond::Key, is_else)?,
+            CondKind::Config => {
+                let b = match cond_text.trim() {
+                    "compact" => self.compact,
+                    "no_color" => self.no_color,
+                    other => {
+                        return Err(FormatError::UnsupportedConfig {
+                            config: other.to_owned(),
+                        })
+                    }
+                };
+                pieces.push(if is_else {
+                    Piece::ElseCond(Cond::IfConfig(b), 0)
+                } else {
+                    Piece::CondStart(Cond::IfConfig(b), 0)
+                });
+            }
+        }
+        let mut body = Vec::new();
+        self.scan(&mut body, args, rep_depth, Stop::Rep)?;
+        trim_cond_body(&mut body);
+        pieces.extend(body);
+        Ok(())
+    }
+
+    /// Parse a `${ … }` group: an interpolated field. (Conditionals are the
+    /// `$if( … )` / `$key( … )` / `$config( … )` block forms, not brace
+    /// directives.)
     fn parse_brace(
         &mut self,
         pieces: &mut Vec<Piece>,
@@ -248,36 +476,7 @@ impl Scanner<'_> {
         }
         let content = std::str::from_utf8(&self.b[start..self.i]).unwrap().trim();
         self.i += 1; // consume '}'
-
-        if let Some(c) = content.strip_prefix("if ") {
-            self.push_cond(pieces, args, c, Cond::If, false)
-        } else if let Some(c) = content.strip_prefix("key ") {
-            self.push_cond(pieces, args, c, Cond::Key, false)
-        } else if let Some(c) = content.strip_prefix("config ") {
-            let b = match c.trim() {
-                "compact" => self.compact,
-                "no_color" => self.no_color,
-                other => {
-                    return Err(FormatError::UnsupportedConfig {
-                        config: other.to_owned(),
-                    })
-                }
-            };
-            pieces.push(Piece::CondStart(Cond::IfConfig(b), 0));
-            Ok(())
-        } else if content == "else" {
-            pieces.push(Piece::Else);
-            Ok(())
-        } else if let Some(c) = content.strip_prefix("else if ") {
-            self.push_cond(pieces, args, c, Cond::If, true)
-        } else if let Some(c) = content.strip_prefix("else key ") {
-            self.push_cond(pieces, args, c, Cond::Key, true)
-        } else if content.starts_with('/') {
-            pieces.push(Piece::CondEnd);
-            Ok(())
-        } else {
-            self.push_arg(pieces, args, content, rep_depth)
-        }
+        self.push_arg(pieces, args, content, rep_depth)
     }
 
     fn push_cond(
@@ -288,8 +487,17 @@ impl Scanner<'_> {
         cond: Cond,
         is_else: bool,
     ) -> Result<(), FormatError> {
+        // Only `if`/`else if` support value comparisons (`field OP literal`);
+        // `key` just tests presence, so its content is always a field path.
+        let (field_str, cond) = match cond {
+            Cond::If => match split_comparison(content) {
+                Some((lhs, op, rhs)) => (lhs, Cond::Cmp(op, unquote(rhs).to_owned())),
+                None => (content.trim(), Cond::If),
+            },
+            other => (content.trim(), other),
+        };
         let mut fo = FieldOptions::new();
-        crunch_field_options(content.trim(), &mut fo)?;
+        crunch_field_options(field_str, &mut fo)?;
         args.push((fo, parse_format(None, self.no_color, self.compact)?));
         let idx = args.len() - 1;
         pieces.push(if is_else {
@@ -335,7 +543,7 @@ impl Scanner<'_> {
         src: RepSource,
     ) -> Result<(), FormatError> {
         let mut body = Vec::new();
-        self.scan(&mut body, args, rep_depth + 1, true)?;
+        self.scan(&mut body, args, rep_depth + 1, Stop::Rep)?;
         trim_body_edges(&mut body);
         let sep = self.read_separator()?;
         let op = self.read_op()?;
@@ -431,6 +639,50 @@ fn trim_body_edges(body: &mut Vec<Piece>) {
     }
 }
 
+/// Trim a `$if`/`$when`/`$else`/… body. An all-whitespace body is an intentional
+/// separator (e.g. `$else(\n)`, `$config(compact =>  )`) and is kept as-is.
+/// Otherwise, drop leading/trailing whitespace runs that span a newline
+/// (decorative line breaks + indentation), so an arm can be written across lines
+/// while its output stays on one line; same-line padding is preserved.
+fn trim_cond_body(body: &mut [Piece]) {
+    let all_ws = body
+        .iter()
+        .all(|p| matches!(p, Piece::Literal(s) if s.chars().all(char::is_whitespace)));
+    if all_ws {
+        return;
+    }
+    if let Some(Piece::Literal(s)) = body.first_mut() {
+        if let Some(cut) = leading_layout_ws(s) {
+            *s = s[cut..].to_owned();
+        }
+    }
+    if let Some(Piece::Literal(s)) = body.last_mut() {
+        if let Some(cut) = trailing_layout_ws(s) {
+            s.truncate(cut);
+        }
+    }
+}
+
+/// End of a leading whitespace run when it spans a newline, else `None`.
+fn leading_layout_ws(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    s[..i].contains('\n').then_some(i)
+}
+
+/// Start of a trailing whitespace run when it spans a newline, else `None`.
+fn trailing_layout_ws(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = b.len();
+    while i > 0 && matches!(b[i - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        i -= 1;
+    }
+    s[i..].contains('\n').then_some(i)
+}
+
 fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
@@ -438,6 +690,108 @@ fn is_ident_start(b: u8) -> bool {
 /// Bytes allowed in a bare field path: identifiers plus `.`/`[`/`]` for nesting.
 fn is_path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'[' || b == b']'
+}
+
+/// Split a comparison condition (`field OP literal`) into its parts, or `None`
+/// if no operator is present. Two-character operators are tried before their
+/// single-character prefixes so `>=` isn't mistaken for `>`.
+fn split_comparison(content: &str) -> Option<(&str, CmpOp, &str)> {
+    for (token, op) in CMP_OPS {
+        if let Some(idx) = content.find(token) {
+            let lhs = content[..idx].trim();
+            let rhs = content[idx + token.len()..].trim();
+            return Some((lhs, op, rhs));
+        }
+    }
+    None
+}
+
+/// Strip one pair of matching single/double quotes from a comparison literal.
+fn unquote(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        if (first == b'"' || first == b'\'') && bytes[bytes.len() - 1] == first {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// The comparison operators, longest-first so `>=` isn't read as `>`.
+const CMP_OPS: [(&str, CmpOp); 6] = [
+    ("==", CmpOp::Eq),
+    ("!=", CmpOp::Ne),
+    (">=", CmpOp::Ge),
+    ("<=", CmpOp::Le),
+    (">", CmpOp::Gt),
+    ("<", CmpOp::Lt),
+];
+
+/// Parse a `$when(pattern => …)` pattern into its arm condition. `$else` uses an
+/// empty test list (the wildcard); otherwise it's `test | test | …` alternation.
+fn parse_arm(content: &str) -> Result<Cond, FormatError> {
+    let c = content.trim();
+    let mut tests = Vec::new();
+    for alt in split_top_level_pipe(c) {
+        tests.push(parse_arm_test(alt.trim())?);
+    }
+    Ok(Cond::Arm(tests))
+}
+
+/// One alternative of an arm pattern: a comparison (`>= 500`), a range
+/// (`400..500`), or a bare literal (`200`, `"GET"`) treated as equality.
+fn parse_arm_test(s: &str) -> Result<ArmTest, FormatError> {
+    for (token, op) in CMP_OPS {
+        if let Some(rest) = s.strip_prefix(token) {
+            return Ok(ArmTest::Cmp(op, unquote(rest.trim()).to_owned()));
+        }
+    }
+    if s.contains("..") {
+        return parse_range(s);
+    }
+    Ok(ArmTest::Cmp(CmpOp::Eq, unquote(s).to_owned()))
+}
+
+/// Parse a numeric range arm: `lo..hi`, `lo..=hi`, `lo..`, `..hi`, `..=hi`.
+fn parse_range(s: &str) -> Result<ArmTest, FormatError> {
+    let (lo_str, rest) = s.split_once("..").unwrap();
+    let hi_inclusive = rest.starts_with('=');
+    let hi_str = if hi_inclusive { &rest[1..] } else { rest };
+    let parse_bound = |b: &str| -> Result<Option<f64>, FormatError> {
+        let b = b.trim();
+        if b.is_empty() {
+            return Ok(None);
+        }
+        b.parse::<f64>()
+            .map(Some)
+            .map_err(|_| FormatError::BadRange(s.to_owned()))
+    };
+    Ok(ArmTest::Range {
+        lo: parse_bound(lo_str)?,
+        hi: parse_bound(hi_str)?,
+        hi_inclusive,
+    })
+}
+
+/// Split on `|` that sits outside quotes (arm-pattern alternation).
+fn split_top_level_pipe(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let b = s.as_bytes();
+    let (mut start, mut quote) = (0usize, 0u8);
+    for i in 0..b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') if quote == 0 => quote = q,
+            q if quote == q => quote = 0,
+            b'|' if quote == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 /// Map a field name to a [`Field`], honouring the `$key`/`$value` loop locals
@@ -515,7 +869,6 @@ pub fn parse_format(
     let mut style = (!no_color).then(Style::new);
     let mut is_json = false;
     let mut indent = 0;
-    let mut is_level = false;
     let mut escape = Escape::None;
     let mut markup_styles = MarkupStyles::default();
 
@@ -525,7 +878,6 @@ pub fn parse_format(
             compact,
             is_json,
             indent,
-            is_level,
             optional: false,
             escape,
             markup_styles,
@@ -542,12 +894,6 @@ pub fn parse_format(
             (name, value)
         } else {
             match part {
-                // special type of modifier only applicable to level field,
-                // where the style changes based on the level
-                "level" => {
-                    is_level = true;
-                    continue;
-                }
                 "compact" => {
                     compact = true;
                     continue;
@@ -593,13 +939,13 @@ pub fn parse_format(
 
         match name {
             "fg" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 if let Some(s) = style.take() {
                     style = Some(s.color(color));
                 }
             }
             "bg" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 if let Some(s) = style.take() {
                     style = Some(s.on_color(color));
                 }
@@ -611,19 +957,19 @@ pub fn parse_format(
                 indent = value;
             }
             "key" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.key = markup_styles.key.color(color);
             }
             "value" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.value = markup_styles.value.color(color);
             }
             "str" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.str = markup_styles.str.color(color);
             }
             "syntax" => {
-                let color = parse_color(value).toss_parse_color()?;
+                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.syntax = markup_styles.syntax.color(color);
             }
             _ => return Err(FormatError::InvalidModifier(name.to_owned())),
@@ -635,7 +981,6 @@ pub fn parse_format(
         compact,
         is_json,
         indent,
-        is_level,
         optional: false,
         escape,
         markup_styles,
@@ -647,8 +992,11 @@ use tosserror::Toss;
 
 #[derive(Debug, Error, Toss)]
 pub enum FormatError {
-    #[error("Failed to parse color")]
-    ParseColor { source: ParseColorError },
+    #[error("Failed to parse color '{value}' — if this was a style modifier, it is not one jlf knows (note: the `:level` modifier was removed; use the `${{@level}}` recipe or a `$match` to color by level)")]
+    ParseColor {
+        source: ParseColorError,
+        value: String,
+    },
     #[error("Invalid indent value in format string '{0}'")]
     ParseIndent(String),
     #[error("Invalid modifier in format string '{0}'")]
@@ -672,4 +1020,15 @@ pub enum FormatError {
     MissingRepOp,
     #[error("Unterminated quoted separator in a repetition")]
     UnterminatedSep,
+    #[error("A `$match( … )` needs a subject, e.g. `$match(status $when(…))`")]
+    EmptyMatchSubject,
+    #[error("A `$match( … )` arm must be `$when(pattern => body)` or `$else(body)`")]
+    BadMatchArm,
+    #[error("A `$when`/`$if`/`$elif`/`$key`/`$config` block is missing its `=>` between the condition and the body")]
+    MissingArrow,
+    #[error("`$when`/`$elif`/`$else` may only appear inside `$match( … )` or an `$if`/`$key`/`$config` chain, not on their own: `${0}( … )`")]
+    OrphanArm(String),
+    #[error("Invalid numeric range in a `$when( … )` arm: '{0}'")]
+    BadRange(String),
 }
+

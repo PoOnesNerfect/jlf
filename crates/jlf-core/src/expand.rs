@@ -2,7 +2,7 @@ use color_eyre::eyre::{eyre, Result};
 
 /// Inline `${@name}` / `${?@name}` recipe includes in a `$`-DSL template,
 /// expanding each to the named variable's template (recursively). Everything
-/// else — fields, `$( … )` repetitions, `${if …}` directives — passes through
+/// else — fields, `$( … )` repetitions, `$if( … )` / `$match( … )` blocks — passes through
 /// untouched for the formatter to parse.
 pub fn expanded_format(format: &str, variables: &[(String, String)]) -> String {
     let mut out = String::new();

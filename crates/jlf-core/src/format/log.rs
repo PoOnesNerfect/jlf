@@ -1,6 +1,6 @@
+use core::cmp::Ordering;
 use core::fmt;
 
-use owo_colors::AnsiColors;
 pub use owo_colors::OwoColorize as Colorize;
 
 use super::*;
@@ -130,30 +130,28 @@ fn write_piece<'a>(
         }
         RepEnd => {}
         CondStart(cond, i) => {
-            let cond_matched = !skip && test_cond(*cond, args, *i, json, cur, used_fields);
-            let mut should_run = cond_matched;
-            let mut else_cond_matched = false;
+            // Walk an `if / else if… / else` chain, running the first branch
+            // whose condition holds. `matched` stays set once any branch wins so
+            // later `else if`/`else` arms are skipped. When the whole block is
+            // itself skipped, every branch is suppressed.
+            let mut matched = !skip && test_cond(cond, args, *i, json, cur, used_fields);
+            let mut should_run = matched;
 
             piece_i += 1;
             while piece_i < pieces.len() {
-                if let Piece::ElseCond(cond, i) = pieces[piece_i] {
-                    if !skip && !cond_matched && !else_cond_matched {
-                        should_run = test_cond(cond, args, i, json, cur, used_fields);
-                        else_cond_matched = true;
-                    } else {
-                        should_run = false;
+                match &pieces[piece_i] {
+                    Piece::ElseCond(cond, i) => {
+                        should_run =
+                            !skip && !matched && test_cond(cond, args, *i, json, cur, used_fields);
+                        matched |= should_run;
+                        piece_i += 1;
                     }
-
-                    piece_i += 1;
-                } else if let Piece::Else = pieces[piece_i] {
-                    if !skip && !should_run && !else_cond_matched {
-                        should_run = true;
-                        else_cond_matched = true;
-                    } else {
-                        should_run = false;
+                    Piece::Else => {
+                        should_run = !skip && !matched;
+                        matched = true;
+                        piece_i += 1;
                     }
-
-                    piece_i += 1;
+                    _ => {}
                 }
 
                 if let Piece::CondEnd = pieces[piece_i] {
@@ -166,9 +164,87 @@ fn write_piece<'a>(
         }
         // Handled in the CondStart case above
         ElseCond(..) | Else | CondEnd => {}
+        MatchStart(subj) => {
+            let end = find_match_end(pieces, piece_i);
+            if !skip {
+                // Bind the subject to `$value` and render the arm chain in
+                // between; the arms (an if/else-if chain over `$value`) pick the
+                // first matching one. Marking the subject consumed keeps it out
+                // of a later `${..}` rest dump.
+                let (field_options, _) = &args[*subj];
+                let value = resolve_subject(json, field_options, cur, used_fields);
+                let binding = Binding {
+                    key: BindKey::Str(""),
+                    value,
+                };
+                let mut i = piece_i + 1;
+                while i < end {
+                    i = write_piece(
+                        f,
+                        pieces,
+                        i,
+                        args,
+                        json,
+                        cols,
+                        Some(&binding),
+                        false,
+                        used_fields,
+                    )?;
+                }
+            }
+            return Ok(end + 1);
+        }
+        MatchEnd => {}
     }
 
     Ok(piece_i + 1)
+}
+
+/// Index of the `MatchEnd` matching the `MatchStart` at `start` (nesting-aware).
+fn find_match_end(pieces: &[Piece], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = start + 1;
+    while i < pieces.len() {
+        match &pieces[i] {
+            Piece::MatchStart(_) => depth += 1,
+            Piece::MatchEnd => {
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    pieces.len().saturating_sub(1)
+}
+
+/// Resolve a `${match}` subject to its value. A plain path is looked up in the
+/// record (and recorded in `used_fields` so a later `${..}` rest dump skips it);
+/// `$value`/`${value.sub}` resolve against the enclosing repetition/match binding
+/// so a match can dispatch on a loop entry. The first non-null option wins.
+fn resolve_subject<'a>(
+    json: &'a Json<'a>,
+    field_options: &'a [Field],
+    cur: Option<&Binding<'a>>,
+    used_fields: &mut SmallVec<[&'a Field; 5]>,
+) -> &'a Json<'a> {
+    let mut last = json;
+    for field in field_options {
+        last = match field {
+            Field::ColValue => cur.map_or(json, |c| c.value),
+            Field::ColValuePath(names) => cur.map_or(json, |c| walk(c.value, names)),
+            _ => resolve_field(json, field),
+        };
+        if !last.is_null() {
+            if matches!(field, Field::Names(_)) {
+                used_fields.push(field);
+            }
+            return last;
+        }
+    }
+    last
 }
 
 /// Index of the `RepEnd` matching the `RepStart` at `start` (nesting-aware).
@@ -342,7 +418,7 @@ fn rest_arg_without_content<'a>(
 }
 
 fn test_cond<'a>(
-    cond: Cond,
+    cond: &Cond,
     args: &[Arg],
     i: usize,
     json: &'a Json<'a>,
@@ -350,7 +426,7 @@ fn test_cond<'a>(
     used_fields: &SmallVec<[&'a Field; 5]>,
 ) -> bool {
     if let Cond::IfConfig(b) = cond {
-        return b;
+        return *b;
     }
 
     let (field_options, _) = &args[i];
@@ -363,14 +439,14 @@ fn test_cond<'a>(
                 .unwrap_or(false),
             Field::ColKey => cur
                 .map(|c| match c.key {
-                    BindKey::Str(s) => cond == Cond::Key || !s.is_empty(),
+                    BindKey::Str(s) => *cond == Cond::Key || !s.is_empty(),
                     BindKey::Index(_) => true,
                 })
                 .unwrap_or(false),
             Field::Rest => {
                 // For `key`, `rest` is the base object and always exists. For
                 // `if`, it's truthy only when there are unused fields left.
-                if cond == Cond::Key {
+                if *cond == Cond::Key {
                     true
                 } else {
                     with_excluded(used_fields, |excluded| json.has_rest_content(excluded))
@@ -399,13 +475,15 @@ fn test_cond<'a>(
     false
 }
 
-fn test_cond2(cond: Cond, json: &Json<'_>) -> bool {
+fn test_cond2(cond: &Cond, json: &Json<'_>) -> bool {
     if json.is_null() {
         return false;
     }
 
     match cond {
         Cond::Key => true,
+        Cond::Cmp(op, rhs) => compare_scalar(json, *op, rhs),
+        Cond::Arm(tests) => match_arm(json, tests),
         Cond::If => {
             if json.is_array() || json.is_object() {
                 !json.is_empty()
@@ -422,8 +500,54 @@ fn test_cond2(cond: Cond, json: &Json<'_>) -> bool {
                 unreachable!("all cases checked")
             }
         }
-        _ => unreachable!("checked above"),
+        Cond::IfConfig(_) => unreachable!("checked above"),
     }
+}
+
+/// Evaluate `field OP literal`. Compares numerically when both sides parse as
+/// numbers, otherwise lexicographically. Objects/arrays never match.
+fn compare_scalar(json: &Json<'_>, op: CmpOp, rhs: &str) -> bool {
+    let Some(lhs) = json.as_str().or_else(|| json.as_value()) else {
+        return false;
+    };
+    let ord = match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
+        (Ok(a), Ok(b)) => a.partial_cmp(&b),
+        _ => Some(lhs.cmp(rhs)),
+    };
+    let Some(ord) = ord else {
+        return false; // NaN — no ordering
+    };
+    match op {
+        CmpOp::Eq => ord == Ordering::Equal,
+        CmpOp::Ne => ord != Ordering::Equal,
+        CmpOp::Gt => ord == Ordering::Greater,
+        CmpOp::Ge => ord != Ordering::Less,
+        CmpOp::Lt => ord == Ordering::Less,
+        CmpOp::Le => ord != Ordering::Greater,
+    }
+}
+
+/// Evaluate a `${match}` arm against the (non-null) subject: the wildcard (empty
+/// list) matches any present value; otherwise any listed test may match.
+fn match_arm(json: &Json<'_>, tests: &[ArmTest]) -> bool {
+    if tests.is_empty() {
+        return true; // `_`: the caller already excluded null subjects
+    }
+    tests.iter().any(|t| match t {
+        ArmTest::Cmp(op, rhs) => compare_scalar(json, *op, rhs),
+        ArmTest::Range {
+            lo,
+            hi,
+            hi_inclusive,
+        } => json
+            .as_str()
+            .or_else(|| json.as_value())
+            .and_then(|s| s.parse::<f64>().ok())
+            .is_some_and(|v| {
+                lo.is_none_or(|lo| v >= lo)
+                    && hi.is_none_or(|hi| if *hi_inclusive { v <= hi } else { v < hi })
+            }),
+    })
 }
 
 fn write_arg<'a>(
@@ -507,14 +631,12 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
         style,
         compact,
         is_json,
-        is_level,
         indent,
         optional: _,
         escape,
         markup_styles: json_styles,
     } = format;
     let indent = *indent;
-    let is_level = *is_level;
     let escape = *escape;
 
     if indent > 0 {
@@ -525,30 +647,7 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
         if escape != Escape::None {
             write_escaped(f, escape, val)?;
         } else if let Some(style) = style {
-            if is_level {
-                match val {
-                    "TRACE" | "trace" => write!(
-                        f,
-                        "{}",
-                        val.style((*style).color(AnsiColors::Cyan).dimmed())
-                    )?,
-                    "DEBUG" | "debug" => {
-                        write!(f, "{}", val.style((*style).color(AnsiColors::Green)))?
-                    }
-                    "INFO" | "info" => {
-                        write!(f, " {}", val.style((*style).color(AnsiColors::Cyan)))?
-                    }
-                    "WARN" | "warn" => {
-                        write!(f, " {}", val.style((*style).color(AnsiColors::Yellow)))?
-                    }
-                    "ERROR" | "error" => {
-                        write!(f, "{}", val.style((*style).color(AnsiColors::Red)))?
-                    }
-                    _ => write!(f, "{}", val.style(*style))?,
-                }
-            } else {
-                write!(f, "{}", val.style(*style))?;
-            }
+            write!(f, "{}", val.style(*style))?;
         } else {
             write!(f, "{}", val)?;
         }
@@ -844,3 +943,4 @@ impl<W: fmt::Write> Write2 for Trimmer<'_, W> {
         Ok(())
     }
 }
+

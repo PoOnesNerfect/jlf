@@ -23,9 +23,18 @@ body = "${@timestamp} ${@level} ${@message} ${@data}"
 field = "timestamp"
 style = "dimmed"
 
+# `level` colors the value by its severity via $match: the subject
+# (lvl|level|severity) is bound to $value, and the first matching arm renders.
+# A missing level matches no arm (not even $else), so it collapses to nothing.
 [recipe.level]
-field = "lvl|level|severity"
-style = "level"
+body = '''$match(lvl|level|severity
+  $when("ERROR"|"error" => ${value:fg=red})
+  $when("WARN"|"warn"   => ${value:fg=yellow})
+  $when("INFO"|"info"   => ${value:fg=cyan})
+  $when("DEBUG"|"debug" => ${value:fg=green})
+  $when("TRACE"|"trace" => ${value:fg=cyan,dimmed})
+  $else(${value})
+)'''
 
 [recipe.message]
 field = "message|msg|body|fields.message"
