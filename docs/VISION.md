@@ -6,7 +6,7 @@
 > workspace/plugin split, `jlf-tui`, and the **recipe** model — one `@name`
 > concept for variables, saved commands, and output formats (what this doc calls
 > "presets" and format flags). Output formats (`csv`/`tsv`/`md` and custom
-> formats) are recipes run with `@name`; see `docs/RECIPES.md` for the shipped
+> formats) are recipes run with `@name`; see the README (Recipes and configuration) for the shipped
 > design. This vision doc keeps the original framing and the still-unbuilt parts.
 
 ## 1. Summary
@@ -199,14 +199,16 @@ language; everything else (filters, summaries, output formats) sits around them.
 | ----- | ------- |
 | `$field`, `${a.b.c}` | a field, nested by `.` |
 | `${a|b|c}` | first present wins (fallback) |
-| `${field:mod}` | a modifier — styling (`:dimmed`, `:red`, `:level`) or escaping (`:csv`, `:html`) |
+| `${field:mod}` | a modifier — styling (`:dimmed`, `:red`) or escaping (`:csv`, `:html`) |
 | `${.}` | the whole record |
 | `${..}` | the rest: fields not already used |
 | `${ ?field }` | optional field; if empty, one adjacent space collapses |
 | `${ @name }` | include a recipe body |
-| `${if f}…${else}…${/}` | branch on truthiness |
-| `${key f}…${else key g}…${/}` | branch on field presence |
-| `${config flag}…${else}…${/}` | branch on a config/CLI flag such as `compact` |
+| `$if(f => …)$else(…)` | branch on truthiness |
+| `$if(f OP literal => …)` | branch on a comparison (`==` `!=` `>` `>=` `<` `<=`) |
+| `$match(f $when(pat => …) $else(…))` | dispatch on a value; the first matching arm renders |
+| `$key(f => …)$else($key(g => …))` | branch on field presence |
+| `$config(flag => …)$else(…)` | branch on a config/CLI flag such as `compact` |
 | `$( body )"join"*` | repeat over the current record's top-level fields |
 | `$path( body )"join"*` | repeat over an object or array at `path` |
 | `$cols( body )"join"*` | repeat over CLI-selected columns |
@@ -216,19 +218,38 @@ language; everything else (filters, summaries, output formats) sits around them.
 space, so common log layouts do not need per-field conditional blocks:
 
 ```sh
-jlf '${ ?timestamp:dimmed } ${ ?level|lvl|severity:level } ${ ?message } ${ ?..:json }'
+jlf '${ ?timestamp:dimmed } ${@level} ${ ?message } ${ ?..:json }'
 ```
+
+`$match( … )` is value dispatch inside a template. It is part of the `$name( … )`
+self-closing block family, like `$path( … )`, `$cols( … )`, and `$path?( … )`,
+so it needs no end directive. Arms use `$when( PATTERN => BODY )`, splitting
+on the first top-level `=>` outside quotes, with `$else( BODY )` as the default
+for present values. Patterns can use literal equality, comparisons, numeric
+ranges, or alternation; a missing subject matches no arm and renders nothing.
+
+Conditionals use the same self-closing family. `$if(COND => …)` is a truthy test:
+empty strings, empty arrays/objects, `null`, missing fields, and `0` are false.
+It is a comparison when `COND` contains `==`, `!=`, `>`, `>=`, `<`, or `<=`.
+Comparisons are numeric when both sides parse as numbers, otherwise text; quote
+string literals. A missing or non-scalar field never matches a comparison.
+`$key(FIELD => …)` tests field existence, including present-but-falsey values.
+`$config(FLAG => …)` branches on `compact`, `no_color`, or `strict`. Branches
+chain by adjacency with `$elif(… => …)` and `$else(…)`; nest `$key` inside
+`$else(…)` when a later branch needs an existence test. One space after `=>` is
+dropped as syntax, an all-whitespace body is kept as intentional output, and
+decorative line breaks and indentation at the edges of a real body are dropped.
 
 Recipes store a layout once and let you override one piece; the default output is
 `@output`:
 
 ```toml
 [recipe.output]
-body = "${@timestamp} ${@level} ${@message}\n${@data}"
+body = "${@timestamp}${@level}${@message}$config(compact =>  )$else(\n)${@data}"
 ```
 
 To recolor levels, redefine the relevant recipe (or pass `-v level=…`); nothing
-else changes. Optional collapse covers the common case, and `${key f}…${/}`
+else changes. Optional collapse covers the common case, and `$key(f => …)`
 remains for blocks that need exact control.
 
 ### Filter — `key=value`
@@ -720,7 +741,7 @@ Grammar and templates:
 - **Collapse optional empty fields, simplify the default recipes.** Keep named,
   reusable fragments via recipes and include directives, but make an optional
   empty field swallow one adjacent space so the default is a few plainly named
-  recipes instead of many `name`/`name_fmt` twins. `${key f}…${/}` stays for exact
+  recipes instead of many `name`/`name_fmt` twins. `$key(f => …)` stays for exact
   control.
 - **Rework `expand` / `list`** into one inspection surface (`--list-fields`, an
   `explain` that prints the resolved command/format).
