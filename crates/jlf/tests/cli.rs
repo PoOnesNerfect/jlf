@@ -190,25 +190,27 @@ const COND: &str = "{\"message\":\"hi\",\"body\":\"\",\"data\":{\"count\":0}}\n"
 fn if_or_list_is_true_when_any_field_is_truthy() {
     // `body` (empty) and `data.count` (0) are present-but-falsey and must not
     // short-circuit the OR before reaching the truthy `message`.
-    let (out, _) = run(&["${if body|data.count|message}yes${else}no${/}"], COND);
+    let (out, _) = run(&["$if(body|data.count|message => yes)$else(no)"], COND);
     assert_eq!(out, "yes\n");
 }
 
 #[test]
 fn if_single_falsey_field_is_false() {
-    assert_eq!(run(&["${if body}yes${else}no${/}"], COND).0, "no\n");
-    assert_eq!(run(&["${if data.count}yes${else}no${/}"], COND).0, "no\n");
+    assert_eq!(run(&["$if(body => yes)$else(no)"], COND).0, "no\n");
+    assert_eq!(run(&["$if(data.count => yes)$else(no)"], COND).0, "no\n");
 }
 
 #[test]
 fn key_is_true_for_present_but_falsey_field() {
-    // `#key` checks existence, so an empty string still counts.
-    assert_eq!(run(&["${key body}has${else}missing${/}"], COND).0, "has\n");
+    // `$key` checks existence, so an empty string still counts.
+    assert_eq!(run(&["$key(body => has)$else(missing)"], COND).0, "has\n");
 }
 
 #[test]
-fn key_or_list_falls_through_to_first_present() {
-    assert_eq!(run(&["${key msg}m${else key message}message${/}"], COND).0, "message\n");
+fn key_falls_through_to_nested_key() {
+    // `$key(msg …)` is false (absent); the else nests another `$key` on message.
+    let out = run(&["$key(msg => m)$else($key(message => message)$else(none))"], COND).0;
+    assert_eq!(out, "message\n");
 }
 
 /// `${?field}` collapses one adjacent space when the field is empty/absent, but
@@ -519,9 +521,28 @@ mod recipes_config {
 
     #[test]
     fn named_field_recipe_inlines_and_filters() {
-        let cfg = "[recipe.level]\nfield = \"lvl|level|severity\"\nstyle = \"level\"\n";
-        // inline ${@level}
-        assert_eq!(run_in_cfg(cfg, &["${@level} ${message}"], LOGS), "info a\nerror b <c>\n");
+        let cfg = "[recipe.host]\nfield = \"host|hostname\"\nstyle = \"dimmed\"\n";
+        // ${@host} is optional-by-default, so an absent host collapses its space
+        assert_eq!(run_in_cfg(cfg, &["${@host} ${message}"], LOGS), "a\nb <c>\n");
+    }
+
+    /// A `field` recipe (`@name`) resolves in template, filter, and summary
+    /// positions — including its `|` fallback chain.
+    #[test]
+    fn named_field_recipe_works_in_all_positions() {
+        let cfg = "[recipe.lat]\nfield = \"latency_ms|duration\"\n";
+        let logs = concat!(
+            "{\"latency_ms\":42,\"message\":\"fast\"}\n",
+            "{\"duration\":800,\"message\":\"slow\"}\n",
+        );
+        // template
+        assert_eq!(run_in_cfg(cfg, &["${@lat}ms ${message}"], logs), "42ms fast\n800ms slow\n");
+        // filter: @lat>500 keeps the slow one (via the duration fallback)
+        assert_eq!(run_in_cfg(cfg, &["@lat>500", "-c"], logs), "slow {\"duration\":800}\n");
+        // summary: count breaks down by the resolved value
+        let out = run_in_cfg(cfg, &["count", "@lat"], logs);
+        assert!(out.contains("42"), "got:\n{out}");
+        assert!(out.contains("800"), "got:\n{out}");
     }
 
     #[test]
@@ -561,7 +582,7 @@ mod recipes_optional_include {
     #[test]
     fn optional_include_renders_when_present() {
         let out = run(
-            &["-v", "lvl=${lvl|level:level}", "-v", "o=${?@lvl}${msg}", "${@o}"],
+            &["-v", "lvl=${lvl|level:dimmed}", "-v", "o=${?@lvl}${msg}", "${@o}"],
             "{\"level\":\"INFO\",\"msg\":\"hi\"}\n",
         )
         .0;
@@ -571,11 +592,43 @@ mod recipes_optional_include {
     #[test]
     fn optional_include_collapses_when_absent() {
         let out = run(
-            &["-v", "lvl=${lvl|level:level}", "-v", "o=${?@lvl} ${msg}", "${@o}"],
+            &["-v", "lvl=${lvl|level:dimmed}", "-v", "o=${?@lvl} ${msg}", "${@o}"],
             "{\"msg\":\"hi\"}\n",
         )
         .0;
         assert_eq!(out, "hi\n");
+    }
+}
+
+/// A positional template that carries `$`-interpolation but no `{` — `$( … )`,
+/// `$field`, `$match( … )` — is recognized as the template (not a filter/column).
+mod positional_dollar_template {
+    use super::run;
+
+    #[test]
+    fn dollar_match_arg_is_template() {
+        let (out, code) = run(
+            &["$match(status $when(>=500 => 5xx) $else(ok))"],
+            "{\"status\":200}\n{\"status\":503}\n",
+        );
+        assert_eq!(code, 0);
+        assert_eq!(out, "ok\n5xx\n");
+    }
+
+    #[test]
+    fn dollar_rep_arg_is_template() {
+        let (out, _) = run(&["$( $key=$value )\" \"*"], "{\"a\":\"1\",\"b\":\"2\"}\n");
+        assert_eq!(out, "a=1 b=2\n");
+    }
+
+    #[test]
+    fn table_format_without_columns_errors() {
+        // `@csv` with no column list used to print blank rows; now it errors.
+        let (out, code) = run(&["@csv"], "{\"a\":1,\"b\":2}\n");
+        assert_eq!(code, 2);
+        assert_eq!(out, ""); // message goes to stderr (suppressed by the harness)
+        // with columns it works
+        assert_eq!(run(&["@csv", "a,b"], "{\"a\":1,\"b\":2}\n").0, "a,b\n1,2\n");
     }
 }
 
@@ -596,7 +649,6 @@ mod undefined_variable {
         assert_eq!(code, 0);
     }
 }
-
 /// Recipe `[recipe.X.compact]` overrides trigger from any source of `compact` —
 /// the CLI flag, config, or a preset that sets it (review fix).
 mod recipe_override_sources {

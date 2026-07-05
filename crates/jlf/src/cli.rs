@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 use clap::{Parser, Subcommand};
@@ -142,12 +143,14 @@ pub fn run() -> Result<(), color_eyre::Report> {
     let mut columns: Vec<String> = Vec::new();
     let mut preset_name = preset;
     for a in args {
-        if let Some(name) = a.strip_prefix('@').filter(|n| !n.is_empty()) {
-            preset_name.get_or_insert_with(|| name.to_owned());
-        } else if a.contains('{') {
+        if is_template_arg(&a) {
             format = Some(a);
         } else if jlf_core::Filter::parse(&a).is_some() {
+            // a token with an operator is a filter — including `@alias>500`,
+            // whose `@alias` key is expanded once the config is loaded.
             filter_strs.push(a);
+        } else if let Some(name) = a.strip_prefix('@').filter(|n| !n.is_empty()) {
+            preset_name.get_or_insert_with(|| name.to_owned());
         } else if a.contains(',') {
             fields = a.split(',').map(str::to_owned).collect();
         } else {
@@ -182,8 +185,16 @@ pub fn run() -> Result<(), color_eyre::Report> {
         variables: config_variables,
         formats,
         presets,
+        field_aliases,
         ..
     } = cfg;
+
+    // Expand `@alias` field recipes used in filter/summary positions to their
+    // accessor (e.g. `@latency` -> `latency_ms|duration|elapsed`), so a named
+    // field works in filters and summaries as well as in templates.
+    for t in &mut filter_strs {
+        *t = expand_field_alias(t, &field_aliases);
+    }
 
     let mut compact = compact;
     let mut redact = redact;
@@ -268,6 +279,16 @@ pub fn run() -> Result<(), color_eyre::Report> {
     let mut escape = jlf_core::Escape::None;
     if let Some(name) = &format_name {
         if let Some(def) = formats.get(name) {
+            // A `$cols(...)` table needs a column list; without one every row is
+            // empty. Fail loudly instead of printing blank lines.
+            if def.body.contains("$cols(") && column_fields.is_empty() {
+                eprintln!(
+                    "jlf: the `{name}` table format needs columns — pass them as \
+                     `jlf @{name} col1,col2` or `-f col1,col2` \
+                     (e.g. `@{name} timestamp,level,fields.status`)"
+                );
+                std::process::exit(2);
+            }
             if let Some(e) = def.escape.as_deref() {
                 escape = jlf_core::Escape::from_name(e).unwrap_or_else(|| {
                     eprintln!("jlf: unknown escape `{e}` (expected none/html/csv/tsv/md)");
@@ -327,19 +348,23 @@ pub fn run() -> Result<(), color_eyre::Report> {
             }
             // Preset filters (if any) apply to an explicit summary subcommand too.
             // A `@name` token in args or the global `--format` selects a table.
-            Command::Count { mut args } => {
+            Command::Count { args } => {
+                let mut args = expand_field_aliases(args, &field_aliases);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_count(prepend(&filter_strs, args), mode, &input);
             }
-            Command::Stats { mut args } => {
+            Command::Stats { args } => {
+                let mut args = expand_field_aliases(args, &field_aliases);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_stats(prepend(&filter_strs, args), mode, &input);
             }
-            Command::Top { mut args } => {
+            Command::Top { args } => {
+                let mut args = expand_field_aliases(args, &field_aliases);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_top(prepend(&filter_strs, args), mode, &input);
             }
             Command::Uniq { args } => {
+                let args = expand_field_aliases(args, &field_aliases);
                 return run_uniq(prepend(&filter_strs, args), &input)
             }
         }
@@ -376,6 +401,51 @@ pub fn run() -> Result<(), color_eyre::Report> {
         },
         &input,
     )
+}
+
+/// Whether a bare arg is an output template rather than a filter/field/column.
+/// A template carries `$`-interpolation — `${…}`, `$(…)`, `$$`, or `$name` (incl.
+/// `$match(`, `$cols(`, `$path?(`) — or a literal `{`. Plain `key=value`,
+/// comma-lists, and bare words are left for the other classifiers.
+fn is_template_arg(a: &str) -> bool {
+    let b = a.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'$' {
+            match b.get(i + 1) {
+                Some(b'{' | b'(' | b'$') => return true,
+                Some(&n) if n.is_ascii_alphabetic() || n == b'_' => return true,
+                _ => {}
+            }
+        }
+    }
+    a.contains('{')
+}
+
+/// Expand a `@alias` field recipe used in a filter or summary position into its
+/// accessor: `@latency` -> `latency_ms|duration|elapsed`, and
+/// `@latency>500` -> `latency_ms|duration|elapsed>500`. Non-`@` tokens and
+/// unknown aliases pass through unchanged.
+fn expand_field_alias(token: &str, aliases: &HashMap<String, String>) -> String {
+    let Some(rest) = token.strip_prefix('@') else {
+        return token.to_owned();
+    };
+    const OPS: &[&str] = &["!=", ">=", "<=", "!~", "~", "=", ">", "<"];
+    let split = OPS.iter().filter_map(|op| rest.find(op)).min();
+    let (name, suffix) = match split {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    match aliases.get(name) {
+        Some(accessor) => format!("{accessor}{suffix}"),
+        None => token.to_owned(),
+    }
+}
+
+fn expand_field_aliases(tokens: Vec<String>, aliases: &HashMap<String, String>) -> Vec<String> {
+    tokens
+        .into_iter()
+        .map(|t| expand_field_alias(&t, aliases))
+        .collect()
 }
 
 /// Split a template on a top-level `$rows( … )OP`: the text before it prints
@@ -692,13 +762,13 @@ fn get_variables(
 
 /// `count` subcommand: count matching lines, or a field's value frequencies.
 fn run_count(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Result<(), color_eyre::Report> {
-    let mut field: Option<Vec<String>> = None;
+    let mut field: Option<Vec<Vec<String>>> = None;
     let mut filters = Vec::new();
     for a in args {
         if let Some(f) = jlf_core::Filter::parse(&a) {
             filters.push(f);
         } else {
-            field = Some(a.split('.').map(str::to_owned).collect());
+            field = Some(field_paths(&a));
         }
     }
 
@@ -715,7 +785,7 @@ fn run_count(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Resu
             {
                 total += 1;
                 if let Some(path) = &field {
-                    let key = scalar(resolve(&json, path)).unwrap_or("∅");
+                    let key = scalar(resolve_first(&json, path)).unwrap_or("∅");
                     *by.entry(key.to_owned()).or_insert(0) += 1;
                 }
             }
@@ -772,6 +842,25 @@ fn resolve<'a>(json: &'a Json<'a>, path: &[String]) -> &'a Json<'a> {
     cur
 }
 
+/// Parse a summary field argument into fallback paths: `a.b|c` -> `[[a,b],[c]]`.
+fn field_paths(s: &str) -> Vec<Vec<String>> {
+    s.split('|')
+        .map(|p| p.split('.').map(str::to_owned).collect())
+        .collect()
+}
+
+/// Resolve the first present (non-null) fallback path (for `a|b|c` fields).
+fn resolve_first<'a>(json: &'a Json<'a>, paths: &[Vec<String>]) -> &'a Json<'a> {
+    let mut last = json;
+    for path in paths {
+        last = resolve(json, path);
+        if !last.is_null() {
+            return last;
+        }
+    }
+    last
+}
+
 /// A JSON scalar (string, number, bool) rendered as a borrowed `&str`, if it is
 /// one. Objects, arrays and null yield `None`.
 fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
@@ -780,19 +869,19 @@ fn scalar<'a>(json: &'a Json<'a>) -> Option<&'a str> {
 
 /// `stats <field> [by <group>]`: numeric summary, optionally grouped.
 fn run_stats(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Result<(), color_eyre::Report> {
-    let mut field: Option<Vec<String>> = None;
-    let mut group: Option<Vec<String>> = None;
+    let mut field: Option<Vec<Vec<String>>> = None;
+    let mut group: Option<Vec<Vec<String>>> = None;
     let mut filters = Vec::new();
     let mut it = args.into_iter().peekable();
     while let Some(a) = it.next() {
         if a == "by" {
             if let Some(g) = it.next() {
-                group = Some(g.split('.').map(str::to_owned).collect());
+                group = Some(field_paths(&g));
             }
         } else if let Some(f) = jlf_core::Filter::parse(&a) {
             filters.push(f);
         } else if field.is_none() {
-            field = Some(a.split('.').map(str::to_owned).collect());
+            field = Some(field_paths(&a));
         }
     }
     let Some(field) = field else {
@@ -811,12 +900,12 @@ fn run_stats(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Resu
             if json.parse_replace(&line).is_ok()
                 && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
             {
-                let v = resolve(&json, &field);
+                let v = resolve_first(&json, &field);
                 match scalar(v).and_then(|s| s.parse::<f64>().ok()) {
                     Some(n) => {
                         let key = group
                             .as_ref()
-                            .map(|g| scalar(resolve(&json, g)).unwrap_or("∅").to_owned())
+                            .map(|g| scalar(resolve_first(&json, g)).unwrap_or("∅").to_owned())
                             .unwrap_or_default();
                         groups.entry(key).or_default().add(n);
                     }
@@ -878,7 +967,7 @@ fn fmt2(v: f64) -> String {
 type FieldCounts = (Vec<(String, u64)>, u64, usize);
 
 fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, color_eyre::Report> {
-    let mut field: Option<Vec<String>> = None;
+    let mut field: Option<Vec<Vec<String>>> = None;
     let mut filters = Vec::new();
     let mut n = 10usize;
     for a in args {
@@ -887,7 +976,7 @@ fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, col
         } else if let Ok(parsed) = a.parse::<usize>() {
             n = parsed;
         } else if field.is_none() {
-            field = Some(a.split('.').map(str::to_owned).collect());
+            field = Some(field_paths(&a));
         }
     }
     let mut buf = open_input(input)?;
@@ -902,7 +991,7 @@ fn collect_field(args: Vec<String>, input: &[String]) -> Result<FieldCounts, col
             {
                 total += 1;
                 if let Some(p) = &field {
-                    let v = resolve(&json, p);
+                    let v = resolve_first(&json, p);
                     let k = scalar(v).unwrap_or("∅");
                     *by.entry(k.to_owned()).or_insert(0) += 1;
                 }
