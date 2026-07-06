@@ -1,7 +1,10 @@
 mod builder;
+mod fields;
 mod input;
 mod preview;
+mod sample;
 mod save;
+mod synth;
 mod wizard;
 
 use std::io::IsTerminal;
