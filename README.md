@@ -25,22 +25,27 @@ $ tail -f app.log | jlf
 It works on a growing file or a live pipe, colors on a terminal and stays plain
 when piped, and prints non-JSON lines through untouched — so you can leave it in
 front of any log stream.
+## What you can do
 
-## Highlights
+Each line below is a real command; the sections further down cover them in
+detail.
 
-- **View** — a readable line per record (timestamp, level, message) with the
-  rest as JSON; colored on a terminal, plain when piped.
-- **Filter** — keep records with `key=value` (`jlf level=error`), with numeric,
-  substring, negation, AND/OR, and fallback-field forms.
-- **Summarize** — `count`, `stats` (percentiles), `top`, and `uniq` over any
-  field, optionally grouped.
-- **Export** — CSV / TSV / Markdown tables, and field redaction.
-- **Customize** — a small `$`-based template language for custom layouts and
-  output formats, saved as named **recipes** in a config file.
-- **Interactively** — a full-screen viewer (`jlf-tui`) and a command builder
-  (`jlf-it`).
-- **Fast** — a JSON parser tuned for log lines (~3× faster than
-  `serde_json::Value` on typical logs).
+```sh
+tail -f app.log | jlf              # pretty-print a live stream (the default)
+jlf level=error                    # filter — also >, <, ~, !=, AND/OR, a|b fallback
+jlf count level                    # summarize — count, stats, top, uniq (optionally `by`)
+jlf stats latency_ms               # percentiles: count/min/max/mean/p50/p90/p99
+jlf @csv ts,level,message          # export a CSV / TSV / Markdown table
+jlf -r token,*.email               # redact fields by name
+jlf '$level ${user} ${latency}ms'  # custom layout with the $-template language
+jlf @errors                        # run a saved recipe from your config
+jlf-tui app.log                    # a full-screen viewer, or `jlf-it` to build a command
+```
+
+`jlf` reads JSON lines from stdin or `-i FILE`, colors on a terminal and stays
+plain when piped, and passes non-JSON lines through untouched. Its JSON parser
+is tuned for log lines — roughly 3× faster than `serde_json::Value` on typical
+input.
 
 ## Contents
 
@@ -285,20 +290,25 @@ For example: `/` `level=error` `Enter` to keep errors, then `:top user`, or
 
 ## Command builder (`jlf-it`)
 
-`jlf-it` is an interactive builder (like `npm create`) that assembles a command
-step by step, shows a **live preview** against a sample, then lets you run it,
-save it as a recipe, or both.
+`jlf-it` is an interactive builder that lets you assemble a command and see the
+result update as you go. You pick a mode, then an **edit menu** shows the current
+command and a **live preview** against your sample; each change re-runs `jlf` and
+refreshes the preview, so you can tweak filters, a template, columns, or a
+summary and immediately see the effect.
 
 ```sh
 jlf-it app.log          # build against a file
-cat app.log | jlf-it    # ...or a pipe (drained for the sample)
+head -200 app.log | jlf-it   # ...or a finite pipe (used as the sample)
 jlf-it                  # ...or pick a sample interactively
 ```
 
-It walks through a mode (View / Summarize / Export), filters, and options,
-re-running the real `jlf` on the sample after each step. Saving appends a
-`[recipe.NAME]` block to your `.jlf.toml` (or user config), so it's immediately
-usable with `jlf @NAME`.
+The header lists the record's fields to help you pick, the layout uses the `$`
+template syntax (`$ts $msg`, `${level}`), and when you're happy you can run it,
+or save it as a `[recipe.NAME]` block in your `.jlf.toml` (or user config) to use
+later with `jlf @NAME`.
+
+Give it a finite sample (a file, or `head -N …`), not a live stream — it reads a
+bounded sample and needs a terminal for the prompts.
 
 ## Custom formatting
 
@@ -346,9 +356,19 @@ printf '{"status":200}\n{"status":404}\n{"status":503}\n' \
 ```
 
 - `$if(COND => body)` — truthy, or a comparison with `== != > >= < <=`.
-- `$key(FIELD => body)` — existence (a present-but-falsey `0`/`""` still counts).
+- `$has(FIELD => body)` — existence (a present-but-falsey `0`/`""` still counts).
 - `$config(FLAG => body)` — branch on `compact`/`no_color`/`strict`.
-- `$path?(body)` — the terse "render if truthy" guard.
+
+Everything inside the parens is layout, so a chain can be written across lines in
+a config recipe (whitespace between branches is ignored, and a decorative line
+break at a branch body's edge is dropped — the output stays on one line):
+
+```toml
+[recipe.output]
+out = '''$if(status >= 500 => ${timestamp} DOWN ${status})
+$elif(status >= 400 => ${timestamp} WARN ${status})
+$else(${timestamp} ok ${status})'''
+```
 
 **Match** dispatches on a value, binding the subject to `$value`:
 
@@ -378,8 +398,8 @@ A **recipe** is a named, reusable definition — a layout fragment, a template, 
 saved command, or an output format. It's the one shape that replaces separate
 variables, presets, and formats. Refer to a recipe as `@name`:
 
-- `jlf @name` runs it (filter → summarize/render → `body`).
-- `${@name}` inlines its `body` in another template.
+- `jlf @name` runs it (filter → summarize/render → `out`).
+- `${@name}` inlines its `out` in another template.
 
 Recipes live in a config file: a workspace `.jlf.toml` / `jlf.toml`, or your user
 config at `$XDG_CONFIG_HOME/jlf/config.toml`. Workspace values override user
@@ -388,7 +408,7 @@ values.
 ```toml
 [recipe.errors]                 # a saved command: filter + layout
 filter = "lvl|level|severity=error,fatal"
-body   = "$ts $level $message"
+out    = "$ts $level $message"
 
 [recipe.slow]                   # a summary
 filter = "status>=500"
@@ -398,7 +418,7 @@ format = "md"
 ```
 
 ```sh
-jlf @errors                     # filter to errors/fatals, render with body
+jlf @errors                     # filter to errors/fatals, render with its layout
 jlf @slow                       # grouped latency stats as a Markdown table
 ```
 
@@ -407,17 +427,31 @@ A recipe is a starting point, not a frozen command — explicit args layer on to
 ```sh
 jlf @errors status=500          # add a filter (ANDed with the recipe's)
 jlf @errors level=warn          # override the same-field filter
-jlf @errors '$ts $msg'          # override the body
+jlf @errors '$ts $msg'          # override the layout
 ```
 
-### Named fields — one definition, three uses
+### One key, three shapes
 
-A recipe with a `field` names a value accessor (a fallback chain). Once named, it
-works the same in **templates, filters, and summaries**:
+Every recipe has **one content key, `out`** — what the recipe shows. Its *shape*
+decides how it's used, exactly like an argument you'd type on the CLI:
+
+| `out` looks like | it's a… | example |
+| ---------------- | ------- | ------- |
+| a `$…` template | layout | `out = "$ts $level $message"` |
+| an `a,b,c` list | column set | `out = "timestamp,level,message"` |
+| a single `field[:mods]` | value accessor | `out = "latency_ms|duration:yellow"` |
+
+Only the **single-field** shape is a *value*, so only it becomes an `@name` you
+can filter and summarize on. A template or a column list is display-only.
+
+### A named value — one definition, three uses
+
+When `out` is a single field (a fallback chain), the recipe names a value. Once
+named, it works the same in **templates, filters, and summaries**:
 
 ```toml
 [recipe.latency]
-field = "latency_ms|duration|elapsed"
+out = "latency_ms|duration|elapsed"
 ```
 
 ```sh
@@ -428,7 +462,17 @@ jlf count @latency              # summary: value breakdown
 ```
 
 Each resolves the same `latency_ms|duration|elapsed` chain, picking the first
-present field.
+present field. Add an inline style with `:` — `out = "latency_ms|duration:yellow"`
+— and the accessor (`latency_ms|duration`) still filters and summarizes; the
+`:yellow` only affects how it renders.
+
+A **template or column** recipe is not a value, so using it in a filter or
+summary slot is an error with a hint — filter the underlying field instead:
+
+```sh
+jlf @level=error                # error: `@level` is a display recipe, not a value
+jlf level=error                 # do this — `level` is a real field
+```
 
 ### Recipe keys
 
@@ -436,19 +480,21 @@ All keys are optional; a recipe uses only the ones its role needs.
 
 | key | purpose |
 | --- | ------- |
-| `body` | template; per-record, or whole-stream when it uses `$rows(...)`; `${@other}` inlines another recipe |
-| `field` / `style` | name a value accessor (`a\|b.c`) and how to render it (`fg=cyan`, `dimmed`, `json`) |
-| `fields` | comma list; shorthand for a `$a $b $c` body and the `$cols(...)` columns |
+| `out` | what the recipe shows — a `$…` template, an `a,b,c` column list, or a single `field[:mods]` value accessor (see the table above) |
 | `filter` | records to keep (same operators as CLI filters) |
 | `count` / `stats` / `top` / `uniq` | run a summary over a field; `by` groups, `n` sets top-N |
 | `escape` | default escape for interpolated values (`html`/`csv`/`tsv`/`md`/`none`); also marks the recipe as a format |
 | `redact` / `compact` | mask fields; force compact |
-| `format` | render through another output format recipe |
+| `format` | render through another output format (built-in `csv`/`tsv`/`md`, or a format recipe by name) |
 | `base` | inherit another recipe (`@other`), then override its keys |
+
+A single-field `out` can carry inline render modifiers after a `:` —
+`out = "timestamp:dimmed"`, `out = "latency_ms|duration:fg=cyan,bold"`. The part
+before the `:` is the value accessor; the modifiers only affect how it renders.
 
 ### Output formats are recipes
 
-An output format is a recipe whose `body` frames the stream with `$rows(...)`
+An output format is a recipe whose `out` frames the stream with `$rows(...)`
 (text before it prints once as a header, text after once as a footer) or that
 sets a global `escape`. The built-in `csv`/`tsv`/`md` are seeded this way, and
 custom formats are ordinary recipes:
@@ -456,7 +502,7 @@ custom formats are ordinary recipes:
 ```toml
 [recipe.report]
 escape = "html"
-body = "<ul>\n$rows( <li>${level}: ${msg}</li>\n)*</ul>\n"
+out = "<ul>\n$rows( <li>${level}: ${msg}</li>\n)*</ul>\n"
 ```
 
 ```sh
@@ -464,6 +510,16 @@ printf '{"level":"INFO","msg":"a<b"}\n' | jlf @report
 # -> <ul>
 # -> <li>INFO: a&lt;b</li>
 # -> </ul>
+```
+
+A format defines the *frame*; a report that pairs a format with saved columns
+and a filter is a second recipe that references it:
+
+```toml
+[recipe.errdump]
+format = "report"               # use the frame above
+out    = "timestamp,level,msg"  # its columns
+filter = "level=error"
 ```
 
 ### Conditional overrides
@@ -474,10 +530,10 @@ keeps the JSON inline:
 
 ```toml
 [recipe.output]
-body = "${@timestamp} ${@level} ${@message}\n${@data}"
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-body = "${@timestamp} ${@level} ${@message} ${@data}"
+out = "${@timestamp} ${@level} ${@message} ${@data}"
 ```
 
 ### The default configuration
@@ -492,22 +548,21 @@ compact  = false
 no_color = false
 strict   = false
 
-# `output` joins the field recipes below. Each field recipe is optional by
-# default, so an absent field collapses its space.
+# `output` joins the recipes below. Each is optional by default, so an absent
+# field collapses its space.
 [recipe.output]
-body = "${@timestamp} ${@level} ${@message}\n${@data}"
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-body = "${@timestamp} ${@level} ${@message} ${@data}"
+out = "${@timestamp} ${@level} ${@message} ${@data}"
 
 [recipe.timestamp]
-field = "timestamp"
-style = "dimmed"
+out = "timestamp:dimmed"
 
 # `level` dispatches on lvl|level|severity and colors it by severity; an unknown
 # level renders uncolored, and a missing one renders nothing.
 [recipe.level]
-body = '''$match(lvl|level|severity
+out = '''$match(lvl|level|severity
   $when("ERROR"|"error" => ${value:fg=red})
   $when("WARN"|"warn"   => ${value:fg=yellow})
   $when("INFO"|"info"   => ${value:fg=cyan})
@@ -517,11 +572,10 @@ body = '''$match(lvl|level|severity
 )'''
 
 [recipe.message]
-field = "message|msg|body|fields.message"
+out = "message|msg|body|fields.message"
 
 [recipe.data]
-field = ".."
-style = "json"
+out = "..:json"
 ```
 
 The canonical copy lives at

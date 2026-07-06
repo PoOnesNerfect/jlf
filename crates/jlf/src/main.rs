@@ -16,7 +16,7 @@ fn main() {
                 std::process::exit(0);
             }
         }
-        eprintln!("{e:?}");
+        eprintln!("{e:#}");
     }
 }
 

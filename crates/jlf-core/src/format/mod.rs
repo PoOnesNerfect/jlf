@@ -139,7 +139,7 @@ pub enum RepOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cond {
     If,
-    Key,
+    Has,
     IfConfig(bool),
     /// `$if(field OP literal => …)` — compare the field's scalar value against a
     /// literal. Numeric when both sides parse as numbers, else lexicographic.
@@ -320,9 +320,9 @@ mod dsl_tests {
     }
 
     #[test]
-    fn key_vs_if_and_config() {
-        // `$key` tests existence, `$if` truthiness — so a present `0` differs
-        assert_eq!(render("$key(body => has)$else(no)", &[], r#"{"body":0}"#), "has");
+    fn has_vs_if_and_config() {
+        // `$has` tests existence, `$if` truthiness — so a present `0` differs
+        assert_eq!(render("$has(body => has)$else(no)", &[], r#"{"body":0}"#), "has");
         assert_eq!(render("$if(body => yes)$else(no)", &[], r#"{"body":0}"#), "no");
         // an all-whitespace branch body is kept as an intentional separator
         assert_eq!(render("a$config(compact =>  )$else(\n)b", &[], r#"{}"#), "a\nb");
@@ -407,8 +407,8 @@ mod dsl_tests {
         );
     }
     #[test]
-    fn path_cond_block() {
-        let t = r#"${level}$span.method?( -> ${span.method})"#;
+    fn if_guard_block() {
+        let t = r#"${level}$if(span.method => -> ${span.method})"#;
         assert_eq!(render(t, &[], r#"{"level":"INFO","span":{"method":"GET"}}"#), "INFO-> GET");
         assert_eq!(render(t, &[], r#"{"level":"WARN"}"#), "WARN");
     }
@@ -420,8 +420,8 @@ mod dsl_tests {
             "head\n  a: 1\n  b: 2"
         );
         // a conditional on its own line -> the line renders once, or not at all
-        assert_eq!(render("L\n  $span?(has)", &[], r#"{"span":{"x":1}}"#), "L\n  has");
-        assert_eq!(render("L\n  $span?(has)", &[], r#"{}"#), "L");
+        assert_eq!(render("L\n  $if(span => has)", &[], r#"{"span":{"x":1}}"#), "L\n  has");
+        assert_eq!(render("L\n  $if(span => has)", &[], r#"{}"#), "L");
     }
 }
 

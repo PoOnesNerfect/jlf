@@ -28,9 +28,8 @@ Two families make up the whole language:
    value. Everything inside `${ }` is a hole, never literal text. Literal text
    lives *outside* the braces; use `$$` for a literal `$`.
 2. **Blocks** — the self-closing `$name( … )` forms: repetition (`$( )`,
-   `$path( )`, `$cols( )`, `$rows( )`), the `$path?( )` guard, conditionals
-   (`$if`/`$key`/`$config`), and `$match`. Each closes on its balanced `)` — no
-   end marker.
+   `$path( )`, `$cols( )`, `$rows( )`), conditionals (`$if`/`$has`/`$config`),
+   and `$match`. Each closes on its balanced `)` — no end marker.
 
 The block forms borrow their shape from Rust's `macro_rules!`: `$name`
 interpolates like a metavariable, `$( … )sep*` repeats like macro repetition,
@@ -140,8 +139,8 @@ break them across lines). The body follows `=>`.
 - `$if(X OP literal => body)` — **comparison**. `OP` is `==`, `!=`, `>`, `>=`,
   `<`, `<=`. Both sides compare numerically when they parse as numbers, otherwise
   as text; quote a string literal. A missing/non-scalar field never matches.
-- `$key(FIELD => body)` — **existence** test. Unlike `$if`, a present-but-falsey
-  value (`0`, `""`, `false`) still counts because the key exists.
+- `$has(FIELD => body)` — **existence** test. Unlike `$if`, a present-but-falsey
+  value (`0`, `""`, `false`) still counts because the field is there.
 - `$config(FLAG => body)` — branch on a config/CLI flag: `compact`, `no_color`,
   or `strict`.
 - `$elif(COND => body)` and `$else(body)` continue a chain; `$else` is terminal.
@@ -154,32 +153,42 @@ printf '{"status":200}\n{"status":404}\n{"status":503}\n' \
 # -> down
 ```
 
-`$key` vs `$if` — the difference shows on a present-but-falsey value:
+`$has` vs `$if` — the difference shows on a present-but-falsey value:
 
 ```sh
-echo '{"body":0}' | jlf '$key(body => body=$body)$else(none)'
+echo '{"body":0}' | jlf '$has(body => body=$body)$else(none)'
 # -> body=0
 echo '{"body":0}' | jlf '$if(body => yes)$else(no)'
 # -> no
 ```
 
-`$path?( body )` is the terse shorthand for a truthy guard — it renders the body
-only when `path` is truthy (equivalent to `$if(path => body)` with no else):
+To render a fragment only when a field is present or truthy, use `$has`
+(existence) or `$if` (truthy) with no else:
 
 ```sh
-printf '{"span":{"m":"GET"}}\n{"x":1}\n' | jlf 'L$span.m?( m=${span.m})'
+printf '{"span":{"m":"GET"}}\n{"x":1}\n' | jlf 'L$if(span.m => m=${span.m})'
 # -> Lm=GET
 # -> L
 ```
 
-There is no `$elif`-key or `$elif`-config; nest instead, e.g.
-`$else($key(x => …)$else(…))`.
+There is no `$elif`-has or `$elif`-config; nest instead, e.g.
+`$else($has(x => …)$else(…))`.
 
 Whitespace note: one space right after `=>` is a syntactic separator and is
 dropped. An all-whitespace body (like `$else(\n)` or `$config(compact =>  )` with
 two spaces) is kept as an intentional separator. Decorative line breaks and
 indentation at the edges of a real body are dropped, so an arm can be written
 across lines while its output stays on one line.
+
+Because of that, a chain reads well multiline in a config recipe — each branch
+on its own line, whitespace between them ignored:
+
+```toml
+[recipe.output]
+out = '''$if(status >= 500 => ${timestamp} DOWN ${status})
+$elif(status >= 400 => ${timestamp} WARN ${status})
+$else(${timestamp} ok ${status})'''
+```
 
 ## Match
 
@@ -220,7 +229,7 @@ As a reusable recipe (color HTTP status by class), referenced with `${@status}`:
 
 ```toml
 [recipe.status]
-body = '''$match(fields.status
+out = '''$match(fields.status
   $when(>=500 => ${value:fg=red,bold})
   $when(>=400 => ${value:fg=yellow,bold})
   $else(${value:fg=green,bold})
@@ -283,18 +292,18 @@ by a newline automatically, so a per-row body needs no trailing `\n`.
 
 Two conveniences for readable multiline bodies:
 
-- A repetition (or `$path?( )`) on its own indented line absorbs the preceding
-  line break, so the body renders on a fresh line per item.
+- A repetition (or a conditional block) on its own indented line absorbs the
+  preceding line break, so the body renders on a fresh line per item.
 - A field already shown via `${base.key}` is skipped by a later `$base( … )`
   (like `${..}`), so you can pull one field up and flatten the rest without
   duplication.
 
 ## Includes
 
-`${@name}` inlines another recipe's `body`. A recipe defined with `field`/`fields`
-is **optional by default** — an absent field collapses one adjacent space — so
-you write `${@name}`, not `${?@name}`. The explicit `${?@name}` optionalizes a
-`body` recipe.
+`${@name}` inlines another recipe's `out`. A recipe whose `out` is a single field
+or a column list is **optional by default** — an absent field collapses one
+adjacent space — so you write `${@name}`, not `${?@name}`. The explicit
+`${?@name}` optionalizes a template recipe.
 
 ```sh
 printf '{"timestamp":"t","level":"INFO","message":"hi"}\n' \
@@ -306,19 +315,19 @@ Inspect recipes with `jlf list` and expand one with `jlf expand NAME`.
 
 ## Output formats
 
-An output format is just a recipe whose body frames the stream with `$rows(...)`
+An output format is just a recipe whose `out` frames the stream with `$rows(...)`
 (or that sets a global `escape`). The built-ins `csv`, `tsv`, and `md` are seeded
 from these definitions:
 
 ```toml
 [recipe.csv]
-body = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+out = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
 
 [recipe.tsv]
-body = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+out = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
 
 [recipe.md]
-body = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+out = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
 ```
 
 Run them by name with a column list:
@@ -341,7 +350,7 @@ each value:
 ```toml
 [recipe.report]
 escape = "html"
-body = "<ul>\n$rows( <li>${level}: ${msg}</li>\n)*</ul>\n"
+out = "<ul>\n$rows( <li>${level}: ${msg}</li>\n)*</ul>\n"
 ```
 
 ```sh
@@ -355,19 +364,18 @@ printf '{"level":"INFO","msg":"a<b"}\n{"level":"ERR","msg":"boom"}\n' | jlf @rep
 ## The default recipes
 
 jlf ships five recipes that make up the default view. `@output` is the entry
-point; it includes the others. Each field recipe is optional by default, so an
-absent field collapses.
+point; it includes the others. Each is optional by default, so an absent field
+collapses.
 
 ```toml
 [recipe.output]
-body = "${@timestamp} ${@level} ${@message}\n${@data}"
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.timestamp]
-field = "timestamp"
-style = "dimmed"
+out = "timestamp:dimmed"
 
 [recipe.level]
-body = '''$match(lvl|level|severity
+out = '''$match(lvl|level|severity
   $when("ERROR"|"error" => ${value:fg=red})
   $when("WARN"|"warn"   => ${value:fg=yellow})
   $when("INFO"|"info"   => ${value:fg=cyan})
@@ -377,11 +385,10 @@ body = '''$match(lvl|level|severity
 )'''
 
 [recipe.message]
-field = "message|msg|body|fields.message"
+out = "message|msg|body|fields.message"
 
 [recipe.data]
-field = ".."
-style = "json"
+out = "..:json"
 ```
 
 | recipe | what it does |
@@ -425,9 +432,8 @@ separator inline: `${@timestamp}${@level}${@message}$config(compact =>  )$else(\
 | `${?field}` | optional; if empty, one adjacent space collapses |
 | `$if(COND => …)` | truthy, or comparison when `COND` has `== != > >= < <=` |
 | `$elif(COND => …)` / `$else(…)` | continue a condition chain (adjacency) |
-| `$key(FIELD => …)` | existence test (present-but-falsey counts) |
+| `$has(FIELD => …)` | existence test (present-but-falsey counts) |
 | `$config(FLAG => …)` | branch on `compact` / `no_color` / `strict` |
-| `$path?( … )` | truthy guard shorthand |
 | `$match(subj $when(pat => …) $else(…))` | value dispatch; binds `$value`; first arm wins |
 | `$( … )"sep"*` | repeat over the record's top-level fields |
 | `$path( … )"sep"*` | repeat over an object/array at `path` |

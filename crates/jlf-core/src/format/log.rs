@@ -439,14 +439,14 @@ fn test_cond<'a>(
                 .unwrap_or(false),
             Field::ColKey => cur
                 .map(|c| match c.key {
-                    BindKey::Str(s) => *cond == Cond::Key || !s.is_empty(),
+                    BindKey::Str(s) => *cond == Cond::Has || !s.is_empty(),
                     BindKey::Index(_) => true,
                 })
                 .unwrap_or(false),
             Field::Rest => {
                 // For `key`, `rest` is the base object and always exists. For
                 // `if`, it's truthy only when there are unused fields left.
-                if *cond == Cond::Key {
+                if *cond == Cond::Has {
                     true
                 } else {
                     with_excluded(used_fields, |excluded| json.has_rest_content(excluded))
@@ -481,7 +481,7 @@ fn test_cond2(cond: &Cond, json: &Json<'_>) -> bool {
     }
 
     match cond {
-        Cond::Key => true,
+        Cond::Has => true,
         Cond::Cmp(op, rhs) => compare_scalar(json, *op, rhs),
         Cond::Arm(tests) => match_arm(json, tests),
         Cond::If => {

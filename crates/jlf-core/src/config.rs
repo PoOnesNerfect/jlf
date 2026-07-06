@@ -7,8 +7,7 @@ use serde::Deserialize;
 pub fn get_config() -> color_eyre::Result<ConfigFile> {
     let config_file = config_dir().join("config.toml");
     let mut config = if config_file.exists() {
-        let config_raw = fs::read_to_string(config_file)?;
-        toml::from_str(&config_raw)?
+        parse_config_file(&config_file)?
     } else {
         ConfigFile::default()
     };
@@ -17,11 +16,9 @@ pub fn get_config() -> color_eyre::Result<ConfigFile> {
     let ws_config_file1 = ws_dir.join("jlf.toml");
     let ws_config_file2 = ws_dir.join(".jlf.toml");
     let ws_config = if ws_config_file1.exists() {
-        let config_raw = fs::read_to_string(ws_config_file1)?;
-        Some(toml::from_str(&config_raw)?)
+        Some(parse_config_file(&ws_config_file1)?)
     } else if ws_config_file2.exists() {
-        let config_raw = fs::read_to_string(ws_config_file2)?;
-        Some(toml::from_str(&config_raw)?)
+        Some(parse_config_file(&ws_config_file2)?)
     } else {
         None
     };
@@ -33,20 +30,49 @@ pub fn get_config() -> color_eyre::Result<ConfigFile> {
     Ok(config)
 }
 
+/// Read and parse one config file, turning a TOML error into a message that
+/// names the file and points at the exact offending span (the `toml` crate
+/// renders a `line | … | ^^^` caret under the error).
+fn parse_config_file(path: &std::path::Path) -> color_eyre::Result<ConfigFile> {
+    let raw = fs::read_to_string(path)
+        .map_err(|e| color_eyre::eyre::eyre!("failed to read config `{}`: {e}", path.display()))?;
+    toml::from_str(&raw).map_err(|e| {
+        color_eyre::eyre::eyre!("invalid config `{}`:\n\n{e}", path.display())
+    })
+}
+
+/// How a recipe's `out` string is interpreted, decided purely by its shape.
+enum Content<'a> {
+    /// A `$`-DSL template, verbatim literal text, or a whitespace-only string
+    /// (e.g. a `"\n"` separator). Rendered as-is — whitespace can be meaningful.
+    Template(&'a str),
+    /// A single `field[:mods]` value accessor — the only shape usable as a
+    /// value (`@name` in filters/summaries).
+    Field { path: &'a str, mods: Option<&'a str> },
+    /// An `a,b,c` list of columns (a table / view projection).
+    Columns(Vec<&'a str>),
+}
+
+/// Whether `s` looks like a value accessor path — a fallback chain of dotted
+/// field names (`latency_ms|duration|elapsed`, `fields.message`, `..`). Anything
+/// with other characters (spaces, brackets, `/`) is treated as literal text.
+fn is_field_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'|' | b'-'))
+}
+
 /// A unified recipe: one named, reusable definition that can act as a template
 /// fragment (`{@name}`), a saved command (`@name` / `-p`), a named field, or a
 /// custom output format. See the README (Recipes and configuration). Recipes translate down to the
 /// existing variable/preset/format machinery.
 #[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Recipe {
-    /// Per-record layout (a template string).
-    pub body: Option<String>,
-    /// Shorthand for a `{a} {b} {c}` body.
-    pub fields: Option<String>,
-    /// Value accessor — makes the recipe usable as a value (`{@name}`, filters).
-    pub field: Option<String>,
-    /// Render modifier(s) for `field` (e.g. `level`, `dimmed`, `json`).
-    pub style: Option<String>,
+    /// The one content key: what the recipe shows, decided by shape — a `$…`
+    /// template, an `a,b,c` column list, or a single `field[:mods]` value
+    /// accessor.
+    pub out: Option<String>,
     /// Records to keep (`key=value`, space-separated).
     pub filter: Option<String>,
     pub redact: Option<String>,
@@ -61,36 +87,108 @@ pub struct Recipe {
     pub n: Option<usize>,
     /// Inherit another recipe (`@other` or `other`), then override its keys.
     pub base: Option<String>,
-    /// Conditional overrides from `[recipe.NAME.<cond>]` sub-tables: when the
-    /// condition holds (a config flag like `compact`), these keys override.
-    #[serde(flatten, default)]
-    pub overrides: HashMap<String, Recipe>,
+    /// Conditional overrides from `[recipe.NAME.<flag>]` sub-tables: when the
+    /// flag holds, these keys override. Only the three CLI/config flags exist.
+    #[serde(default)]
+    pub compact: Option<Box<Recipe>>,
+    #[serde(default)]
+    pub no_color: Option<Box<Recipe>>,
+    #[serde(default)]
+    pub strict: Option<Box<Recipe>>,
 }
 
 impl Recipe {
-    /// The string used when this recipe is inlined (`${@name}`) or used as a
-    /// render template: `body`, else `${?field[:style]}`, else a `${?a} ${?b}`
-    /// from `fields`, else empty. A `field`/`fields` recipe is optional by
-    /// default, so an absent field collapses its space when included — you write
-    /// `${@name}`, not `${?@name}`.
-    fn inline_body(&self) -> Option<String> {
-        if let Some(body) = &self.body {
-            Some(body.clone())
-        } else if let Some(field) = &self.field {
-            Some(match &self.style {
-                Some(style) => format!("${{?{field}:{style}}}"),
-                None => format!("${{?{field}}}"),
-            })
-        } else if let Some(fields) = &self.fields {
-            Some(
-                fields
+    /// Classify `out` by shape. A `$` (or a whitespace-only string) is a
+    /// template used verbatim; a top-level `:` before any comma is a single
+    /// styled field; a top-level comma is a column list; a bare field-path is a
+    /// value accessor; anything else (literal text) is a template rendered
+    /// as-is.
+    fn content(&self) -> Option<Content<'_>> {
+        let raw = self.out.as_deref()?;
+        let trimmed = raw.trim();
+        if raw.contains('$') || trimmed.is_empty() {
+            return Some(Content::Template(raw));
+        }
+        let colon = trimmed.find(':');
+        let comma = trimmed.find(',');
+        Some(match (colon, comma) {
+            // `:` before any comma -> a single field with (comma-separated) mods,
+            // as long as the part before the `:` is a field path (else literal).
+            (Some(c), maybe) if maybe.is_none_or(|m| c < m) && is_field_path(trimmed[..c].trim()) => {
+                Content::Field {
+                    path: trimmed[..c].trim(),
+                    mods: Some(trimmed[c + 1..].trim()),
+                }
+            }
+            // a top-level comma -> a plain column list.
+            (_, Some(_)) => Content::Columns(
+                trimmed
                     .split(',')
-                    .map(|f| format!("${{?{}}}", f.trim()))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-        } else {
-            None
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ),
+            // a bare field path -> a value accessor; any other literal string is
+            // a verbatim template.
+            _ if is_field_path(trimmed) => Content::Field {
+                path: trimmed,
+                mods: None,
+            },
+            _ => Content::Template(raw),
+        })
+    }
+
+    /// The string used when this recipe is inlined (`${@name}`): a template
+    /// verbatim, else an optional `${?field[:mods]}`, else a `${?a} ${?b}` from
+    /// the columns. Optional by default, so an absent field collapses its space —
+    /// you write `${@name}`, not `${?@name}`.
+    fn inline_body(&self) -> Option<String> {
+        Some(match self.content()? {
+            Content::Template(t) => t.to_owned(),
+            Content::Field { path, mods } => match mods {
+                Some(m) => format!("${{?{path}:{m}}}"),
+                None => format!("${{?{path}}}"),
+            },
+            Content::Columns(cols) => cols
+                .iter()
+                .map(|c| format!("${{?{c}}}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+    }
+
+    /// The value accessor for `@name` in filter/summary positions. Only a
+    /// single-field `out` is a value; templates and column lists are not.
+    fn accessor(&self) -> Option<String> {
+        match self.content()? {
+            Content::Field { path, .. } => Some(path.to_owned()),
+            _ => None,
+        }
+    }
+
+    /// The template used when the recipe is run as a preset (`@name`),
+    /// non-optional so a bare value still renders. A format renders through its
+    /// own format map and a column list drives `$cols`/tables, so both are
+    /// `None` here (the columns travel via [`Self::preset_columns`]).
+    fn preset_template(&self) -> Option<String> {
+        if self.is_format() {
+            return None;
+        }
+        match self.content()? {
+            Content::Template(t) => Some(t.to_owned()),
+            Content::Field { path, mods } => Some(match mods {
+                Some(m) => format!("${{{path}:{m}}}"),
+                None => format!("${{{path}}}"),
+            }),
+            Content::Columns(_) => None,
+        }
+    }
+
+    /// The `a,b,c` columns a preset selects, when `out` is a column list.
+    fn preset_columns(&self) -> Option<String> {
+        match self.content()? {
+            Content::Columns(cols) => Some(cols.join(",")),
+            _ => None,
         }
     }
 
@@ -100,16 +198,26 @@ impl Recipe {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(body, fields, field, style, filter, redact, format,
+        take!(out, filter, redact, format,
               escape, count, stats, top, uniq, by, n, base);
     }
 
+    /// The conditional override sub-recipe for an active flag, if present.
+    fn override_for(&self, flag: &str) -> Option<&Recipe> {
+        match flag {
+            "compact" => self.compact.as_deref(),
+            "no_color" => self.no_color.as_deref(),
+            "strict" => self.strict.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Does this recipe describe a custom output format — one with a global
-    /// `escape`, or a `body` that emits its own frame/table via `$rows(`/`$cols(`?
+    /// `escape`, or an `out` that emits its own frame/table via `$rows(`/`$cols(`?
     fn is_format(&self) -> bool {
         self.escape.is_some()
             || self
-                .body
+                .out
                 .as_deref()
                 .is_some_and(|b| b.contains("$rows(") || b.contains("$cols("))
     }
@@ -122,7 +230,7 @@ pub struct ConfigFile {
     #[serde(default, deserialize_with = "de_map_to_list")]
     pub variables: Option<Vec<(String, String)>>,
     /// Output formats: the built-ins `csv`/`tsv`/`md` plus any `[recipe.*]` with
-    /// a `header`/`footer`/`escape`. Rendered as header + per-record body + footer.
+    /// an `escape` or an `out` that frames its own table via `$rows(`/`$cols(`.
     #[serde(default, rename = "format")]
     pub formats: HashMap<String, FormatDef>,
     /// Saved argument bundles from `[preset.NAME]` tables.
@@ -393,7 +501,7 @@ impl ConfigFile {
         }
         resolved.overlay(raw);
         for cond in active {
-            if let Some(ov) = raw.overrides.get(*cond) {
+            if let Some(ov) = raw.override_for(cond) {
                 resolved.overlay(ov);
             }
         }
@@ -404,10 +512,10 @@ impl ConfigFile {
     /// Register a resolved recipe as a variable (inline), a preset (run), and/or
     /// a custom output format (header/body/footer).
     fn install_recipe(&mut self, name: &str, r: &Recipe) {
-        // A `field` recipe is a named value accessor, usable as `@name` in filter
-        // and summary positions as well as `${@name}` in templates.
-        if let Some(field) = &r.field {
-            self.field_aliases.insert(name.to_owned(), field.clone());
+        // A single-field recipe is a named value accessor, usable as `@name` in
+        // filter and summary positions as well as `${@name}` in templates.
+        if let Some(accessor) = r.accessor() {
+            self.field_aliases.insert(name.to_owned(), accessor);
         }
         if let Some(body) = r.inline_body() {
             self.set_variable(name.to_owned(), body);
@@ -422,21 +530,12 @@ impl ConfigFile {
             );
         }
         // Any recipe with content is runnable as a preset. A format recipe's
-        // body lives in the formats map, so don't also set it as the template
-        // (that would shadow its saved `fields`, which drive `$cols`).
+        // body lives in the formats map, and a column list drives `$cols`, so
+        // neither sets a template (that would shadow the columns).
         let preset = PresetDef {
             filter: r.filter.clone(),
-            template: if r.is_format() {
-                None
-            } else {
-                r.body.clone().or_else(|| {
-                    r.field.as_ref().map(|f| match &r.style {
-                        Some(s) => format!("${{{f}:{s}}}"),
-                        None => format!("${{{f}}}"),
-                    })
-                })
-            },
-            fields: r.fields.clone(),
+            template: r.preset_template(),
+            fields: r.preset_columns(),
             redact: r.redact.clone(),
             compact: None,
             // A format recipe runs through its own named output format.
@@ -537,17 +636,41 @@ mod tests {
     }
 
     #[test]
-    fn field_style_recipe_becomes_field_variable() {
-        let mut c = parse("[recipe.host]\nfield = \"host|hostname\"\nstyle = \"dimmed\"\n");
+    fn single_field_out_becomes_value_variable() {
+        let mut c = parse("[recipe.host]\nout = \"host|hostname:dimmed\"\n");
         c.resolve_recipes(&[]);
         // Field recipes are optional by default, so `${@host}` collapses when absent.
         assert_eq!(var(&c, "host"), Some("${?host|hostname:dimmed}"));
     }
 
     #[test]
+    fn out_key_classified_by_shape() {
+        // single field with inline mods -> optional value + accessor (mods stripped)
+        let mut field = parse("[recipe.ts]\nout = \"timestamp|ts:dimmed,red\"\n");
+        field.resolve_recipes(&[]);
+        assert_eq!(var(&field, "ts"), Some("${?timestamp|ts:dimmed,red}"));
+        assert_eq!(field.field_aliases.get("ts").map(String::as_str), Some("timestamp|ts"));
+        assert_eq!(field.presets["ts"].template.as_deref(), Some("${timestamp|ts:dimmed,red}"));
+
+        // comma list -> columns (not a value accessor)
+        let mut cols = parse("[recipe.req]\nout = \"timestamp,level,message\"\n");
+        cols.resolve_recipes(&[]);
+        assert_eq!(var(&cols, "req"), Some("${?timestamp} ${?level} ${?message}"));
+        assert_eq!(cols.presets["req"].fields.as_deref(), Some("timestamp,level,message"));
+        assert_eq!(cols.presets["req"].template, None);
+        assert!(!cols.field_aliases.contains_key("req"));
+
+        // `$` -> template (not a value accessor)
+        let mut tpl = parse("[recipe.lvl]\nout = \"$match(level $else(${value}))\"\n");
+        tpl.resolve_recipes(&[]);
+        assert!(!tpl.field_aliases.contains_key("lvl"));
+        assert_eq!(tpl.presets["lvl"].template.as_deref(), Some("$match(level $else(${value}))"));
+    }
+
+    #[test]
     fn filter_body_recipe_becomes_preset() {
         let mut c = parse(
-            "[recipe.errors]\nfilter = \"level=error\"\nbody = \"${ts} ${msg}\"\n",
+            "[recipe.errors]\nfilter = \"level=error\"\nout = \"${ts} ${msg}\"\n",
         );
         c.resolve_recipes(&[]);
         let p = &c.presets["errors"];
@@ -558,7 +681,7 @@ mod tests {
     #[test]
     fn format_recipe_becomes_format() {
         let mut c = parse(
-            "[recipe.report]\nescape = \"html\"\nbody = \"<table>\\n$rows( <r>${msg}</r> )*</table>\"\n",
+            "[recipe.report]\nescape = \"html\"\nout = \"<table>\\n$rows( <r>${msg}</r> )*</table>\"\n",
         );
         c.resolve_recipes(&[]);
         let f = &c.formats["report"];
@@ -570,7 +693,7 @@ mod tests {
 
     #[test]
     fn conditional_override_applies_when_active() {
-        let toml = "[recipe.sep]\nbody = \"\\n\"\n[recipe.sep.compact]\nbody = \" \"\n";
+        let toml = "[recipe.sep]\nout = \"\\n\"\n[recipe.sep.compact]\nout = \" \"\n";
         let mut normal = parse(toml);
         normal.resolve_recipes(&[]);
         assert_eq!(var(&normal, "sep"), Some("\n"));
@@ -583,10 +706,10 @@ mod tests {
     #[test]
     fn base_inheritance_overlays_keys() {
         let mut c = parse(
-            "[recipe.base]\nbody = \"${a}\"\nfilter = \"x=1\"\n[recipe.child]\nbase = \"@base\"\nbody = \"${b}\"\n",
+            "[recipe.base]\nout = \"${a}\"\nfilter = \"x=1\"\n[recipe.child]\nbase = \"@base\"\nout = \"${b}\"\n",
         );
         c.resolve_recipes(&[]);
-        // child overrides body, inherits filter
+        // child overrides out, inherits filter
         assert_eq!(c.presets["child"].template.as_deref(), Some("${b}"));
         assert_eq!(c.presets["child"].filter.as_deref(), Some("x=1"));
     }

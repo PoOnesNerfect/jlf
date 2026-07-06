@@ -201,15 +201,15 @@ fn if_single_falsey_field_is_false() {
 }
 
 #[test]
-fn key_is_true_for_present_but_falsey_field() {
-    // `$key` checks existence, so an empty string still counts.
-    assert_eq!(run(&["$key(body => has)$else(missing)"], COND).0, "has\n");
+fn has_is_true_for_present_but_falsey_field() {
+    // `$has` checks existence, so an empty string still counts.
+    assert_eq!(run(&["$has(body => has)$else(missing)"], COND).0, "has\n");
 }
 
 #[test]
-fn key_falls_through_to_nested_key() {
-    // `$key(msg …)` is false (absent); the else nests another `$key` on message.
-    let out = run(&["$key(msg => m)$else($key(message => message)$else(none))"], COND).0;
+fn has_falls_through_to_nested_has() {
+    // `$has(msg …)` is false (absent); the else nests another `$has` on message.
+    let out = run(&["$has(msg => m)$else($has(message => message)$else(none))"], COND).0;
     assert_eq!(out, "message\n");
 }
 
@@ -299,7 +299,7 @@ mod custom_format {
             r#"
 [recipe.report]
 escape = "html"
-body = "<table>\n$rows( <tr><td>${level}</td><td>${msg}</td></tr> )*</table>\n"
+out = "<table>\n$rows( <tr><td>${level}</td><td>${msg}</td></tr> )*</table>\n"
 "#,
         )
         .unwrap();
@@ -521,7 +521,7 @@ mod recipes_config {
 
     #[test]
     fn named_field_recipe_inlines_and_filters() {
-        let cfg = "[recipe.host]\nfield = \"host|hostname\"\nstyle = \"dimmed\"\n";
+        let cfg = "[recipe.host]\nout = \"host|hostname:dimmed\"\n";
         // ${@host} is optional-by-default, so an absent host collapses its space
         assert_eq!(run_in_cfg(cfg, &["${@host} ${message}"], LOGS), "a\nb <c>\n");
     }
@@ -530,7 +530,7 @@ mod recipes_config {
     /// positions — including its `|` fallback chain.
     #[test]
     fn named_field_recipe_works_in_all_positions() {
-        let cfg = "[recipe.lat]\nfield = \"latency_ms|duration\"\n";
+        let cfg = "[recipe.lat]\nout = \"latency_ms|duration\"\n";
         let logs = concat!(
             "{\"latency_ms\":42,\"message\":\"fast\"}\n",
             "{\"duration\":800,\"message\":\"slow\"}\n",
@@ -547,13 +547,13 @@ mod recipes_config {
 
     #[test]
     fn preset_recipe_runs_with_filter_and_body() {
-        let cfg = "[recipe.errors]\nfilter = \"level=error\"\nbody = \"${ts} ${message}\"\n";
+        let cfg = "[recipe.errors]\nfilter = \"level=error\"\nout = \"${ts} ${message}\"\n";
         assert_eq!(run_in_cfg(cfg, &["@errors"], LOGS), "t2 b <c>\n");
     }
 
     #[test]
     fn format_recipe_frames_and_escapes() {
-        let cfg = "[recipe.report]\nescape = \"html\"\nbody = \"<table>\\n$rows( <tr><td>${message}</td></tr> )*</table>\\n\"\n";
+        let cfg = "[recipe.report]\nescape = \"html\"\nout = \"<table>\\n$rows( <tr><td>${message}</td></tr> )*</table>\\n\"\n";
         let out = run_in_cfg(cfg, &["@report"], LOGS);
         assert!(out.starts_with("<table>\n"), "got:\n{out}");
         assert!(out.contains("<tr><td>b &lt;c&gt;</td></tr>\n"), "got:\n{out}");
@@ -568,7 +568,7 @@ mod recipes_config {
 
     #[test]
     fn conditional_override_on_compact() {
-        let cfg = "[recipe.g]\nbody = \"BIG ${message}\"\n[recipe.g.compact]\nbody = \"sm ${message}\"\n";
+        let cfg = "[recipe.g]\nout = \"BIG ${message}\"\n[recipe.g.compact]\nout = \"sm ${message}\"\n";
         assert_eq!(run_in_cfg(cfg, &["@g"], LOGS), "BIG a\nBIG b <c>\n");
         assert_eq!(run_in_cfg(cfg, &["@g", "-c"], LOGS), "sm a\nsm b <c>\n");
     }
@@ -656,8 +656,8 @@ mod recipe_override_sources {
     use std::process::{Command, Stdio};
 
     const CFG: &str = concat!(
-        "[recipe.sep]\nbody = \"[normal]\"\n",
-        "[recipe.sep.compact]\nbody = \"[compact]\"\n",
+        "[recipe.sep]\nout = \"[normal]\"\n",
+        "[recipe.sep.compact]\nout = \"[compact]\"\n",
         "[preset.cmp]\ncompact = true\ntemplate = \"${@sep}\"\n",
     );
 
@@ -747,7 +747,7 @@ mod table_recipes {
     fn custom_separator_table_with_csv_quoting() {
         let cfg = concat!(
             "[recipe.psv]\n",
-            "body = \"$cols( ${key} )|*\\n$rows( $cols( ${value:csv} )|* )*\"\n",
+            "out = \"$cols( ${key} )|*\\n$rows( $cols( ${value:csv} )|* )*\"\n",
         );
         let out = run_in(cfg, &["--format", "psv", "-f", "a,b"], "{\"a\":\"x\",\"b\":\"y,z\"}\n");
         assert_eq!(out, "a|b\nx|\"y,z\"\n");
@@ -755,10 +755,14 @@ mod table_recipes {
 
     #[test]
     fn custom_table_run_by_name_with_saved_fields_and_filter() {
+        // A custom table frame is one recipe (its `out` is the $cols/$rows
+        // template); a report that uses it with saved columns + filter is
+        // another that references the format and puts the columns in its `out`.
         let cfg = concat!(
+            "[recipe.gridfmt]\n",
+            "out = \"| $cols( ${key} )\\\" | \\\"* |\\n| $cols( === )\\\" | \\\"* |\\n$rows( | $cols( ${value:md} )\\\" | \\\"* | )*\"\n",
             "[recipe.grid]\n",
-            "body = \"| $cols( ${key} )\\\" | \\\"* |\\n| $cols( === )\\\" | \\\"* |\\n$rows( | $cols( ${value:md} )\\\" | \\\"* | )*\"\n",
-            "fields = \"a,b\"\nfilter = \"keep=1\"\n",
+            "format = \"gridfmt\"\nout = \"a,b\"\nfilter = \"keep=1\"\n",
         );
         let logs = concat!(
             "{\"a\":\"1\",\"b\":\"x\",\"keep\":1}\n",
@@ -771,7 +775,7 @@ mod table_recipes {
     #[test]
     fn user_can_override_builtin_csv() {
         // redefine csv to use semicolons
-        let cfg = "[recipe.csv]\nbody = \"$cols( ${key} );*\\n$rows( $cols( ${value:csv} );* )*\"\n";
+        let cfg = "[recipe.csv]\nout = \"$cols( ${key} );*\\n$rows( $cols( ${value:csv} );* )*\"\n";
         let out = run_in(cfg, &["@csv", "a,b"], "{\"a\":\"x\",\"b\":\"y\"}\n");
         assert_eq!(out, "a;b\nx;y\n");
     }

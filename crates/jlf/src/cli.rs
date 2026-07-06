@@ -193,7 +193,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     // accessor (e.g. `@latency` -> `latency_ms|duration|elapsed`), so a named
     // field works in filters and summaries as well as in templates.
     for t in &mut filter_strs {
-        *t = expand_field_alias(t, &field_aliases);
+        *t = expand_field_alias(t, &field_aliases, &presets, &formats);
     }
 
     let mut compact = compact;
@@ -349,22 +349,22 @@ pub fn run() -> Result<(), color_eyre::Report> {
             // Preset filters (if any) apply to an explicit summary subcommand too.
             // A `@name` token in args or the global `--format` selects a table.
             Command::Count { args } => {
-                let mut args = expand_field_aliases(args, &field_aliases);
+                let mut args = expand_field_aliases(args, &field_aliases, &presets, &formats);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_count(prepend(&filter_strs, args), mode, &input);
             }
             Command::Stats { args } => {
-                let mut args = expand_field_aliases(args, &field_aliases);
+                let mut args = expand_field_aliases(args, &field_aliases, &presets, &formats);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_stats(prepend(&filter_strs, args), mode, &input);
             }
             Command::Top { args } => {
-                let mut args = expand_field_aliases(args, &field_aliases);
+                let mut args = expand_field_aliases(args, &field_aliases, &presets, &formats);
                 let mode = take_output_table(&mut args, format_name.as_deref());
                 return run_top(prepend(&filter_strs, args), mode, &input);
             }
             Command::Uniq { args } => {
-                let args = expand_field_aliases(args, &field_aliases);
+                let args = expand_field_aliases(args, &field_aliases, &presets, &formats);
                 return run_uniq(prepend(&filter_strs, args), &input)
             }
         }
@@ -405,7 +405,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
 
 /// Whether a bare arg is an output template rather than a filter/field/column.
 /// A template carries `$`-interpolation — `${…}`, `$(…)`, `$$`, or `$name` (incl.
-/// `$match(`, `$cols(`, `$path?(`) — or a literal `{`. Plain `key=value`,
+/// `$match(`, `$cols(`, `$if(`) — or a literal `{`. Plain `key=value`,
 /// comma-lists, and bare words are left for the other classifiers.
 fn is_template_arg(a: &str) -> bool {
     let b = a.as_bytes();
@@ -424,8 +424,17 @@ fn is_template_arg(a: &str) -> bool {
 /// Expand a `@alias` field recipe used in a filter or summary position into its
 /// accessor: `@latency` -> `latency_ms|duration|elapsed`, and
 /// `@latency>500` -> `latency_ms|duration|elapsed>500`. Non-`@` tokens and
-/// unknown aliases pass through unchanged.
-fn expand_field_alias(token: &str, aliases: &HashMap<String, String>) -> String {
+/// unknown aliases pass through unchanged. A `@name` that names a display recipe
+/// (a template/columns recipe, not a value and not an output format) is a misuse
+/// — it has no value to compare or aggregate — so we fail with a clear hint.
+/// Format/table names (`@csv`, `@md`, custom formats) pass through, since in a
+/// summary they select the output table.
+fn expand_field_alias(
+    token: &str,
+    aliases: &HashMap<String, String>,
+    presets: &HashMap<String, jlf_core::PresetDef>,
+    formats: &HashMap<String, jlf_core::FormatDef>,
+) -> String {
     let Some(rest) = token.strip_prefix('@') else {
         return token.to_owned();
     };
@@ -437,14 +446,27 @@ fn expand_field_alias(token: &str, aliases: &HashMap<String, String>) -> String 
     };
     match aliases.get(name) {
         Some(accessor) => format!("{accessor}{suffix}"),
+        None if presets.contains_key(name) && !formats.contains_key(name) => {
+            eprintln!(
+                "jlf: `@{name}` is a display recipe, not a value — it can't be used \
+                 as a filter or summary field.\n      \
+                 filter the underlying field instead (e.g. `level=error`, `status>=500`)."
+            );
+            std::process::exit(2);
+        }
         None => token.to_owned(),
     }
 }
 
-fn expand_field_aliases(tokens: Vec<String>, aliases: &HashMap<String, String>) -> Vec<String> {
+fn expand_field_aliases(
+    tokens: Vec<String>,
+    aliases: &HashMap<String, String>,
+    presets: &HashMap<String, jlf_core::PresetDef>,
+    formats: &HashMap<String, jlf_core::FormatDef>,
+) -> Vec<String> {
     tokens
         .into_iter()
-        .map(|t| expand_field_alias(&t, aliases))
+        .map(|t| expand_field_alias(&t, aliases, presets, formats))
         .collect()
 }
 

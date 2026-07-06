@@ -37,7 +37,7 @@ pub(super) fn crunch_input(
     Ok(())
 }
 
-/// When a `$( … )` / `$path( … )` / `$path?( … )` block starts its own line in the
+/// When a `$( … )` / `$path( … )` block starts its own line in the
 /// template, pull the preceding newline + indentation into the front of the
 /// block's body. That way each block can be written on its own indented source
 /// line for readability, while the line break renders per iteration (reps) or
@@ -88,11 +88,11 @@ enum Stop {
     Rep,
 }
 
-/// Which `$if`/`$key`/`$config` opener a condition chain starts with.
+/// Which `$if`/`$has`/`$config` opener a condition chain starts with.
 #[derive(Clone, Copy)]
 enum CondKind {
     If,
-    Key,
+    Has,
     Config,
 }
 
@@ -213,7 +213,7 @@ impl Scanner<'_> {
             let src = match name {
                 "match" => return self.parse_match(pieces, args, rep_depth),
                 "if" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::If),
-                "key" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Key),
+                "has" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Has),
                 "config" => {
                     return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Config)
                 }
@@ -225,39 +225,10 @@ impl Scanner<'_> {
             };
             return self.parse_rep(pieces, args, rep_depth, src);
         }
-        // `$path?( … )` — a conditional block: render the body when `path` is
-        // truthy (shorthand for `${if path} … ${/}`).
-        if self.b.get(self.i) == Some(&b'?') && self.b.get(self.i + 1) == Some(&b'(') {
-            self.i += 2;
-            return self.parse_cond_block(pieces, args, rep_depth, name);
-        }
         let mut fields = FieldOptions::new();
         push_field(&mut fields, name, rep_depth)?;
         args.push((fields, parse_format(None, self.no_color, self.compact)?));
         pieces.push(Piece::Arg(args.len() - 1));
-        Ok(())
-    }
-
-    /// Parse a `$path?( body )` conditional block (cursor just past `?(`): emit
-    /// `CondStart(If, path)` + body + `CondEnd`, so the body renders only when
-    /// `path` is truthy.
-    fn parse_cond_block(
-        &mut self,
-        pieces: &mut Vec<Piece>,
-        args: &mut Vec<Arg>,
-        rep_depth: usize,
-        path: &str,
-    ) -> Result<(), FormatError> {
-        let mut fo = FieldOptions::new();
-        crunch_field_options(path, &mut fo)?;
-        args.push((fo, parse_format(None, self.no_color, self.compact)?));
-        pieces.push(Piece::CondStart(Cond::If, args.len() - 1));
-
-        let mut body = Vec::new();
-        self.scan(&mut body, args, rep_depth, Stop::Rep)?;
-        trim_body_edges(&mut body);
-        pieces.extend(body);
-        pieces.push(Piece::CondEnd);
         Ok(())
     }
     /// Parse `$match( subject  $when(pat => body) … $else(body) )`. The subject
@@ -383,7 +354,7 @@ impl Scanner<'_> {
         }
     }
 
-    /// Parse an `$if`/`$key`/`$config` condition chain: the opener plus any
+    /// Parse an `$if`/`$has`/`$config` condition chain: the opener plus any
     /// adjacent `$elif( … )` / `$else( … )` continuations (whitespace between
     /// them is ignored). Emits `CondStart` + `ElseCond*` + optional `Else` +
     /// `CondEnd`, the same shape the renderer walks. Cursor is just past the
@@ -420,7 +391,7 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    /// Emit one `$if`/`$elif`/`$key`/`$config` branch: read `COND =>`, push the
+    /// Emit one `$if`/`$elif`/`$has`/`$config` branch: read `COND =>`, push the
     /// condition marker, then scan the body up to the branch's `)`.
     fn push_cond_open(
         &mut self,
@@ -433,7 +404,7 @@ impl Scanner<'_> {
         let cond_text = self.read_until_arrow()?;
         match kind {
             CondKind::If => self.push_cond(pieces, args, &cond_text, Cond::If, is_else)?,
-            CondKind::Key => self.push_cond(pieces, args, &cond_text, Cond::Key, is_else)?,
+            CondKind::Has => self.push_cond(pieces, args, &cond_text, Cond::Has, is_else)?,
             CondKind::Config => {
                 let b = match cond_text.trim() {
                     "compact" => self.compact,
@@ -459,7 +430,7 @@ impl Scanner<'_> {
     }
 
     /// Parse a `${ … }` group: an interpolated field. (Conditionals are the
-    /// `$if( … )` / `$key( … )` / `$config( … )` block forms, not brace
+    /// `$if( … )` / `$has( … )` / `$config( … )` block forms, not brace
     /// directives.)
     fn parse_brace(
         &mut self,
@@ -1014,7 +985,7 @@ pub enum FormatError {
     },
     #[error("Unsupported config value in formatter '{config}'")]
     UnsupportedConfig { config: String },
-    #[error("A `$( … )` block is missing its closing `)` — check your `$(`, `$path(`, `$cols(`, `$rows(`, and `$name?(` blocks all have a matching `)`")]
+    #[error("A `$( … )` block is missing its closing `)` — check your `$(`, `$path(`, `$cols(`, and `$rows(` blocks all have a matching `)`")]
     UnclosedRep,
     #[error("A '$( … )' repetition needs an operator ('*', '+', or '?') after it")]
     MissingRepOp,
@@ -1024,9 +995,9 @@ pub enum FormatError {
     EmptyMatchSubject,
     #[error("A `$match( … )` arm must be `$when(pattern => body)` or `$else(body)`")]
     BadMatchArm,
-    #[error("A `$when`/`$if`/`$elif`/`$key`/`$config` block is missing its `=>` between the condition and the body")]
+    #[error("A `$when`/`$if`/`$elif`/`$has`/`$config` block is missing its `=>` between the condition and the body")]
     MissingArrow,
-    #[error("`$when`/`$elif`/`$else` may only appear inside `$match( … )` or an `$if`/`$key`/`$config` chain, not on their own: `${0}( … )`")]
+    #[error("`$when`/`$elif`/`$else` may only appear inside `$match( … )` or an `$if`/`$has`/`$config` chain, not on their own: `${0}( … )`")]
     OrphanArm(String),
     #[error("Invalid numeric range in a `$when( … )` arm: '{0}'")]
     BadRange(String),

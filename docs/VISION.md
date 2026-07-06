@@ -132,7 +132,7 @@ because these are templates plus optional framing. Literal `{` and `}` no longer
 need escaping; `$` is the interpolation sigil, and `$$` writes a literal dollar.
 
 Built-in output shapes are recipe bundles, not separate code paths. Each uses a
-single `body` template; `$rows(...)` frames the record stream when a format needs
+single `out` template; `$rows(...)` frames the record stream when a format needs
 once-before or once-after text. Escaping is unified as value modifiers (`:csv`,
 `:tsv`, `:md`, `:html`, or `:none`) or as a recipe-level `escape` default. They
 are runnable as recipes with `@name` (`@csv`, `@tsv`, `@md`; `@table`, `@html`,
@@ -161,14 +161,14 @@ buffer rows (or sample the first N) to size them — the only non-streaming outp
 | 2024-02-06T23:52:49.001Z | ERROR | timeout    |
 ```
 
-A user-defined output format lives in `.jlf.toml` as a single `body` template,
+A user-defined output format lives in `.jlf.toml` as a single `out` template,
 with optional `escape`. Dynamic columns use `$cols(...)`; inside the repetition
 `$key` is the column name and `$value` is the cell value. `$rows(...)` repeats
 over the record stream and provides once-before and once-after framing.
 
 ```toml
 [recipe.htable]
-body = "<table>\n$rows( <tr>$cols( <td>${value:html}</td> )*</tr> )*</table>"
+out = "<table>\n$rows( <tr>$cols( <td>${value:html}</td> )*</tr> )*</table>"
 ```
 
 Invoke it with `jlf @htable ts,level,message` (`--format htable` also works).
@@ -176,18 +176,18 @@ The built-in formats use the same mechanism:
 
 ```toml
 [recipe.csv]
-body = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+out = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
 
 [recipe.tsv]
-body = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+out = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
 
 [recipe.md]
-body = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+out = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
 ```
 
-For a non-tabular layout, write a per-record `body`. For a custom page or report,
-wrap the repeated record template in `$rows(...)`. Per-format edges: a missing
-field is an empty cell, Markdown escaping handles `|` and newlines, and summaries
+For a non-tabular layout, write a per-record `out` template. For a custom page or
+report, wrap the repeated record template in `$rows(...)`. Per-format edges: a
+missing field is an empty cell, Markdown escaping handles `|` and newlines, and summaries
 render through the same shapes (`jlf stats latency_ms by endpoint @md`).
 
 ### The template language
@@ -207,7 +207,7 @@ language; everything else (filters, summaries, output formats) sits around them.
 | `$if(f => …)$else(…)` | branch on truthiness |
 | `$if(f OP literal => …)` | branch on a comparison (`==` `!=` `>` `>=` `<` `<=`) |
 | `$match(f $when(pat => …) $else(…))` | dispatch on a value; the first matching arm renders |
-| `$key(f => …)$else($key(g => …))` | branch on field presence |
+| `$has(f => …)$else($has(g => …))` | branch on field presence |
 | `$config(flag => …)$else(…)` | branch on a config/CLI flag such as `compact` |
 | `$( body )"join"*` | repeat over the current record's top-level fields |
 | `$path( body )"join"*` | repeat over an object or array at `path` |
@@ -222,7 +222,7 @@ jlf '${ ?timestamp:dimmed } ${@level} ${ ?message } ${ ?..:json }'
 ```
 
 `$match( … )` is value dispatch inside a template. It is part of the `$name( … )`
-self-closing block family, like `$path( … )`, `$cols( … )`, and `$path?( … )`,
+self-closing block family, like `$path( … )`, `$cols( … )`, and `$if( … )`,
 so it needs no end directive. Arms use `$when( PATTERN => BODY )`, splitting
 on the first top-level `=>` outside quotes, with `$else( BODY )` as the default
 for present values. Patterns can use literal equality, comparisons, numeric
@@ -233,9 +233,9 @@ empty strings, empty arrays/objects, `null`, missing fields, and `0` are false.
 It is a comparison when `COND` contains `==`, `!=`, `>`, `>=`, `<`, or `<=`.
 Comparisons are numeric when both sides parse as numbers, otherwise text; quote
 string literals. A missing or non-scalar field never matches a comparison.
-`$key(FIELD => …)` tests field existence, including present-but-falsey values.
+`$has(FIELD => …)` tests field existence, including present-but-falsey values.
 `$config(FLAG => …)` branches on `compact`, `no_color`, or `strict`. Branches
-chain by adjacency with `$elif(… => …)` and `$else(…)`; nest `$key` inside
+chain by adjacency with `$elif(… => …)` and `$else(…)`; nest `$has` inside
 `$else(…)` when a later branch needs an existence test. One space after `=>` is
 dropped as syntax, an all-whitespace body is kept as intentional output, and
 decorative line breaks and indentation at the edges of a real body are dropped.
@@ -245,11 +245,11 @@ Recipes store a layout once and let you override one piece; the default output i
 
 ```toml
 [recipe.output]
-body = "${@timestamp}${@level}${@message}$config(compact =>  )$else(\n)${@data}"
+out = "${@timestamp}${@level}${@message}$config(compact =>  )$else(\n)${@data}"
 ```
 
 To recolor levels, redefine the relevant recipe (or pass `-v level=…`); nothing
-else changes. Optional collapse covers the common case, and `$key(f => …)`
+else changes. Optional collapse covers the common case, and `$has(f => …)`
 remains for blocks that need exact control.
 
 ### Filter — `key=value`
@@ -462,14 +462,14 @@ jlf -p latency-report
 ```
 
 A complex invocation is written once (by hand or via the builder), named, and
-reused. The keys mirror the explicit flag forms (`filter`, `body` or `fields`,
-the summary verbs, `format`):
+reused. The keys mirror the explicit flag forms (`filter`, `out`, the summary
+verbs, `format`):
 
 ```toml
 # .jlf.toml
 [recipe.errors]
 filter = "level=error,fatal"
-body = "$ts $level $message"
+out = "$ts $level $message"
 
 [recipe.latency-report]
 filter = "status>=500"
@@ -656,7 +656,7 @@ Goal: filter, summarize, redact, export, plus grammar disambiguation.
       print when piped, `--window` for tumbling-window output. t-digest by default
       so `stats` stays bounded; approximate `top`/`uniq` modes for high cardinality.
 - [ ] Redaction: `--redact <globs>` and inline `${x:redact}`.
-- [ ] Export shapes as built-in recipe bundles (single `body` templates with
+- [ ] Export shapes as built-in recipe bundles (single `out` templates with
       `$rows(...)`, `$cols(...)`, and escape modifiers), run as recipes `@csv`,
       `@tsv`, `@md` (`@table`, `@html`, `@json` future); columns from a
       comma-list, `-f`/`--fields`, or leftover bare words; `:html` escape
@@ -741,7 +741,7 @@ Grammar and templates:
 - **Collapse optional empty fields, simplify the default recipes.** Keep named,
   reusable fragments via recipes and include directives, but make an optional
   empty field swallow one adjacent space so the default is a few plainly named
-  recipes instead of many `name`/`name_fmt` twins. `$key(f => …)` stays for exact
+  recipes instead of many `name`/`name_fmt` twins. `$has(f => …)` stays for exact
   control.
 - **Rework `expand` / `list`** into one inspection surface (`--list-fields`, an
   `explain` that prints the resolved command/format).
