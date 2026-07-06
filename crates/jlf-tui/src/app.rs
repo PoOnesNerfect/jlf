@@ -3,6 +3,7 @@ use std::sync::mpsc::Receiver;
 
 use jlf_core::{expanded_format, Filter, Formatter, Json};
 
+use crate::catalog::{self, Catalog};
 use crate::field::{path, resolve, scalar};
 use crate::summary::{self, Summary};
 
@@ -39,6 +40,13 @@ pub struct App {
     pub detail_scroll: u16,
     pub quit: bool,
 
+    /// Field catalog for search autocomplete, rebuilt when entering search.
+    catalog: Catalog,
+    sug: Vec<String>,
+    sug_start: usize,
+    sug_sel: usize,
+    sug_dismissed: bool,
+
     rx: Receiver<String>,
     row_fmt: Formatter,
 }
@@ -73,6 +81,11 @@ impl App {
             summary: None,
             detail_scroll: 0,
             quit: false,
+            catalog: Catalog::default(),
+            sug: Vec::new(),
+            sug_start: 0,
+            sug_sel: 0,
+            sug_dismissed: false,
             rx,
             row_fmt,
         })
@@ -139,6 +152,90 @@ impl App {
         } else {
             format!("{} match", self.view.len())
         };
+    }
+
+    // ----- search autocomplete ---------------------------------------------
+
+    /// Enter search mode: seed the input from the active filter and build the
+    /// field catalog from the loaded records.
+    pub fn enter_search(&mut self) {
+        self.mode = Mode::Search;
+        self.input = self.filter_text.clone();
+        self.catalog = Catalog::from_lines(&self.lines, 2000);
+        self.sug_dismissed = false;
+        self.sug_sel = 0;
+        self.refresh_suggestions();
+    }
+
+    fn refresh_suggestions(&mut self) {
+        let (start, cands) = catalog::suggest(&self.input, &self.catalog);
+        self.sug_start = start;
+        self.sug = cands;
+        if self.sug_sel >= self.sug.len() {
+            self.sug_sel = 0;
+        }
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        self.input.push(c);
+        self.after_input_change();
+    }
+
+    pub fn input_backspace(&mut self) {
+        self.input.pop();
+        self.after_input_change();
+    }
+
+    /// Delete the word before the cursor (Ctrl-W).
+    pub fn input_delete_word(&mut self) {
+        let cut = {
+            let trimmed = self.input.trim_end_matches(char::is_whitespace);
+            trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0)
+        };
+        self.input.truncate(cut);
+        self.after_input_change();
+    }
+
+    fn after_input_change(&mut self) {
+        self.sug_sel = 0;
+        self.sug_dismissed = false;
+        if self.mode == Mode::Search {
+            self.refresh_suggestions();
+        }
+    }
+
+    pub fn suggestion_move(&mut self, delta: isize) {
+        if self.sug.is_empty() {
+            return;
+        }
+        self.sug_dismissed = false;
+        let n = self.sug.len() as isize;
+        self.sug_sel = (((self.sug_sel as isize + delta) % n + n) % n) as usize;
+    }
+
+    /// Fill the highlighted suggestion into the input. Returns whether it did.
+    pub fn fill_suggestion(&mut self) -> bool {
+        if self.sug_dismissed || self.sug.is_empty() {
+            return false;
+        }
+        let c = self.sug[self.sug_sel.min(self.sug.len() - 1)].clone();
+        self.input.truncate(self.sug_start);
+        self.input.push_str(&c);
+        self.sug_sel = 0;
+        self.refresh_suggestions();
+        true
+    }
+
+    pub fn dismiss_suggestions(&mut self) {
+        self.sug_dismissed = true;
+    }
+
+    pub fn suggestions_visible(&self) -> bool {
+        self.mode == Mode::Search && !self.sug_dismissed && !self.sug.is_empty()
+    }
+
+    pub fn suggestions(&self) -> (&[String], usize) {
+        (&self.sug, self.sug_sel)
     }
 
     // ----- navigation -------------------------------------------------------

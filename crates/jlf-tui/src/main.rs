@@ -1,10 +1,10 @@
 mod app;
+mod catalog;
 mod field;
 mod reader;
 mod summary;
 mod ui;
 
-use std::io::IsTerminal;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -34,12 +34,25 @@ fn main() -> color_eyre::Result<()> {
         }
     }
 
-    // Keyboard events come from /dev/tty, so a piped stdin is free to be the
-    // data source. With no file and no pipe there is simply nothing to read.
+    // Keyboard events reach us through fd 0. When something other than a
+    // terminal is on stdin (a piped data stream, a redirected file), crossterm
+    // can't read keys from it — on macOS it fails to even initialize its reader.
+    // So point fd 0 at the controlling terminal, saving the piped data (when we
+    // need it as the source) on a fresh fd for the reader.
+    let want_stdin_data = file.is_none();
+    let piped = match prepare_terminal_input(want_stdin_data) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("jlf-tui: no terminal available for keyboard input.");
+            eprintln!(
+                "        run it attached to a terminal, e.g. `jlf tui app.log` or `cat logs | jlf tui`."
+            );
+            std::process::exit(1);
+        }
+    };
     let source = match file {
         Some(f) => Some(Source::File(f)),
-        None if !std::io::stdin().is_terminal() => Some(Source::Stdin),
-        None => None,
+        None => piped,
     };
     let rx = match source {
         Some(s) => reader::spawn(s, true),
@@ -51,19 +64,81 @@ fn main() -> color_eyre::Result<()> {
         app.apply_filter(filters.join(" "));
     }
 
-    // crossterm reads keys from stdin when it's a tty, otherwise from /dev/tty.
-    // In a fully headless context neither exists, so fail early with a clear
-    // message rather than a mid-run backtrace after entering the alt screen.
-    if !std::io::stdin().is_terminal() && std::fs::File::open("/dev/tty").is_err() {
-        eprintln!("jlf-tui: no terminal available for keyboard input.");
-        eprintln!("        run it attached to a terminal, e.g. `jlf tui` or `cat logs | jlf tui`.");
-        std::process::exit(1);
-    }
-
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
     result
+}
+
+/// Ensure fd 0 is a real terminal so crossterm can read key events there.
+///
+/// If stdin is already a terminal, nothing to do. Otherwise reopen the
+/// controlling terminal onto fd 0; when `want_data` is set (stdin is our data
+/// source) the incoming pipe is first duplicated to a new fd and returned as a
+/// [`Source::Pipe`] for the reader. Fails only when there is no controlling
+/// terminal at all (a truly headless run).
+///
+/// We reopen the terminal by its real device path (`/dev/ttysNNN`, discovered
+/// from stdout/stderr via `ttyname`) rather than `/dev/tty`: on macOS the
+/// `/dev/tty` alias device can't be registered with `kqueue`, so crossterm's
+/// event reader fails to initialize on it, while the real pts device works.
+#[cfg(unix)]
+fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
+    use std::io::IsTerminal;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    if std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    // Save the piped data on a new fd before fd 0 is repurposed.
+    let data = if want_data {
+        let fd = unsafe { libc::dup(libc::STDIN_FILENO) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Some(Source::Pipe(unsafe { std::fs::File::from_raw_fd(fd) }))
+    } else {
+        None
+    };
+    // Put the controlling terminal on fd 0 for crossterm's event reader. Prefer
+    // the real device path over `/dev/tty` (see the doc comment).
+    let path = terminal_device_path().unwrap_or_else(|| "/dev/tty".into());
+    let tty = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    if unsafe { libc::dup2(tty.as_raw_fd(), libc::STDIN_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(data)
+}
+
+/// The real device path of the terminal attached to stdout, stderr, or stdin
+/// (whichever is a tty). Returns `None` when none of them is a terminal.
+#[cfg(unix)]
+fn terminal_device_path() -> Option<std::path::PathBuf> {
+    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, libc::STDIN_FILENO] {
+        if unsafe { libc::isatty(fd) } != 1 {
+            continue;
+        }
+        let name = unsafe { libc::ttyname(fd) };
+        if !name.is_null() {
+            let s = unsafe { std::ffi::CStr::from_ptr(name) };
+            if let Ok(s) = s.to_str() {
+                return Some(std::path::PathBuf::from(s));
+            }
+        }
+    }
+    None
+}
+
+/// Non-Unix fallback: read piped stdin directly (crossterm reads the console
+/// separately from a stdin pipe on Windows).
+#[cfg(not(unix))]
+fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
+    use std::io::IsTerminal;
+    if want_data && !std::io::stdin().is_terminal() {
+        Ok(Some(Source::Stdin))
+    } else {
+        Ok(None)
+    }
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
@@ -85,19 +160,25 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
-    if mods.contains(KeyModifiers::CONTROL) {
-        match code {
-            KeyCode::Char('c') => app.quit = true,
-            KeyCode::Char('d') => app.move_by(HALF_PAGE),
-            KeyCode::Char('u') => app.move_by(-HALF_PAGE),
-            _ => {}
-        }
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    // Ctrl-C always quits.
+    if ctrl && matches!(code, KeyCode::Char('c')) {
+        app.quit = true;
         return;
     }
-
     match app.mode {
-        Mode::Normal => handle_normal(app, code),
-        Mode::Search | Mode::Command => handle_input(app, code),
+        Mode::Normal => {
+            if ctrl {
+                match code {
+                    KeyCode::Char('d') => app.move_by(HALF_PAGE),
+                    KeyCode::Char('u') => app.move_by(-HALF_PAGE),
+                    _ => {}
+                }
+            } else {
+                handle_normal(app, code);
+            }
+        }
+        Mode::Search | Mode::Command => handle_input(app, code, ctrl),
     }
 }
 
@@ -117,10 +198,7 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('J') | KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Char('K') | KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::Char('f') => app.toggle_follow(),
-        KeyCode::Char('/') => {
-            app.mode = Mode::Search;
-            app.input = app.filter_text.clone();
-        }
+        KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char(':') => {
             app.mode = Mode::Command;
             app.input.clear();
@@ -136,13 +214,26 @@ fn handle_normal(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_input(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Esc => {
-            app.mode = Mode::Normal;
-            app.input.clear();
+fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
+    // Search autocomplete: Tab/Shift-Tab and ↑/↓ move the highlight; Enter fills
+    // the highlighted suggestion, or commits the filter when none is showing;
+    // Esc dismisses the popup, then cancels. Command mode ignores suggestions.
+    if ctrl {
+        match code {
+            KeyCode::Char('w') => app.input_delete_word(),
+            KeyCode::Char('n') => app.suggestion_move(1),
+            KeyCode::Char('p') => app.suggestion_move(-1),
+            _ => {}
         }
+        return;
+    }
+    match code {
+        KeyCode::Tab | KeyCode::Down if app.suggestions_visible() => app.suggestion_move(1),
+        KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => app.suggestion_move(-1),
         KeyCode::Enter => {
+            if app.suggestions_visible() && app.fill_suggestion() {
+                return;
+            }
             let text = std::mem::take(&mut app.input);
             match app.mode {
                 Mode::Search => app.apply_filter(text),
@@ -151,10 +242,16 @@ fn handle_input(app: &mut App, code: KeyCode) {
             }
             app.mode = Mode::Normal;
         }
-        KeyCode::Backspace => {
-            app.input.pop();
+        KeyCode::Esc => {
+            if app.suggestions_visible() {
+                app.dismiss_suggestions();
+            } else {
+                app.mode = Mode::Normal;
+                app.input.clear();
+            }
         }
-        KeyCode::Char(c) => app.input.push(c),
+        KeyCode::Backspace => app.input_backspace(),
+        KeyCode::Char(c) => app.input_char(c),
         _ => {}
     }
 }

@@ -7,12 +7,14 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let [status, main, prompt] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
+    let show_sug = app.suggestions_visible();
+    let mut constraints = vec![Constraint::Length(1), Constraint::Min(0)];
+    if show_sug {
+        constraints.push(Constraint::Length(2));
+    }
+    constraints.push(Constraint::Length(1));
+    let areas = Layout::vertical(constraints).split(f.area());
+    let (status, main, prompt) = (areas[0], areas[1], areas[areas.len() - 1]);
 
     draw_status(f, app, status);
 
@@ -21,11 +23,37 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_list(f, app, list_area);
     draw_detail(f, app, detail_area);
+    if show_sug {
+        draw_suggestions(f, app, areas[2]);
+    }
     draw_prompt(f, app, prompt);
 
     if let Some(summary) = &app.summary {
         draw_summary(f, summary, main);
     }
+}
+
+fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
+    let (cands, sel) = app.suggestions();
+    let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
+    for (i, c) in cands.iter().enumerate() {
+        let style = if i == sel {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(format!(" {c} "), style));
+        spans.push(Span::raw(" "));
+    }
+    // Candidates on the first row, the key hint on its own row below.
+    let text = vec![
+        Line::from(spans),
+        Line::from(Span::styled(
+            "   Tab/↑↓ pick · ⏎ fill · Esc dismiss",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    f.render_widget(Paragraph::new(text), area);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {

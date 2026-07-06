@@ -4,6 +4,10 @@ use std::time::Duration;
 
 /// Where the TUI reads records from.
 pub enum Source {
+    /// A saved stdin pipe (Unix: after fd 0 was repurposed for the terminal).
+    Pipe(std::fs::File),
+    /// The process's stdin, read directly (non-Unix fallback).
+    #[cfg_attr(unix, allow(dead_code))]
     Stdin,
     File(String),
 }
@@ -17,6 +21,9 @@ pub enum Source {
 pub fn spawn(source: Source, follow: bool) -> Receiver<String> {
     let (tx, rx) = channel();
     std::thread::spawn(move || match source {
+        Source::Pipe(file) => {
+            read_loop(std::io::BufReader::new(file), &tx, false);
+        }
         Source::Stdin => {
             let stdin = std::io::stdin();
             read_loop(stdin.lock(), &tx, false);
