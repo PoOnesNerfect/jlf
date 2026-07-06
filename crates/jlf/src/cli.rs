@@ -44,6 +44,11 @@ pub struct Args {
     #[arg(short = 't', long = "take")]
     take: Option<usize>,
 
+    /// Keep every record but render the ones that don't match the filters dimmed,
+    /// instead of dropping them. Used by the `jlf-it` filter preview; needs color.
+    #[arg(long = "dim-unmatched", default_value_t = false, hide = true)]
+    dim_unmatched: bool,
+
     /// Input file(s); repeatable. Defaults to stdin.
     #[arg(short = 'i', long = "input", value_name = "FILE")]
     input: Vec<String>,
@@ -126,6 +131,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
         compact,
         strict,
         take,
+        dim_unmatched,
         input,
         fields: fields_flag,
         redact,
@@ -398,6 +404,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
             compact,
             strict,
             interactive,
+            dim_unmatched,
         },
         &input,
     )
@@ -531,6 +538,8 @@ struct RenderOutput<'a> {
     compact: bool,
     strict: bool,
     interactive: bool,
+    /// Dim non-matching records instead of dropping them (needs color).
+    dim_unmatched: bool,
 }
 
 /// The single output path: render `header` once, `body` per record (streaming,
@@ -550,10 +559,11 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
         compact,
         strict,
         interactive,
+        dim_unmatched,
     } = o;
 
-    let mk = |t: &str| -> Result<Formatter, color_eyre::Report> {
-        let mut f = Formatter::new(t, no_color, compact)
+    let mk = |t: &str, nc: bool| -> Result<Formatter, color_eyre::Report> {
+        let mut f = Formatter::new(t, nc, compact)
             .map_err(|e| color_eyre::eyre::eyre!("{e}\n\nwhile parsing the output template:\n{t}"))?
             .with_columns(cols.clone());
         if escape != jlf_core::Escape::None {
@@ -561,9 +571,12 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
         }
         Ok(f)
     };
-    let header_fmt = (!header.is_empty()).then(|| mk(header)).transpose()?;
-    let body_fmt = mk(body)?;
-    let footer_fmt = (!footer.is_empty()).then(|| mk(footer)).transpose()?;
+    let header_fmt = (!header.is_empty()).then(|| mk(header, no_color)).transpose()?;
+    let body_fmt = mk(body, no_color)?;
+    let footer_fmt = (!footer.is_empty()).then(|| mk(footer, no_color)).transpose()?;
+    // In dim mode, non-matching records are rendered with this plain (uncolored)
+    // formatter and wrapped in a faint escape, so they stay visible but recede.
+    let body_dim_fmt = dim_unmatched.then(|| mk(body, true)).transpose()?;
 
     let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
     let null = Json::Null;
@@ -594,7 +607,10 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
             let mut json = Json::Null;
             match json.parse_replace(inp) {
                 Ok(()) => {
-                    if !filters.is_empty() && !jlf_core::matches_all(&filters, &json) {
+                    let matched =
+                        filters.is_empty() || jlf_core::matches_all(&filters, &json);
+                    // Normal mode drops non-matching records; dim mode keeps them.
+                    if !matched && body_dim_fmt.is_none() {
                         line.clear();
                         continue;
                     }
@@ -602,9 +618,17 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
                         jlf_core::redact(&mut json, &redact);
                     }
                     out.clear();
-                    body_fmt.as_log(&json).write_fmt(&mut out)?;
-                    out.push('\n');
-                    stdout.write_all(out.as_bytes())?;
+                    if matched {
+                        body_fmt.as_log(&json).write_fmt(&mut out)?;
+                        out.push('\n');
+                        stdout.write_all(out.as_bytes())?;
+                    } else {
+                        // Non-matching in dim mode: faint-wrap the whole record.
+                        body_dim_fmt.as_ref().unwrap().as_log(&json).write_fmt(&mut out)?;
+                        stdout.write_all(b"\x1b[2m")?;
+                        stdout.write_all(out.as_bytes())?;
+                        stdout.write_all(b"\x1b[0m\n")?;
+                    }
                 }
                 Err(e) => {
                     if strict {
