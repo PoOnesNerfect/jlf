@@ -280,10 +280,17 @@ record, a status bar (follow state, position, filter), and a prompt line.
 | `Ctrl-d`/`Ctrl-u` | half-page down / up |
 | `J`/`K` | scroll the detail pane |
 | `f` | toggle follow (auto-scroll to newest) |
-| `/` | filter — type `key=value`, `Enter` applies |
+| `/` | filter — type `key=value`; **Tab/↑↓** pick an autocompletion, `Enter` fills it or applies the filter |
 | `:` | command — `count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`, `csv\|tsv\|md cols`, `q` |
-| `Esc` | close a summary popup, or clear the filter |
+| `Esc` | dismiss the autocomplete popup, close a summary, or clear the filter |
 | `q` | quit |
+
+While typing a filter (`/`), it autocompletes from the loaded records: field
+paths (nested and array ones like `fields.status`, `spans.0.method`), then the
+comparison operators, then that field's actual values. **Tab**/**Shift-Tab** or
+**↑**/**↓** move through the suggestions, **Enter** fills the highlighted one
+(and a final `Enter` with no popup applies the filter), **Esc** dismisses the
+popup, and **Ctrl-W** deletes the last word.
 
 For example: `/` `level=error` `Enter` to keep errors, then `:top user`, or
 `:csv ts,level,msg` to write the current view to `jlf-export.csv`.
@@ -292,9 +299,20 @@ For example: `/` `level=error` `Enter` to keep errors, then `:top user`, or
 
 `jlf-it` is an interactive builder that lets you assemble a command and see the
 result update as you go. You pick a mode, then an **edit menu** shows the current
-command and a **live preview** against your sample; each change re-runs `jlf` and
-refreshes the preview, so you can tweak filters, a template, columns, or a
-summary and immediately see the effect.
+command and a **live preview** against your sample. Editing any part — filters, a
+template, columns, a summary — refreshes the preview **on every keystroke**, so
+you see the effect as you type, without leaving the field.
+
+When a filter excludes everything in the sample, the preview doesn't just go
+blank: it **synthesizes a matching record** (by adjusting a real sample line to
+satisfy the filter) and shows that instead, clearly labelled, so you can still
+see the shape of the result. While you edit a filter, non-matching records stay
+on screen **dimmed** rather than vanishing as you type.
+
+Press **Tab** to autocomplete: it suggests the sample's field paths — nested and
+array ones included (`fields.status`, `spans.0.method`) — then the comparison
+operators, then that field's actual values, so you rarely have to type a full
+`level=error` by hand.
 
 ```sh
 jlf-it app.log          # build against a file
