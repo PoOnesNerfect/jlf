@@ -129,14 +129,14 @@ impl Builder {
                     kv!("format", f);
                 }
                 if !self.fields.is_empty() {
-                    kv!("fields", &self.fields.join(","));
+                    kv!("out", &self.fields.join(","));
                 }
             }
             Mode::View => {
                 if let Some(t) = &self.template {
-                    kv!("body", t);
+                    kv!("out", t);
                 } else if !self.fields.is_empty() {
-                    kv!("fields", &self.fields.join(","));
+                    kv!("out", &self.fields.join(","));
                 }
                 if self.compact {
                     lines.push("compact = true".into());
@@ -154,7 +154,11 @@ impl Builder {
     pub fn command_line(&self) -> String {
         let mut out = String::from("jlf");
         for a in self.to_args() {
-            if a.is_empty() || a.contains([' ', '{', '|', '"']) {
+            // Quote anything the shell would interpret (templates, filters, …).
+            let special = [
+                ' ', '{', '}', '|', '"', '$', '(', ')', '*', '?', '<', '>', '~', '!', '&', ';',
+            ];
+            if a.is_empty() || a.contains(special) {
                 out.push_str(&format!(" '{a}'"));
             } else {
                 out.push(' ');
@@ -178,7 +182,7 @@ mod tests {
         };
         assert_eq!(b.to_args(), vec!["level=error", "${ts} ${msg}"]);
         assert!(b.to_recipe_toml("errs").contains("filter = \"level=error\""));
-        assert!(b.to_recipe_toml("errs").contains("body = \"${ts} ${msg}\""));
+        assert!(b.to_recipe_toml("errs").contains("out = \"${ts} ${msg}\""));
     }
 
     #[test]
@@ -237,6 +241,6 @@ mod tests {
         assert_eq!(b.to_args(), vec!["@csv", "ts,level", "level=error"]);
         let toml = b.to_recipe_toml("x");
         assert!(toml.contains("format = \"csv\""));
-        assert!(toml.contains("fields = \"ts,level\""));
+        assert!(toml.contains("out = \"ts,level\""));
     }
 }

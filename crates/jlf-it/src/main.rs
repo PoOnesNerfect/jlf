@@ -10,6 +10,13 @@ use console::style;
 use dialoguer::{theme::ColorfulTheme, Input};
 
 fn main() {
+    // Restore the cursor on Ctrl-C: dialoguer hides it (on stderr) during
+    // prompts, and a SIGINT would otherwise leave it hidden.
+    let _ = ctrlc::set_handler(|| {
+        wizard::show_cursor();
+        std::process::exit(130);
+    });
+
     // Sample source: explicit file arg > piped stdin > interactive picker.
     let file_arg = std::env::args().nth(1);
 
