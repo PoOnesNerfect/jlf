@@ -31,3 +31,7 @@ serde_json = "1.0.150"
 [[bench]]
 name = "parse_json"
 harness = false
+
+[[bench]]
+name = "render"
+harness = false
