@@ -7,6 +7,27 @@ use crate::catalog::{self, Catalog};
 use crate::field::{path, resolve, scalar};
 use crate::summary::{self, Summary};
 
+/// The `:` commands, offered as autocomplete when the command line is open.
+pub const COMMANDS: [&str; 12] = [
+    "count", "stats", "top", "uniq", "redact", "csv", "tsv", "md", "follow", "save", "help",
+    "quit",
+];
+
+/// Entries in the Actions panel (opened with `a`): a label and the command it
+/// runs. A prefix ending in a space opens the command line pre-filled so the
+/// field / columns / name can be typed with autocomplete; the rest run at once.
+pub const ACTIONS: [(&str, &str); 9] = [
+    ("Count — total records", "count"),
+    ("Count grouped by a field…", "count "),
+    ("Stats of a numeric field…", "stats "),
+    ("Top values of a field…", "top "),
+    ("Unique values of a field…", "uniq "),
+    ("Export as CSV…", "csv "),
+    ("Export as TSV…", "tsv "),
+    ("Export as Markdown…", "md "),
+    ("Save current view as a recipe…", "save "),
+];
+
 /// Which input the keypresses are being routed to.
 #[derive(PartialEq)]
 pub enum Mode {
@@ -25,6 +46,9 @@ pub struct App {
     /// Indices into `lines` that pass the current filter.
     pub view: Vec<usize>,
     filters: Vec<Filter>,
+    /// Bare (operator-less) words typed into `/`: a record matches when its raw
+    /// text contains all of them (case-insensitive) — a plain "search anywhere".
+    search_terms: Vec<String>,
     redact: Vec<String>,
 
     /// Cursor position within `view`.
@@ -37,6 +61,13 @@ pub struct App {
     pub filter_text: String,
     pub status: String,
     pub summary: Option<Summary>,
+    /// Whether the keys/commands help overlay is showing.
+    pub help: bool,
+    /// Whether the Actions panel is open, and its highlighted row.
+    pub show_actions: bool,
+    pub action_sel: usize,
+    /// Whether the detail pane is open (toggled with Enter on a row).
+    pub show_detail: bool,
     pub detail_scroll: u16,
     pub quit: bool,
 
@@ -48,37 +79,40 @@ pub struct App {
     sug_dismissed: bool,
 
     rx: Receiver<String>,
+    /// Single-line, colored formatter for list rows.
     row_fmt: Formatter,
 }
 
 impl App {
     pub fn new(rx: Receiver<String>) -> color_eyre::Result<Self> {
-        // Render list rows with the same default template the CLI uses, but
-        // forced compact + uncolored so each record is a single plain line that
-        // ratatui can lay out and highlight itself. Rows are always compact, so
-        // recipe `compact` overrides apply.
-        let variables = match jlf_core::get_config() {
+        // Colored, compact list rows (ratatui renders the ANSI); the detail pane
+        // renders syntax-highlighted pretty JSON directly.
+        let compact_vars = match jlf_core::get_config() {
             Ok(mut cfg) => {
                 cfg.resolve_recipes(&["compact"]);
                 merge_variables(cfg.variables)
             }
             Err(_) => jlf_core::default_variables(),
         };
-        let expanded = expanded_format("${@output}", &variables);
-        let row_fmt = Formatter::new(&expanded, true, true)?;
+        let row_fmt = Formatter::new(&expanded_format("${@output}", &compact_vars), false, true)?;
 
         Ok(Self {
             lines: Vec::new(),
             view: Vec::new(),
             filters: Vec::new(),
+            search_terms: Vec::new(),
             redact: Vec::new(),
             selected: 0,
             follow: true,
             mode: Mode::Normal,
             input: String::new(),
             filter_text: String::new(),
-            status: "j/k move · / filter · : command · f follow · q quit".into(),
+            status: "↑↓ move · ⏎ detail · a actions · / search · : command · ? help · q quit".into(),
             summary: None,
+            help: false,
+            show_actions: false,
+            action_sel: 0,
+            show_detail: false,
             detail_scroll: 0,
             quit: false,
             catalog: Catalog::default(),
@@ -110,7 +144,12 @@ impl App {
         changed
     }
 
+    /// Whether `line` passes the active structured filters and plain-text search
+    /// terms. Empty criteria pass everything.
     fn passes(&self, line: &str) -> bool {
+        if !self.matches_search(line) {
+            return false;
+        }
         if self.filters.is_empty() {
             return true;
         }
@@ -121,19 +160,20 @@ impl App {
         }
     }
 
+    /// Every bare search term must appear (case-insensitive) in the raw record.
+    fn matches_search(&self, line: &str) -> bool {
+        if self.search_terms.is_empty() {
+            return true;
+        }
+        let hay = line.to_lowercase();
+        self.search_terms.iter().all(|t| hay.contains(t))
+    }
+
     /// Re-evaluate the filter over all records (after the expression changes).
     fn rebuild_view(&mut self) {
         self.view.clear();
-        for (i, line) in self.lines.iter().enumerate() {
-            let matched = if self.filters.is_empty() {
-                true
-            } else {
-                let mut j = Json::Null;
-                j.parse_replace(line)
-                    .map(|()| jlf_core::matches_all(&self.filters, &j))
-                    .unwrap_or(false)
-            };
-            if matched {
+        for i in 0..self.lines.len() {
+            if self.passes(&self.lines[i]) {
                 self.view.push(i);
             }
         }
@@ -141,13 +181,19 @@ impl App {
     }
 
     pub fn apply_filter(&mut self, text: String) {
-        self.filters = text
-            .split_whitespace()
-            .filter_map(Filter::parse)
-            .collect();
+        // Tokens that parse as `field op value` are structured filters; bare
+        // words become plain-text search terms matched against the raw record.
+        self.filters.clear();
+        self.search_terms.clear();
+        for tok in text.split_whitespace() {
+            match Filter::parse(tok) {
+                Some(f) => self.filters.push(f),
+                None => self.search_terms.push(tok.to_lowercase()),
+            }
+        }
         self.filter_text = text;
         self.rebuild_view();
-        self.status = if self.filters.is_empty() {
+        self.status = if self.filters.is_empty() && self.search_terms.is_empty() {
             "filter cleared".into()
         } else {
             format!("{} match", self.view.len())
@@ -167,8 +213,52 @@ impl App {
         self.refresh_suggestions();
     }
 
+    /// Enter command mode: start empty and immediately offer the command list so
+    /// the available commands are discoverable.
+    pub fn enter_command(&mut self) {
+        self.enter_command_with("");
+    }
+
+    /// Enter command mode pre-filled with `prefix` (used by the Actions panel so
+    /// e.g. picking "Stats" drops you into `:stats ` with field autocomplete).
+    fn enter_command_with(&mut self, prefix: &str) {
+        self.mode = Mode::Command;
+        self.input = prefix.to_owned();
+        self.catalog = Catalog::from_lines(&self.lines, 2000);
+        self.sug_dismissed = false;
+        self.sug_sel = 0;
+        self.refresh_suggestions();
+    }
+
+    // ----- actions panel ----------------------------------------------------
+
+    pub fn open_actions(&mut self) {
+        self.show_actions = true;
+        self.action_sel = 0;
+    }
+
+    pub fn action_move(&mut self, delta: isize) {
+        let n = ACTIONS.len() as isize;
+        self.action_sel = (((self.action_sel as isize + delta) % n + n) % n) as usize;
+    }
+
+    /// Run the highlighted action: immediate ones (plain `count`) execute now;
+    /// the rest open the command line pre-filled for a field / columns / name.
+    pub fn run_action(&mut self) {
+        self.show_actions = false;
+        let (_, cmd) = ACTIONS[self.action_sel.min(ACTIONS.len() - 1)];
+        if let Some(prefix) = cmd.strip_suffix(' ') {
+            self.enter_command_with(&format!("{prefix} "));
+        } else {
+            self.run_command(cmd);
+        }
+    }
+
     fn refresh_suggestions(&mut self) {
-        let (start, cands) = catalog::suggest(&self.input, &self.catalog);
+        let (start, cands) = match self.mode {
+            Mode::Command => catalog::command_suggest(&self.input, &self.catalog, &COMMANDS),
+            _ => catalog::suggest(&self.input, &self.catalog),
+        };
         self.sug_start = start;
         self.sug = cands;
         if self.sug_sel >= self.sug.len() {
@@ -199,7 +289,7 @@ impl App {
     fn after_input_change(&mut self) {
         self.sug_sel = 0;
         self.sug_dismissed = false;
-        if self.mode == Mode::Search {
+        if matches!(self.mode, Mode::Search | Mode::Command) {
             self.refresh_suggestions();
         }
     }
@@ -231,7 +321,9 @@ impl App {
     }
 
     pub fn suggestions_visible(&self) -> bool {
-        self.mode == Mode::Search && !self.sug_dismissed && !self.sug.is_empty()
+        matches!(self.mode, Mode::Search | Mode::Command)
+            && !self.sug_dismissed
+            && !self.sug.is_empty()
     }
 
     pub fn suggestions(&self) -> (&[String], usize) {
@@ -284,6 +376,9 @@ impl App {
     }
 
     /// One-line rendering of a record for the list (parses, redacts, formats).
+    /// Any newlines the template emits are collapsed so each record occupies
+    /// exactly one row — otherwise the list windowing (one item = one row)
+    /// mis-counts and leaves a stray blank row while scrolling.
     pub fn render_row(&self, line: &str) -> String {
         let mut j = Json::Null;
         if j.parse_replace(line).is_err() {
@@ -296,10 +391,11 @@ impl App {
         if self.row_fmt.as_log(&j).write_fmt(&mut out).is_err() {
             return line.to_owned();
         }
-        out
+        out.replace('\n', "  ")
     }
 
-    /// Pretty-printed JSON of a record for the detail pane.
+    /// Full, colored rendering of a record for the detail pane: syntax-
+    /// highlighted pretty JSON so every field is visible and easy to read.
     pub fn render_detail(&self, line: &str) -> String {
         let mut j = Json::Null;
         if j.parse_replace(line).is_err() {
@@ -308,7 +404,7 @@ impl App {
         if !self.redact.is_empty() {
             jlf_core::redact(&mut j, &self.redact);
         }
-        format!("{}", j.indented(2))
+        format!("{:?}", j.styled(jlf_core::MarkupStyles::default()).indented(2))
     }
 
     fn view_lines(&self) -> Vec<&str> {
@@ -362,7 +458,21 @@ impl App {
             }
             "follow" => self.toggle_follow(),
             "csv" | "tsv" | "md" => self.export(verb, &rest),
-            other => self.status = format!("unknown command: {other}"),
+            "save" => match rest.first() {
+                Some(name) => match crate::save::save_recipe(name, &self.filter_text, &self.redact) {
+                    Ok((path, dup)) => {
+                        let note = if dup { " (name already existed)" } else { "" };
+                        self.status = format!("saved recipe '{name}' to {}{note}", path.display());
+                    }
+                    Err(e) => self.status = format!("save failed: {e}"),
+                },
+                None => self.status = "save needs a recipe name".into(),
+            },
+            "help" | "h" | "?" => self.help = true,
+            other => {
+                self.status =
+                    format!("unknown command '{other}' — try: {} (? for help)", COMMANDS.join(" "));
+            }
         }
     }
 

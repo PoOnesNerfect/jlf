@@ -102,6 +102,23 @@ pub fn suggest(input: &str, cat: &Catalog) -> (usize, Vec<String>) {
     }
 }
 
+/// Completions for a `:` command `input`. The first word completes against the
+/// known command `verbs`; later words complete field paths (arguments), split
+/// on whitespace or commas so `csv level,st` completes the `st` column.
+pub fn command_suggest(input: &str, cat: &Catalog, verbs: &[&str]) -> (usize, Vec<String>) {
+    let start = input
+        .rfind(|c: char| c.is_whitespace() || c == ',')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let token = &input[start..];
+    if input[..start].trim().is_empty() {
+        let verbs: Vec<String> = verbs.iter().map(|s| s.to_string()).collect();
+        (start, matching(&verbs, token, 12))
+    } else {
+        (start, matching(&cat.paths, token, 8))
+    }
+}
+
 /// The first filter operator in `word` as `(byte index, length)`.
 fn find_op(word: &str) -> Option<(usize, usize)> {
     const OPS2: [&str; 4] = ["!=", ">=", "<=", "!~"];

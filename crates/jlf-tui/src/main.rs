@@ -2,6 +2,7 @@ mod app;
 mod catalog;
 mod field;
 mod reader;
+mod save;
 mod summary;
 mod ui;
 
@@ -183,8 +184,21 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
 }
 
 fn handle_normal(app: &mut App, code: KeyCode) {
-    // A summary popup intercepts dismiss keys first.
-    if app.summary.is_some() && matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+    // The Actions panel captures keys while it's open.
+    if app.show_actions {
+        match code {
+            KeyCode::Esc | KeyCode::Char('a') => app.show_actions = false,
+            KeyCode::Char('j') | KeyCode::Down => app.action_move(1),
+            KeyCode::Char('k') | KeyCode::Up => app.action_move(-1),
+            KeyCode::Enter => app.run_action(),
+            _ => {}
+        }
+        return;
+    }
+
+    // A help or summary popup intercepts dismiss keys first.
+    if (app.help || app.summary.is_some()) && matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.help = false;
         app.summary = None;
         return;
     }
@@ -198,14 +212,22 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('J') | KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Char('K') | KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::Char('f') => app.toggle_follow(),
+        KeyCode::Char('a') => app.open_actions(),
+        KeyCode::Char('?') => app.help = !app.help,
         KeyCode::Char('/') => app.enter_search(),
-        KeyCode::Char(':') => {
-            app.mode = Mode::Command;
-            app.input.clear();
+        KeyCode::Char(':') => app.enter_command(),
+        // Enter opens/closes the detail pane for the selected record.
+        KeyCode::Enter => {
+            app.show_detail = !app.show_detail;
+            app.detail_scroll = 0;
         }
         KeyCode::Esc => {
-            if app.summary.is_some() {
+            if app.help {
+                app.help = false;
+            } else if app.summary.is_some() {
                 app.summary = None;
+            } else if app.show_detail {
+                app.show_detail = false;
             } else if !app.filter_text.is_empty() {
                 app.apply_filter(String::new());
             }
