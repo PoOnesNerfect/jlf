@@ -780,3 +780,18 @@ mod table_recipes {
         assert_eq!(out, "a;b\nx;y\n");
     }
 }
+
+#[test]
+fn dim_unmatched_surfaces_matches_first() {
+    // The hidden preview flag `--dim-unmatched` keeps non-matching records but
+    // emits them (faint) only after every match, so a filter's hits lead.
+    let out = run(&["--color=always", "--dim-unmatched", "level=error", "${ts}"], SAMPLE).0;
+    let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("missing {s} in:\n{out}"));
+    // Both matches (the two errors) precede every non-match.
+    for miss in ["10:00:01", "10:00:03", "10:00:04"] {
+        assert!(at("10:00:02") < at(miss), "match 02 should precede {miss}");
+        assert!(at("10:00:05") < at(miss), "match 05 should precede {miss}");
+    }
+    // Non-matches are dimmed (faint escape present).
+    assert!(out.contains("\u{1b}[2m"), "expected a dim escape for non-matches");
+}

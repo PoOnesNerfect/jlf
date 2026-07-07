@@ -57,7 +57,8 @@ pub struct Args {
     #[arg(short = 'f', long = "fields", value_name = "FIELDS", value_delimiter = ',')]
     fields: Vec<String>,
 
-    /// Redact fields by name; comma-separated globs (e.g. password,token,*.email).
+    /// Redact fields; comma-separated. A bare name or `*.name` matches that key
+    /// at any depth; a dotted path (`fields.message`) matches that rooted path.
     #[arg(short = 'r', long = "redact", value_name = "FIELDS", value_delimiter = ',')]
     redact: Vec<String>,
 
@@ -590,6 +591,10 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
     let mut buf = open_input(input)?;
     let mut line = String::new();
     let mut out = String::new();
+    // In dim mode, non-matching records are held here and emitted after all the
+    // matches, so a filter's hits surface at the top of the preview instead of
+    // being buried among misses. Preview input is bounded, so buffering is fine.
+    let mut dim_pending = String::new();
     let mut taken = 0;
 
     while buf.read_line(&mut line)? != 0 {
@@ -623,11 +628,12 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
                         out.push('\n');
                         stdout.write_all(out.as_bytes())?;
                     } else {
-                        // Non-matching in dim mode: faint-wrap the whole record.
+                        // Dim mode: hold the faint-wrapped record and emit it
+                        // after all matches (see `dim_pending`).
                         body_dim_fmt.as_ref().unwrap().as_log(&json).write_fmt(&mut out)?;
-                        stdout.write_all(b"\x1b[2m")?;
-                        stdout.write_all(out.as_bytes())?;
-                        stdout.write_all(b"\x1b[0m\n")?;
+                        dim_pending.push_str("\x1b[2m");
+                        dim_pending.push_str(&out);
+                        dim_pending.push_str("\x1b[0m\n");
                     }
                 }
                 Err(e) => {
@@ -665,6 +671,11 @@ fn render_output(o: RenderOutput, input: &[String]) -> Result<(), color_eyre::Re
         }
 
         line.clear();
+    }
+
+    // Emit the held non-matching (dimmed) records, after every match.
+    if !dim_pending.is_empty() {
+        stdout.write_all(dim_pending.as_bytes())?;
     }
 
     if let Some(ft) = &footer_fmt {
