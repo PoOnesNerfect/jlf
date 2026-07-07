@@ -11,6 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+jlf-core = { version = "0.4.0-dev", path = "../jlf-core" }
 dialoguer = "0.11"
 console = "0.15"
 etcetera = "0.11"

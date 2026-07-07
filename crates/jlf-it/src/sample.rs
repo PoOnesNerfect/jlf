@@ -26,6 +26,109 @@ fn count_nodes(v: &Value) -> usize {
     }
 }
 
+/// Reorder a *record* preview so the interesting lines aren't buried under
+/// repetitive spam: collapse near-duplicate records (same level/target and
+/// message shape — e.g. a run of "Skipping migration Vn…") to their first
+/// occurrence, then float higher-severity records to the top (stable within a
+/// severity, so order is otherwise preserved). Returns the selected raw lines
+/// joined by '\n', capped at `max`.
+///
+/// Used only for View/Export previews; summaries run on the full sample so
+/// their aggregates (counts, stats) stay accurate.
+pub fn curate(sample: &str, max: usize) -> String {
+    let mut seen = HashSet::new();
+    let mut picked: Vec<(u8, &str)> = Vec::new();
+    for line in sample.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) => {
+                if seen.insert(signature(&v)) {
+                    picked.push((severity_rank(&v), line));
+                }
+            }
+            // Keep unparseable lines, deduped by their exact text.
+            Err(_) if seen.insert(t.to_owned()) => picked.push((0, line)),
+            Err(_) => {}
+        }
+    }
+    // Stable sort keeps first-seen order within a severity; higher first.
+    picked.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+    picked
+        .iter()
+        .take(max)
+        .map(|(_, l)| *l)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Severity ordering used to float the most interesting records up.
+fn severity_rank(v: &Value) -> u8 {
+    match str_field(v, &["level", "lvl", "severity"])
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "error" | "err" | "fatal" | "critical" | "crit" => 4,
+        "warn" | "warning" => 3,
+        "info" => 2,
+        "debug" => 1,
+        _ => 0,
+    }
+}
+
+/// A shape key that collapses records differing only in variable data (numbers,
+/// filenames): level + target + the message with digit-bearing tokens masked.
+/// When there's no message, the top-level key set stands in so structurally
+/// distinct records aren't merged.
+fn signature(v: &Value) -> String {
+    let level = str_field(v, &["level", "lvl", "severity"]).unwrap_or_default();
+    let target = str_field(v, &["target", "logger", "module", "module_path"]).unwrap_or_default();
+    let msg = str_field(v, &["message", "msg", "body"])
+        .or_else(|| v.get("fields").and_then(|f| f.get("message")?.as_str()))
+        .unwrap_or_default();
+    let msg = normalize_msg(msg);
+    let shape = if msg.is_empty() { key_shape(v) } else { String::new() };
+    format!("{level}\u{1}{target}\u{1}{msg}\u{1}{shape}")
+}
+
+/// First string value among `keys` at the object's top level.
+fn str_field<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| v.get(*k)?.as_str())
+}
+
+/// Lowercase the message and mask any token carrying a digit to `#`, so
+/// `V1__a.sql` and `V2__b.sql` share a signature. First 8 tokens are enough to
+/// tell messages apart without over-splitting.
+fn normalize_msg(s: &str) -> String {
+    s.split_whitespace()
+        .map(|tok| {
+            let tok = tok.trim_matches(|c: char| !c.is_alphanumeric());
+            if tok.chars().any(|c| c.is_ascii_digit()) {
+                "#".to_owned()
+            } else {
+                tok.to_ascii_lowercase()
+            }
+        })
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Sorted top-level key names, as a fallback signature for messageless records.
+fn key_shape(v: &Value) -> String {
+    match v {
+        Value::Object(m) => {
+            let mut ks: Vec<&str> = m.keys().map(String::as_str).collect();
+            ks.sort_unstable();
+            ks.join(",")
+        }
+        _ => String::new(),
+    }
+}
+
 /// Pretty-print `v` with syntax colors. Keys/values whose dotted path is in
 /// `highlight` get a highlighted background.
 pub fn render(v: &Value, highlight: &HashSet<String>) -> String {
@@ -123,6 +226,25 @@ mod tests {
         );
         let v = richest(sample).unwrap();
         assert!(v.get("b").is_some());
+    }
+
+    #[test]
+    fn curate_collapses_spam_and_floats_errors() {
+        let sample = concat!(
+            r#"{"level":"INFO","message":"Skipping migration V1__a.sql"}"#, "\n",
+            r#"{"level":"INFO","message":"Skipping migration V2__b.sql"}"#, "\n",
+            r#"{"level":"INFO","message":"Skipping migration V3__c.sql"}"#, "\n",
+            r#"{"level":"INFO","message":"Server started"}"#, "\n",
+            r#"{"level":"ERROR","message":"connection refused"}"#, "\n",
+        );
+        let out = curate(sample, 80);
+        let lines: Vec<&str> = out.lines().collect();
+        // The three near-identical migration lines collapse to one.
+        assert_eq!(lines.len(), 3);
+        // The ERROR floats to the top.
+        assert!(lines[0].contains("connection refused"));
+        // One representative migration line survives.
+        assert_eq!(out.matches("Skipping migration").count(), 1);
     }
 
     #[test]

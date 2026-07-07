@@ -132,6 +132,7 @@ fn matching(items: &[String], token: &str, cap: usize) -> Vec<String> {
     let t = token.to_lowercase();
     let mut prefix = Vec::new();
     let mut substr = Vec::new();
+    let mut fuzzy: Vec<(usize, String)> = Vec::new();
     for it in items {
         let low = it.to_lowercase();
         if low == t {
@@ -141,9 +142,34 @@ fn matching(items: &[String], token: &str, cap: usize) -> Vec<String> {
             prefix.push(it.clone());
         } else if low.contains(&t) {
             substr.push(it.clone());
+        } else if let Some(span) = subsequence_span(&low, &t) {
+            // e.g. `spamess` matches `span.message` across the `.` separator.
+            fuzzy.push((span, it.clone()));
         }
     }
-    prefix.into_iter().chain(substr).take(cap).collect()
+    // Tighter subsequence matches (fewer skipped chars) rank first.
+    fuzzy.sort_by_key(|(span, _)| *span);
+    prefix
+        .into_iter()
+        .chain(substr)
+        .chain(fuzzy.into_iter().map(|(_, it)| it))
+        .take(cap)
+        .collect()
+}
+
+/// If every char of `needle` appears in `hay` in order, returns the span from
+/// the first to the last matched char (a tightness score, smaller is better);
+/// otherwise `None`. Used as the fuzzy fallback so a token can jump separators.
+fn subsequence_span(hay: &str, needle: &str) -> Option<usize> {
+    let mut chars = hay.char_indices();
+    let mut first = None;
+    let mut last = 0;
+    for nc in needle.chars() {
+        let (i, _) = chars.by_ref().find(|&(_, c)| c == nc)?;
+        first.get_or_insert(i);
+        last = i;
+    }
+    Some(last - first.unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -192,7 +218,22 @@ mod tests {
     #[test]
     fn match_paths_is_case_insensitive_substring() {
         let paths = vec!["fields.message".to_string()];
-        assert_eq!(match_paths(&paths, "MSG", 8), Vec::<String>::new());
+        // `mess` is a direct substring; `MSG` now matches fuzzily (m-s-g in order).
         assert_eq!(match_paths(&paths, "mess", 8), vec!["fields.message"]);
+        assert_eq!(match_paths(&paths, "MSG", 8), vec!["fields.message"]);
+    }
+
+    #[test]
+    fn match_paths_fuzzy_jumps_separators() {
+        let paths = vec![
+            "span.message".to_string(),
+            "span.method".to_string(),
+            "level".to_string(),
+        ];
+        // `spamess` is a subsequence of `span.message` but of neither other path.
+        assert_eq!(match_paths(&paths, "spamess", 8), vec!["span.message"]);
+        // Prefix/substring still win over fuzzy: `span` prefixes both spans.
+        let m = match_paths(&paths, "span", 8);
+        assert!(m.contains(&"span.message".to_string()) && m.contains(&"span.method".to_string()));
     }
 }

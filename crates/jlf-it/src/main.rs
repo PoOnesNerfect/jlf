@@ -23,19 +23,23 @@ fn main() {
     // Sample source: explicit file arg > piped stdin > interactive picker.
     let file_arg = std::env::args().nth(1);
 
-    let sample = if let Some(path) = &file_arg {
+    let (sample, run_input) = if let Some(path) = &file_arg {
         match input::from_file(path) {
-            Ok(s) => s,
+            Ok(s) => (s, wizard::RunInput::File(path.into())),
             Err(e) => {
                 eprintln!("jlf it: cannot read {path}: {e}");
                 std::process::exit(1);
             }
         }
-    } else if let Some(piped) = input::from_stdin_if_piped() {
-        piped
+    } else if let Some((s, live)) = input::from_stdin_if_piped() {
+        let ri = match live {
+            Some(l) => wizard::RunInput::Live(l),
+            None => wizard::RunInput::Sample,
+        };
+        (s, ri)
     } else {
         match pick_sample() {
-            Some(s) => s,
+            Some((s, path)) => (s, wizard::RunInput::File(path.into())),
             None => {
                 eprintln!("jlf it: no sample data. Try `jlf it <file>` or `cat logs | jlf it`.");
                 std::process::exit(1);
@@ -55,14 +59,15 @@ fn main() {
     }
 
     let jlf = preview::jlf_path();
-    if let Err(e) = wizard::run(sample, jlf) {
+    if let Err(e) = wizard::run(sample, jlf, run_input) {
         eprintln!("jlf it: {e}");
         std::process::exit(1);
     }
 }
 
 /// No file and no pipe: offer the bundled example if present, or ask for a path.
-fn pick_sample() -> Option<String> {
+/// Returns the sample text and the file it came from (so "Run it" can re-read it).
+fn pick_sample() -> Option<(String, String)> {
     for candidate in ["examples/sample.ndjson", "examples/dummy_logs"] {
         if let Ok(s) = input::from_file(candidate) {
             if !s.trim().is_empty() {
@@ -70,7 +75,7 @@ fn pick_sample() -> Option<String> {
                     "{}",
                     style(format!("Using sample data from {candidate}")).dim()
                 );
-                return Some(s);
+                return Some((s, candidate.to_owned()));
             }
         }
     }
@@ -79,5 +84,7 @@ fn pick_sample() -> Option<String> {
         .with_prompt("Path to a log file to preview against")
         .interact_text()
         .ok()?;
-    input::from_file(path.trim()).ok()
+    let path = path.trim().to_owned();
+    let s = input::from_file(&path).ok()?;
+    Some((s, path))
 }

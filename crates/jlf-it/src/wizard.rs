@@ -13,10 +13,18 @@ use serde_json::Value;
 
 use crate::builder::{Builder, Mode};
 use crate::fields::{self, Catalog};
-use crate::{preview, sample, save, synth};
+use crate::{input, preview, sample, save, synth};
 
 /// Outcome of a prompt: committed, or the user backed out (Esc/Ctrl-C).
 type Prompt = Result<(), ()>;
+
+/// Where "Run it" should read from: re-read a file, stream a preserved live
+/// pipe, or (fallback) feed the captured sample text.
+pub enum RunInput {
+    File(PathBuf),
+    Live(input::Live),
+    Sample,
+}
 
 /// Which completions a field applies while it's being edited.
 #[derive(Clone, Copy, PartialEq)]
@@ -60,13 +68,18 @@ struct Ctx<'a> {
     term: &'a Term,
     jlf: &'a Path,
     sample: &'a str,
+    /// A deduped, interest-ordered view of `sample` for record previews (see
+    /// [`sample::curate`]). Summaries use the full `sample` instead.
+    preview_sample: &'a str,
     cat: &'a Catalog,
     /// The richest sample record, shown (colored) so the user sees the raw data.
     example: Option<&'a Value>,
 }
 
 /// A discrete `Select` (mode pick, save target) — no live preview needed.
-fn select(prompt: &str, items: &[String], default: usize) -> Result<usize, ()> {
+/// Runs a dialoguer menu. Returns `Ok(Some(i))` for a pick, `Ok(None)` when the
+/// user presses Esc (a soft "back"), and `Err(())` on Ctrl-C (a hard quit).
+fn select(prompt: &str, items: &[String], default: usize) -> Result<Option<usize>, ()> {
     let default = default.min(items.len().saturating_sub(1));
     let r = Select::with_theme(&theme())
         .with_prompt(prompt)
@@ -76,7 +89,7 @@ fn select(prompt: &str, items: &[String], default: usize) -> Result<usize, ()> {
     if r.is_err() {
         show_cursor();
     }
-    r.map_err(|_| ())?.ok_or(())
+    r.map_err(|_| ())
 }
 
 /// A plain one-line text prompt (used for the save-recipe name, where there's
@@ -103,6 +116,24 @@ fn split_commas(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Split a filter input line into individual filters. A token that parses as a
+/// `field op value` filter starts a new one; tokens that don't are appended to
+/// the previous filter's value — so `fields.message~Build mode: DEBUG` stays a
+/// single `~` (contains) filter whose value has spaces, instead of being broken
+/// into three whitespace tokens.
+fn parse_filter_line(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in s.split_whitespace() {
+        if out.is_empty() || jlf_core::Filter::parse(tok).is_some() {
+            out.push(tok.to_owned());
+        } else if let Some(last) = out.last_mut() {
+            last.push(' ');
+            last.push_str(tok);
+        }
+    }
+    out
+}
+
 /// Does this input read as a `$`-template (vs a plain field list)?
 fn is_template(s: &str) -> bool {
     s.contains('$')
@@ -126,16 +157,20 @@ impl Drop for CursorGuard {
     }
 }
 
-pub fn run(sample: String, jlf: PathBuf) -> std::io::Result<()> {
+pub fn run(sample: String, jlf: PathBuf, mut run_input: RunInput) -> std::io::Result<()> {
     // Show the cursor again however this returns (normal, `?`, or panic).
     let _cursor = CursorGuard;
     let term = Term::stdout();
     let cat = Catalog::from_sample(&sample, 500);
     let example = sample::richest(&sample);
+    // A varied, deduped ordering for record previews; the catalog and richest
+    // record still see the full sample so autocomplete stays comprehensive.
+    let preview_sample = sample::curate(&sample, 80);
     let ctx = Ctx {
         term: &term,
         jlf: &jlf,
         sample: &sample,
+        preview_sample: &preview_sample,
         cat: &cat,
         example: example.as_ref(),
     };
@@ -144,16 +179,25 @@ pub fn run(sample: String, jlf: PathBuf) -> std::io::Result<()> {
         println!("\n{}", style("cancelled").dim());
         return Ok(());
     };
+    // Clear once for a clean canvas; from here every screen repaints in place.
+    let _ = term.clear_screen();
 
     // Keep the menu highlight where the user last left it.
     let mut cursor = 0usize;
     loop {
-        draw_body(&ctx, &b, false, &HashSet::new());
-
         let items = menu(&b);
-        let labels: Vec<String> = items.iter().map(|(label, _)| label.clone()).collect();
-        let Ok(choice) = select("Edit a part, or act", &labels, cursor) else {
-            return Ok(());
+        let choice = match menu_pick(&ctx, &b, &items, cursor) {
+            Pick::Item(c) => c,
+            // Esc backs out to the mode picker (like "Change mode"); use the
+            // "Quit" item or Ctrl-C to leave the builder entirely.
+            Pick::Back => match start() {
+                Some(nb) => {
+                    b = nb;
+                    cursor = 0;
+                    continue;
+                }
+                None => return Ok(()),
+            },
         };
         cursor = choice;
         match items[choice].1 {
@@ -173,17 +217,23 @@ pub fn run(sample: String, jlf: PathBuf) -> std::io::Result<()> {
                 let _ = edit_output_format(&ctx, &mut b);
             }
             Act::ChangeMode => {
+                // start()/save_flow use plain dialoguer prompts; clear the menu
+                // first so they don't print on top of it.
+                let _ = ctx.term.clear_screen();
                 if let Some(nb) = start() {
                     b = nb;
                 }
             }
             Act::Run => {
-                println!("\n{}", style("── output ───────────────").dim());
-                print!("{}", preview::run(&jlf, &b.to_args(), &sample));
-                println!("{}", style("─────────────────────────").dim());
-                return Ok(());
+                // Hand the built command the real input (a re-read file or the
+                // live pipe), so `docker logs -f | jlf it` keeps streaming
+                // instead of stopping at the finite sample.
+                let src = std::mem::replace(&mut run_input, RunInput::Sample);
+                return run_final(&jlf, &b, &sample, src);
             }
             Act::Save => {
+                let _ = ctx.term.clear_screen();
+                println!("{}", style(" jlf it — save a recipe ").black().on_cyan());
                 save_flow(&b)?;
                 let _ = Confirm::with_theme(&theme())
                     .with_prompt("continue")
@@ -197,12 +247,15 @@ pub fn run(sample: String, jlf: PathBuf) -> std::io::Result<()> {
 
 /// Run the preview, falling back to a synthesized matching record when the
 /// filters exclude everything in the sample. Returns `(output, synthesized?)`.
+/// Color is forced on so the framed preview shows level colors etc.; without it
+/// `jlf` sees a pipe and disables color.
 fn preview_or_synth(jlf: &Path, b: &Builder, sample: &str) -> (String, bool) {
-    let out = preview::run(jlf, &b.to_args(), sample);
+    let args = colored_args(b);
+    let out = preview::run(jlf, &args, sample);
     if out.trim() == "(no matching records)" && !b.filters.is_empty() {
         let first = sample.lines().find(|l| !l.trim().is_empty()).unwrap_or("{}");
         if let Some(line) = synth::synthesize(first, &b.filters) {
-            let s = preview::run(jlf, &b.to_args(), &line);
+            let s = preview::run(jlf, &args, &line);
             let t = s.trim();
             if !t.is_empty() && t != "(no matching records)" && !t.starts_with("(no output)") {
                 return (s, true);
@@ -212,71 +265,246 @@ fn preview_or_synth(jlf: &Path, b: &Builder, sample: &str) -> (String, bool) {
     (out, false)
 }
 
+/// Run the built command for real, streaming its output to the terminal. Reads
+/// from the original source — re-reading a file in full, or resuming the live
+/// pipe (so a `… -f` stream keeps flowing) — falling back to the sample text.
+/// jlf inherits the terminal, so it colors and flushes per record (live tail).
+fn run_final(jlf: &Path, b: &Builder, sample: &str, input: RunInput) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+
+    println!(
+        "\n{}",
+        style(format!("── running: {} · Ctrl-C to stop ──", b.command_line())).dim()
+    );
+
+    let mut cmd = Command::new(jlf);
+    cmd.args(b.to_args())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    match input {
+        RunInput::File(path) => {
+            cmd.stdin(Stdio::from(std::fs::File::open(path)?));
+            cmd.status()?;
+        }
+        RunInput::Live(live) => {
+            // Feed the sampler's buffered remainder, then splice the live pipe.
+            cmd.stdin(Stdio::piped());
+            let mut child = cmd.spawn()?;
+            if let Some(mut si) = child.stdin.take() {
+                let _ = si.write_all(&live.leftover);
+                let mut pipe = live.pipe;
+                let _ = std::io::copy(&mut pipe, &mut si);
+            }
+            child.wait()?;
+        }
+        RunInput::Sample => {
+            cmd.stdin(Stdio::piped());
+            let mut child = cmd.spawn()?;
+            if let Some(mut si) = child.stdin.take() {
+                let _ = si.write_all(sample.as_bytes());
+            }
+            child.wait()?;
+        }
+    }
+    Ok(())
+}
+
+/// `jlf` args with color forced on (previews render through a pipe, where jlf
+/// would otherwise auto-disable color).
+fn colored_args(b: &Builder) -> Vec<String> {
+    let mut args = vec!["--color=always".to_owned()];
+    args.extend(b.to_args());
+    args
+}
+
+/// Keep only the records matching `filter_strs`, then curate them (dedup +
+/// interest order) so a filtered preview shows varied matches rather than the
+/// first repetitive ones. Filtering *before* curation guarantees no matching
+/// record is dropped by the dedup step. Unparseable filters are ignored (the
+/// preview falls back to curating everything).
+fn curate_matching(sample: &str, filter_strs: &[String]) -> String {
+    let filters: Vec<jlf_core::Filter> = filter_strs
+        .iter()
+        .filter_map(|s| jlf_core::Filter::parse(s))
+        .collect();
+    if filters.is_empty() {
+        return sample::curate(sample, 80);
+    }
+    let mut matching = String::new();
+    for line in sample.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut j = jlf_core::Json::Null;
+        let ok = j
+            .parse_replace(line)
+            .map(|()| jlf_core::matches_all(&filters, &j))
+            .unwrap_or(false);
+        if ok {
+            matching.push_str(line);
+            matching.push('\n');
+        }
+    }
+    sample::curate(&matching, 80)
+}
+
 /// A preview that keeps every record on screen: matching ones in color, the rest
 /// dimmed. Used while editing filters (View mode) so records don't vanish as you
 /// type a not-yet-finished filter.
 fn preview_dim(jlf: &Path, b: &Builder, sample: &str) -> String {
-    let mut args = vec!["--color=always".to_owned(), "--dim-unmatched".to_owned()];
-    args.extend(b.to_args());
+    let mut args = colored_args(b);
+    args.insert(1, "--dim-unmatched".to_owned());
     preview::run(jlf, &args, sample)
 }
 
-/// Render the header, the equivalent command, the raw sample record (colored,
-/// with typed fields highlighted), and the live preview. Shared by the menu and
-/// every edit session. Panels are padded to a terminal-height-adaptive height so
-/// nothing below them shifts as content changes. `dim` dims non-matching records
-/// in the preview; `highlight` is the set of field paths to light up.
-fn draw_body(ctx: &Ctx, b: &Builder, dim: bool, highlight: &HashSet<String>) {
-    let _ = ctx.term.clear_screen();
-    println!("{}", style(" jlf it — build a command ").black().on_cyan());
-    println!("\n{} {}", style("command").dim(), style(b.command_line()).cyan());
-
-    // Split the free rows between the sample record and the preview.
-    let (rows, _) = ctx.term.size();
-    let avail = (rows as usize).saturating_sub(11).max(8);
-    let sample_rows = if ctx.example.is_some() {
-        (avail * 2 / 5).clamp(3, 12)
+/// Render the title, the raw sample record (colored, with typed fields
+/// highlighted), the live preview, and the equivalent command — each in its own
+/// bordered frame, with the command frame just above the footer so it's easy to
+/// find. Heights adapt to the terminal so the input never shifts; `footer_rows`
+/// is how many rows the caller draws below (menu list, or edit prompt).
+/// `sample_scroll` scrolls the sample frame.
+fn draw_body(
+    ctx: &Ctx,
+    b: &Builder,
+    dim: bool,
+    highlight: &HashSet<String>,
+    sample_scroll: usize,
+    footer_rows: usize,
+) {
+    let (rows, cols) = ctx.term.size();
+    let width = (cols as usize).max(20);
+    // Budget: title (1) + footer + the command frame (3) + two content frames
+    // (2 border rows each). Whatever's left is split between sample and preview.
+    let content = (rows as usize)
+        .saturating_sub(1 + 3 + footer_rows + 4)
+        .max(6);
+    // Summaries show a short aggregate, so give the data (sample) more room.
+    let sample_share = if b.mode() == Mode::Summarize { 3 } else { 2 };
+    let sample_h = if ctx.example.is_some() {
+        (content * sample_share / 5).clamp(3, 30)
     } else {
         0
     };
-    let preview_rows = avail.saturating_sub(sample_rows).clamp(3, 16);
+    let preview_h = content.saturating_sub(sample_h).max(3);
+
+    // Repaint in place from the top-left. Clearing the screen first blanks it
+    // for a frame, which reads as a flash while typing; instead we move home and
+    // every line erases its own tail (\x1b[K), so the new frame overwrites the
+    // old one directly with nothing ever going blank.
+    let mut screen = String::from("\x1b[H");
+    line(&mut screen, &style(" jlf it — build a command ").black().on_cyan().to_string());
 
     if let Some(ex) = ctx.example {
-        println!("{}", style("── sample record · matches highlighted ──").dim());
-        emit_rows(&sample::render(ex, highlight), sample_rows);
+        let lines: Vec<String> = sample::render(ex, highlight).lines().map(String::from).collect();
+        draw_frame(&mut screen, "sample record · matches highlighted", &lines, sample_h, width, sample_scroll);
     }
 
-    let (out, synthesized) = if dim {
-        (preview_dim(ctx.jlf, b, ctx.sample), false)
+    // Pick the preview source:
+    // - Summaries aggregate over the whole sample (counts must be accurate).
+    // - Dim (filter editing) keeps the full sample so matches surface in context.
+    // - A record preview with an active filter curates the *matching* records
+    //   (filter first, then dedup) so it shows varied matches, not repeats.
+    // - Otherwise, the pre-curated whole-sample view.
+    let filtered;
+    let src: &str = if b.mode() == Mode::Summarize || dim {
+        ctx.sample
+    } else if b.filters.is_empty() {
+        ctx.preview_sample
     } else {
-        preview_or_synth(ctx.jlf, b, ctx.sample)
+        filtered = curate_matching(ctx.sample, &b.filters);
+        &filtered
     };
-    let label = if synthesized {
-        style("── preview · synthesized example (nothing matched) ──").yellow()
+    let (pv, synthesized) = if dim {
+        (preview_dim(ctx.jlf, b, src), false)
+    } else {
+        preview_or_synth(ctx.jlf, b, src)
+    };
+    let title = if synthesized {
+        "preview · synthesized example (nothing in the sample matched)"
     } else if dim {
-        style("── preview · matches in color, others dimmed ──").dim()
+        "preview · matches first (colored), the rest dimmed below"
+    } else if b.mode() == Mode::Summarize {
+        "preview"
     } else {
-        style("── preview ──────────────").dim()
+        "preview · varied sample (repeats collapsed, errors first)"
     };
-    println!("{label}");
-    emit_rows(&out, preview_rows);
-    println!("{}", style("─────────────────────────").dim());
+    let plines: Vec<String> = pv.lines().map(String::from).collect();
+    draw_frame(&mut screen, title, &plines, preview_h, width, 0);
+
+    // The command it builds, framed and near the footer so it's not lost at the top.
+    draw_frame(&mut screen, "command", &[style(b.command_line()).cyan().to_string()], 1, width, 0);
+
+    print!("{screen}");
+    let _ = std::io::stdout().flush();
 }
 
-/// Print exactly `rows` lines of `text` (indented), padding with blanks and
-/// collapsing any overflow into a `… (+N more)` line, so the height is fixed.
-fn emit_rows(text: &str, rows: usize) {
-    let lines: Vec<&str> = text.lines().collect();
-    for i in 0..rows {
-        if lines.len() > rows && i == rows - 1 {
-            let more = lines.len() - (rows - 1);
-            println!("  {}", style(format!("… (+{more} more)")).dim());
-        } else if i < lines.len() {
-            println!("  {}", lines[i]);
-        } else {
-            println!();
-        }
+/// Append one screen line to `out`: the content, then erase-to-end-of-line so a
+/// shorter line cleanly overwrites a longer previous one, then a newline.
+fn line(out: &mut String, content: &str) {
+    out.push_str(content);
+    out.push_str("\x1b[K\n");
+}
+
+/// Append a bordered frame `width` wide with `title`, showing `height` rows of
+/// `lines` starting at `scroll`. Content is ANSI-aware truncated/padded to the
+/// frame width; the bottom border shows how many lines remain below.
+fn draw_frame(
+    out: &mut String,
+    title: &str,
+    lines: &[String],
+    height: usize,
+    width: usize,
+    scroll: usize,
+) {
+    let inner = width - 2; // columns between the border characters
+    let cw = inner.saturating_sub(2).max(1); // content width (one space each side)
+    let scroll = scroll.min(lines.len().saturating_sub(1));
+
+    // top border: ┌─ title ──────┐
+    let seg = format!(" {title} ");
+    let segw = console::measure_text_width(&seg);
+    line(
+        out,
+        &format!(
+            "{}{}{}{}",
+            style("┌─").dim(),
+            style(seg).cyan(),
+            style("─".repeat(inner.saturating_sub(1 + segw))).dim(),
+            style("┐").dim(),
+        ),
+    );
+
+    for i in 0..height {
+        let raw = lines.get(scroll + i).map(String::as_str).unwrap_or("");
+        let shown = console::truncate_str(raw, cw, "…");
+        let pad = cw.saturating_sub(console::measure_text_width(&shown));
+        line(
+            out,
+            &format!(
+                "{} {}{}\u{1b}[0m {}",
+                style("│").dim(),
+                shown,
+                " ".repeat(pad),
+                style("│").dim(),
+            ),
+        );
     }
+
+    // bottom border, indicating scroll position.
+    let below = lines.len().saturating_sub(scroll + height);
+    let label = if below > 0 {
+        format!("─ ↓ {below} more · PgDn ")
+    } else if scroll > 0 {
+        "─ ↑ PgUp for top ".to_string()
+    } else {
+        String::new()
+    };
+    let lw = console::measure_text_width(&label);
+    line(
+        out,
+        &style(format!("└{label}{}┘", "─".repeat(inner.saturating_sub(lw)))).dim().to_string(),
+    );
 }
 
 /// A text field edited in place: the preview (built from `b` with `apply(buf)`)
@@ -299,12 +527,23 @@ fn live_edit(
     let mut pos = buf.len();
     let mut sel = 0usize; // highlighted suggestion
     let mut dismissed = false; // suggestions hidden (Esc) so Enter commits
+    // Whether the user has actively moved through the suggestions (Tab/↑↓). Only
+    // then does Enter fill from an *empty* buffer — otherwise Enter on an empty
+    // field commits the empty value, so you can clear a filter and confirm it.
+    let mut engaged = false;
+    let mut sample_scroll = 0usize; // PgUp/PgDn scroll of the sample frame
+    let sample_len = ctx
+        .example
+        .map(|e| sample::render(e, &HashSet::new()).lines().count())
+        .unwrap_or(0);
     loop {
         let s: String = buf.iter().collect();
         let mut preview_b = b.clone();
         apply(&mut preview_b, &s);
         let highlight = fields::active_fields(&s, &ctx.cat.paths);
-        draw_body(ctx, &preview_b, dim, &highlight);
+        // Footer below the frames: suggestion row + hint row + prompt + input.
+        let _ = ctx.term.hide_cursor();
+        draw_body(ctx, &preview_b, dim, &highlight, sample_scroll, 4);
 
         let (tok_start, tok_end, all) = suggestions(complete, &buf, pos, ctx.cat);
         let cands = if dismissed { Vec::new() } else { all };
@@ -312,9 +551,10 @@ fn live_edit(
 
         // Always emit the suggestion + hint lines (blank when none) so the input
         // row never moves.
+        let mut foot = String::new();
         if cands.is_empty() {
-            println!();
-            println!();
+            line(&mut foot, "");
+            line(&mut foot, "");
         } else {
             let row = cands
                 .iter()
@@ -328,44 +568,57 @@ fn live_edit(
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            println!("{} {}", style("⇥").dim(), row);
-            println!("  {}", style("Tab/↑↓ pick · ⏎ fill · Esc dismiss").dim());
+            line(&mut foot, &format!("{} {}", style("⇥").dim(), row));
+            line(&mut foot, &format!("  {}", style("Tab/↑↓ pick · ⏎ fill · Esc dismiss").dim()));
         }
+        line(&mut foot, &style(prompt).cyan().to_string());
+        // Input line: erase its tail and everything below it (stale rows from a
+        // taller previous frame) so nothing ghosts as the buffer shrinks.
+        foot.push_str(&format!("{} {}\x1b[K\x1b[J", style("›").cyan(), s));
+        print!("{foot}");
 
-        println!("{}", style(prompt).cyan());
-        print!("{} {}", style("›").cyan(), s);
-        let _ = std::io::stdout().flush();
         let trailing = buf.len() - pos;
         if trailing > 0 {
             let _ = ctx.term.move_cursor_left(trailing);
         }
         let _ = ctx.term.show_cursor();
+        let _ = std::io::stdout().flush();
 
         match ctx.term.read_key() {
-            // Enter fills the highlighted suggestion (even from an empty buffer);
-            // with no suggestions showing it commits the field.
+            // Enter fills the highlighted suggestion when completing a partial
+            // token, or from an empty buffer only once you've moved through the
+            // list; otherwise it commits the buffer — so clearing to empty and
+            // pressing Enter applies the empty value (e.g. clears a filter).
             Ok(Key::Enter) => {
-                if !cands.is_empty() {
+                if !cands.is_empty() && (!s.is_empty() || engaged) {
                     let repl: Vec<char> = cands[sel].chars().collect();
                     buf.splice(tok_start..tok_end, repl.iter().copied());
                     pos = tok_start + repl.len();
                     sel = 0;
+                    engaged = false;
                 } else {
                     apply(b, &s);
                     return Ok(());
                 }
             }
-            // Esc first dismisses the suggestions (so the next Enter commits),
-            // then backs out of the edit.
+            // With a non-empty buffer, Esc first dismisses the popup (so Enter
+            // can commit what you typed); with an empty field there's nothing to
+            // keep, so Esc exits straight away.
             Ok(Key::Escape) => {
-                if !cands.is_empty() {
+                if !cands.is_empty() && !s.trim().is_empty() {
                     dismissed = true;
                 } else {
                     return Err(());
                 }
             }
+            // PgDn/PgUp scroll the sample-record frame.
+            Ok(Key::PageDown) => {
+                sample_scroll = (sample_scroll + 3).min(sample_len.saturating_sub(1));
+            }
+            Ok(Key::PageUp) => sample_scroll = sample_scroll.saturating_sub(3),
             Ok(Key::Tab) | Ok(Key::ArrowDown) => {
                 dismissed = false;
+                engaged = true;
                 let n = suggestions(complete, &buf, pos, ctx.cat).2.len();
                 if n > 0 {
                     sel = (sel + 1) % n;
@@ -373,6 +626,7 @@ fn live_edit(
             }
             Ok(Key::BackTab) | Ok(Key::ArrowUp) => {
                 dismissed = false;
+                engaged = true;
                 let n = suggestions(complete, &buf, pos, ctx.cat).2.len();
                 if n > 0 {
                     sel = (sel + n - 1) % n;
@@ -397,17 +651,20 @@ fn live_edit(
                 }
                 sel = 0;
                 dismissed = false;
+                engaged = false;
             }
             Ok(Key::Backspace) if pos > 0 => {
                 pos -= 1;
                 buf.remove(pos);
                 sel = 0;
                 dismissed = false;
+                engaged = false;
             }
             Ok(Key::Del) if pos < buf.len() => {
                 buf.remove(pos);
                 sel = 0;
                 dismissed = false;
+                engaged = false;
             }
             Ok(Key::ArrowLeft) => pos = pos.saturating_sub(1),
             Ok(Key::ArrowRight) if pos < buf.len() => pos += 1,
@@ -419,13 +676,22 @@ fn live_edit(
     }
 }
 
-/// Delete the word before the cursor (any whitespace, then non-whitespace).
+/// A "word" for line editing is a run of identifier chars (`alnum`/`_`); every
+/// other character — whitespace, `,`, `.`, filter operators — is a boundary.
+/// This lets Ctrl-W stop at `,`/`.` inside field paths and column lists instead
+/// of wiping the whole line when nothing is space-separated.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Delete the word before the cursor: skip the run of boundary chars, then the
+/// preceding run of word chars (so `a.b.c` deletes `c`, then `.b`, then `.a`).
 fn delete_word_back(buf: &mut Vec<char>, pos: &mut usize) {
     let mut i = *pos;
-    while i > 0 && buf[i - 1].is_whitespace() {
+    while i > 0 && !is_word_char(buf[i - 1]) {
         i -= 1;
     }
-    while i > 0 && !buf[i - 1].is_whitespace() {
+    while i > 0 && is_word_char(buf[i - 1]) {
         i -= 1;
     }
     buf.drain(i..*pos);
@@ -529,7 +795,7 @@ fn trimmed_span(buf: &[char], start: usize, end: usize) -> (usize, usize) {
 }
 
 /// A choice edited in place: the preview reflects the highlighted option live.
-/// Arrows or number keys move; Enter commits, Esc backs out.
+/// Tab/Shift-Tab, ↑/↓, j/k, or a number key move; Enter commits, Esc backs out.
 fn live_select(
     ctx: &Ctx,
     b: &mut Builder,
@@ -539,20 +805,30 @@ fn live_select(
     apply: impl Fn(&mut Builder, usize),
 ) -> Prompt {
     let mut sel = default.min(items.len().saturating_sub(1));
+    let n = items.len();
     loop {
         let mut preview_b = b.clone();
         apply(&mut preview_b, sel);
-        draw_body(ctx, &preview_b, false, &HashSet::new());
+        // Footer: the prompt line plus one row per choice.
+        let _ = ctx.term.hide_cursor();
+        draw_body(ctx, &preview_b, false, &HashSet::new(), 0, items.len() + 2);
 
-        println!("{}", style(prompt).cyan());
+        let mut foot = String::new();
+        line(&mut foot, &style(prompt).cyan().to_string());
         for (i, it) in items.iter().enumerate() {
             if i == sel {
-                println!("{} {}", style("❯").cyan(), style(it).cyan().bold());
+                line(&mut foot, &format!("{} {}", style("❯").cyan(), style(it).cyan().bold()));
             } else {
-                println!("  {}", style(it).dim());
+                line(&mut foot, &format!("  {}", style(it).dim()));
             }
         }
-        let _ = ctx.term.hide_cursor();
+        // Last footer line + erase anything below (stale rows) to avoid ghosts.
+        foot.push_str(&format!(
+            "{}\x1b[K\x1b[J",
+            style("Tab/↑↓/jk move · ⏎ select · Esc back").dim()
+        ));
+        print!("{foot}");
+        let _ = std::io::stdout().flush();
 
         match ctx.term.read_key() {
             Ok(Key::Enter) => {
@@ -564,11 +840,11 @@ fn live_select(
                 let _ = ctx.term.show_cursor();
                 return Err(());
             }
-            Ok(Key::ArrowUp) => sel = sel.saturating_sub(1),
-            Ok(Key::ArrowDown) if sel + 1 < items.len() => sel += 1,
+            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => sel = (sel + 1) % n,
+            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => sel = (sel + n - 1) % n,
             Ok(Key::Char(c)) if c.is_ascii_digit() => {
                 let d = (c as usize) - ('0' as usize);
-                if d >= 1 && d <= items.len() {
+                if d >= 1 && d <= n {
                     sel = d - 1;
                 }
             }
@@ -609,7 +885,12 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
     match b.mode() {
         Mode::View => {
             let layout = b.template.clone().unwrap_or_else(|| b.fields.join(","));
-            m.push((format!("Template / fields — {}", shown(&layout)), Act::EditView));
+            let desc = if layout.is_empty() {
+                "whole record".to_string()
+            } else {
+                layout
+            };
+            m.push((format!("Fields to show — {desc}"), Act::EditView));
             m.push((
                 format!("Compact — {}", if b.compact { "on" } else { "off" }),
                 Act::ToggleCompact,
@@ -652,6 +933,94 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
     m
 }
 
+/// The one-key accelerator for a menu action. Unique within any single mode's
+/// menu (Redact uses `d` and Summary uses `y` so Run/Save can keep `r`/`s`).
+fn accel(act: Act) -> char {
+    match act {
+        Act::EditFilters => 'f',
+        Act::EditView => 't',     // Template / fields (View only)
+        Act::ToggleCompact => 'c',
+        Act::EditRedact => 'd',
+        Act::EditSummary => 'y',
+        Act::EditOutputFormat => 'o',
+        Act::EditExport => 't',   // Table (Export only) — never coexists with EditView
+        Act::ChangeMode => 'm',
+        Act::Run => 'r',
+        Act::Save => 's',
+        Act::Quit => 'q',
+    }
+}
+
+/// Outcome of the main menu: an item was chosen, or the user backed out (Esc).
+/// Ctrl-C exits via the global handler, so it needs no variant here.
+enum Pick {
+    Item(usize),
+    Back,
+}
+
+/// The main menu: draws the frames plus the action list, each tagged with its
+/// one-key accelerator. Enter picks the highlight; pressing an accelerator (or a
+/// 1-based digit) jumps straight to that item; ↑↓/jk/Tab move; Esc backs out.
+fn menu_pick(ctx: &Ctx, b: &Builder, items: &[(String, Act)], start: usize) -> Pick {
+    let accels: Vec<char> = items.iter().map(|(_, a)| accel(*a)).collect();
+    let n = items.len();
+    let mut sel = start.min(n.saturating_sub(1));
+    loop {
+        let _ = ctx.term.hide_cursor();
+        draw_body(ctx, b, false, &HashSet::new(), 0, n + 2);
+
+        let mut foot = String::new();
+        line(&mut foot, &style("Edit a part, or act").cyan().to_string());
+        for (i, ((label, _), key)) in items.iter().zip(&accels).enumerate() {
+            let tag = format!("[{key}]");
+            if i == sel {
+                line(
+                    &mut foot,
+                    &format!("{} {} {}", style("❯").cyan(), style(tag).cyan().bold(), style(label).cyan().bold()),
+                );
+            } else {
+                line(&mut foot, &format!("  {} {}", style(tag).yellow(), style(label).dim()));
+            }
+        }
+        foot.push_str(&format!(
+            "{}\x1b[K\x1b[J",
+            style("letter jumps · ↑↓/jk move · ⏎ select · Esc back").dim()
+        ));
+        print!("{foot}");
+        let _ = std::io::stdout().flush();
+
+        match ctx.term.read_key() {
+            Ok(Key::Enter) => {
+                let _ = ctx.term.show_cursor();
+                return Pick::Item(sel);
+            }
+            Ok(Key::Escape) => {
+                let _ = ctx.term.show_cursor();
+                return Pick::Back;
+            }
+            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => sel = (sel + 1) % n,
+            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => sel = (sel + n - 1) % n,
+            // A 1-based digit jumps straight to that item.
+            Ok(Key::Char(c)) if c.is_ascii_digit() => {
+                let d = (c as usize).wrapping_sub('1' as usize);
+                if d < n {
+                    let _ = ctx.term.show_cursor();
+                    return Pick::Item(d);
+                }
+            }
+            // Any other letter that matches an accelerator activates it.
+            Ok(Key::Char(c)) => {
+                let lc = c.to_ascii_lowercase();
+                if let Some(i) = accels.iter().position(|&k| k == lc) {
+                    let _ = ctx.term.show_cursor();
+                    return Pick::Item(i);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Pick the mode, returning a fresh builder seeded for it.
 fn start() -> Option<Builder> {
     let mode = match select(
@@ -663,9 +1032,9 @@ fn start() -> Option<Builder> {
         ],
         0,
     ) {
-        Ok(0) => Mode::View,
-        Ok(1) => Mode::Summarize,
-        Ok(2) => Mode::Export,
+        Ok(Some(0)) => Mode::View,
+        Ok(Some(1)) => Mode::Summarize,
+        Ok(Some(2)) => Mode::Export,
         _ => return None,
     };
     let mut b = Builder::default();
@@ -689,7 +1058,7 @@ fn edit_filters(ctx: &Ctx, b: &mut Builder) -> Prompt {
         &initial,
         dim,
         Complete::Filter,
-        |b, s| b.filters = s.split_whitespace().map(str::to_owned).collect(),
+        |b, s| b.filters = parse_filter_line(s),
     )
 }
 
@@ -698,10 +1067,10 @@ fn edit_view(ctx: &Ctx, b: &mut Builder) -> Prompt {
     live_edit(
         ctx,
         b,
-        "Template or fields (`$ts $msg` / `${level}` = template, `ts,level` = fields, blank = default)",
+        "Which fields to show on each line? A comma list like  timestamp,level,message  — or blank to show the whole record. (Advanced: a $template like  $level $message.)",
         &initial,
         false,
-        Complete::None,
+        Complete::List,
         |b, s| {
             let s = s.trim();
             if s.is_empty() {
@@ -723,7 +1092,7 @@ fn edit_redact(ctx: &Ctx, b: &mut Builder) -> Prompt {
     live_edit(
         ctx,
         b,
-        "Redact fields (comma globs like `token,*.email`, blank to clear)",
+        "Redact fields — names or paths like  token, fields.message, *.email  (blank to clear)",
         &initial,
         false,
         Complete::List,
@@ -734,9 +1103,15 @@ fn edit_redact(ctx: &Ctx, b: &mut Builder) -> Prompt {
 fn edit_summary(ctx: &Ctx, b: &mut Builder) {
     const VERBS: [&str; 4] = ["count", "stats", "top", "uniq"];
     let cur = VERBS.iter().position(|v| Some(*v) == b.verb.as_deref()).unwrap_or(0);
-    let _ = live_select(ctx, b, "Which summary?", &VERBS, cur, |b, i| {
+    // Esc on any step cancels the whole flow (back to the menu), rather than
+    // advancing to the next step.
+    if live_select(ctx, b, "Which summary?", &VERBS, cur, |b, i| {
         b.verb = Some(VERBS[i].to_owned())
-    });
+    })
+    .is_err()
+    {
+        return;
+    }
 
     let verb = b.verb.clone().unwrap_or_default();
     let prompt = if verb == "count" {
@@ -745,15 +1120,23 @@ fn edit_summary(ctx: &Ctx, b: &mut Builder) {
         "Field?"
     };
     let field0 = b.field.clone().unwrap_or_default();
-    let _ = live_edit(ctx, b, prompt, &field0, false, Complete::Field, |b, s| {
+    if live_edit(ctx, b, prompt, &field0, false, Complete::Field, |b, s| {
         b.field = (!s.trim().is_empty()).then(|| s.trim().to_owned())
-    });
+    })
+    .is_err()
+    {
+        return;
+    }
 
     if verb == "top" {
         let n0 = b.n.map(|n| n.to_string()).unwrap_or_default();
-        let _ = live_edit(ctx, b, "How many (top N)?", &n0, false, Complete::None, |b, s| {
+        if live_edit(ctx, b, "How many (top N)?", &n0, false, Complete::None, |b, s| {
             b.n = s.trim().parse().ok()
-        });
+        })
+        .is_err()
+        {
+            return;
+        }
     }
     let by0 = b.by.clone().unwrap_or_default();
     let _ = live_edit(ctx, b, "Group by a field? (blank to skip)", &by0, false, Complete::Field, |b, s| {
@@ -764,9 +1147,15 @@ fn edit_summary(ctx: &Ctx, b: &mut Builder) {
 fn edit_export(ctx: &Ctx, b: &mut Builder) {
     const FMTS: [&str; 3] = ["csv", "tsv", "md"];
     let cur = FMTS.iter().position(|v| Some(*v) == b.format.as_deref()).unwrap_or(0);
-    let _ = live_select(ctx, b, "Table format?", &FMTS, cur, |b, i| {
+    // Esc on the format picker cancels the whole flow instead of advancing to
+    // the columns editor.
+    if live_select(ctx, b, "Table format?", &FMTS, cur, |b, i| {
         b.format = Some(FMTS[i].to_owned())
-    });
+    })
+    .is_err()
+    {
+        return;
+    }
     let cols0 = b.fields.join(",");
     let _ = live_edit(
         ctx,
@@ -807,7 +1196,7 @@ fn save_flow(b: &Builder) -> std::io::Result<()> {
 
     let targets = save::targets();
     let labels: Vec<String> = targets.iter().map(|t| t.label.clone()).collect();
-    let Ok(choice) = select("Save where?", &labels, 0) else {
+    let Ok(Some(choice)) = select("Save where?", &labels, 0) else {
         return Ok(());
     };
     let target = &targets[choice];
@@ -830,4 +1219,46 @@ fn save_flow(b: &Builder) -> std::io::Result<()> {
     );
     println!("{}", style(format!("  run it any time with: jlf @{name}")).dim());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{delete_word_back, parse_filter_line};
+
+    #[test]
+    fn parse_filter_line_keeps_spaced_values() {
+        // A `~` value with spaces stays one filter.
+        assert_eq!(
+            parse_filter_line("fields.message~Build mode: DEBUG"),
+            vec!["fields.message~Build mode: DEBUG"]
+        );
+        // Each `field op value` token starts a new filter.
+        assert_eq!(
+            parse_filter_line("level=INFO status>=500"),
+            vec!["level=INFO", "status>=500"]
+        );
+        // A spaced value followed by another filter.
+        assert_eq!(parse_filter_line("msg~a b level=INFO"), vec!["msg~a b", "level=INFO"]);
+    }
+
+    fn ctrl_w(s: &str) -> String {
+        let mut buf: Vec<char> = s.chars().collect();
+        let mut pos = buf.len();
+        delete_word_back(&mut buf, &mut pos);
+        let out: String = buf.iter().collect();
+        assert_eq!(pos, buf.len());
+        out
+    }
+
+    #[test]
+    fn ctrl_w_stops_at_path_and_list_boundaries() {
+        // Dotted path: peel one segment at a time, not the whole line. A leading
+        // boundary is consumed with the word it precedes (standard readline).
+        assert_eq!(ctrl_w("level,fields.message,span.method"), "level,fields.message,span.");
+        assert_eq!(ctrl_w("level,fields.message,span."), "level,fields.message,");
+        assert_eq!(ctrl_w("level,fields.message,"), "level,fields.");
+        // Whitespace still works; underscores stay part of a word.
+        assert_eq!(ctrl_w("ts level user_id"), "ts level ");
+        assert_eq!(ctrl_w("user_id"), "");
+    }
 }
