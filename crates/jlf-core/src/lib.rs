@@ -1,7 +1,7 @@
 pub mod colors;
 
 mod json;
-pub use json::{parse_json, Json, ParseError};
+pub use json::{parse_json, Json, MarkupStyles, ParseError};
 
 mod format;
 pub use format::{column, Column, Escape, FormattedLog, Formatter};

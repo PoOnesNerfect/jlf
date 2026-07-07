@@ -839,14 +839,14 @@ impl Json<'_> {
             Json::Object(obj) => {
                 if !obj
                     .iter()
-                    .any(|(key, value)| !value.is_null() && !is_excluded(excluded, |t| token_matches_key(t, key)))
+                    .any(|(key, value)| !value.is_null() && !is_excluded_key(excluded, key))
                 {
                     return write_syntax(f, "{}", styles);
                 }
                 write_syntax(f, "{", styles)?;
                 let mut first = true;
                 for (key, value) in obj.iter() {
-                    if value.is_null() || is_excluded(excluded, |t| token_matches_key(t, key)) {
+                    if value.is_null() || is_excluded_key(excluded, key) {
                         continue;
                     }
                     if !first {
@@ -861,7 +861,7 @@ impl Json<'_> {
                     if indent.is_some() {
                         write!(f, " ")?;
                     }
-                    let child = child_excluded(excluded, |t| token_matches_key(t, key));
+                    let child = child_excluded_key(excluded, key);
                     write_rest_value(f, value, &child, indent, styles)?;
                 }
                 if let Some(ind) = indent {
@@ -916,9 +916,9 @@ impl Json<'_> {
         match self {
             Json::Object(obj) => obj.iter().any(|(key, value)| {
                 !value.is_null()
-                    && !is_excluded(excluded, |t| token_matches_key(t, key))
+                    && !is_excluded_key(excluded, key)
                     && {
-                        let child = child_excluded(excluded, |t| token_matches_key(t, key));
+                        let child = child_excluded_key(excluded, key);
                         child.is_empty() || value.has_rest_content(&child)
                     }
             }),
@@ -975,8 +975,50 @@ fn child_excluded<'p>(
         .collect()
 }
 
-fn token_matches_key(tok: &PathToken<'_>, key: &str) -> bool {
-    matches!(tok, PathToken::Name(n) if *n == key)
+/// Length of the leading `Name`-token prefix of `path` whose dotted join equals
+/// `key`, or `None`. This lets an excluded path like `[fields, log, file]` match
+/// the actual flattened key `"log.file"` under `fields` (join of its last two
+/// tokens), consuming two tokens — mirroring how a dotted path resolves.
+fn key_match_len(path: &[PathToken<'_>], key: &str) -> Option<usize> {
+    let mut joined = String::new();
+    for (i, tok) in path.iter().enumerate() {
+        match tok {
+            PathToken::Name(n) => {
+                if i > 0 {
+                    joined.push('.');
+                }
+                joined.push_str(n);
+            }
+            PathToken::Index(_) => return None,
+        }
+        if joined == key {
+            return Some(i + 1);
+        }
+        if joined.len() >= key.len() {
+            return None;
+        }
+    }
+    None
+}
+
+/// A key is fully excluded when some excluded path is entirely consumed by it.
+fn is_excluded_key(excluded: &[&[PathToken<'_>]], key: &str) -> bool {
+    excluded.iter().any(|p| key_match_len(p, key) == Some(p.len()))
+}
+
+/// Sub-paths of excluded paths that descend *through* `key` (consuming its
+/// leading tokens), for filtering the value under `key`.
+fn child_excluded_key<'p>(
+    excluded: &[&'p [PathToken<'p>]],
+    key: &str,
+) -> SmallVec<[&'p [PathToken<'p>]; 4]> {
+    excluded
+        .iter()
+        .filter_map(|p| {
+            let l = key_match_len(p, key)?;
+            (l < p.len()).then_some(&p[l..])
+        })
+        .collect()
 }
 
 fn token_matches_index(tok: &PathToken<'_>, index: usize) -> bool {

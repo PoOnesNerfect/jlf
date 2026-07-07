@@ -557,9 +557,14 @@ impl Scanner<'_> {
                 String::from_utf8(bytes).map_err(|_| FormatError::UnterminatedSep)
             }
             Some(_) => {
+                // A bare (unquoted) separator is a short run right after `)`,
+                // e.g. `,` in `$cols( $key ),*`. Stop at a newline or a template
+                // marker so a malformed repetition (an operator-less `$x( … )`)
+                // can't silently swallow the following line/blocks as its
+                // "separator" — it surfaces as a clear MissingRepOp error.
                 let start = self.i;
                 while let Some(&c) = self.b.get(self.i) {
-                    if c == b'*' || c == b'+' || c == b'?' {
+                    if matches!(c, b'*' | b'+' | b'?' | b'\n' | b'\r' | b'$' | b'{') {
                         break;
                     }
                     self.i += 1;
@@ -987,7 +992,7 @@ pub enum FormatError {
     UnsupportedConfig { config: String },
     #[error("A `$( … )` block is missing its closing `)` — check your `$(`, `$path(`, `$cols(`, and `$rows(` blocks all have a matching `)`")]
     UnclosedRep,
-    #[error("A '$( … )' repetition needs an operator ('*', '+', or '?') after it")]
+    #[error("A `$( … )` repetition needs an operator (`*`, `+`, or `?`) after it — if you meant a conditional, use `$has(path => …)`, `$if(cond => …)`, or `$match(subject $when(…))` instead (note: `$key`/`$value` are loop variables, not conditionals)")]
     MissingRepOp,
     #[error("Unterminated quoted separator in a repetition")]
     UnterminatedSep,

@@ -249,6 +249,40 @@ mod dsl_tests {
     }
 
     #[test]
+    fn flattened_dotted_key_falls_back() {
+        // A literal dotted key resolves when there's no matching nesting.
+        assert_eq!(render("${fields.log.file}", &[], r#"{"fields":{"log.file":"/p"}}"#), "/p");
+        // A top-level flattened key too.
+        assert_eq!(render("${a.b}", &[], r#"{"a.b":"flat"}"#), "flat");
+        // Real nesting still wins over a same-named flattened key.
+        assert_eq!(render("${a.b}", &[], r#"{"a":{"b":"nested"},"a.b":"flat"}"#), "nested");
+    }
+
+    #[test]
+    fn used_flattened_key_is_excluded_from_repetition() {
+        // A flattened key rendered up top must be dropped from a later
+        // `$fields( … )` breakdown (not double-shown).
+        assert_eq!(
+            render(
+                r#"${fields.log.file} $fields( ${key}=${value} )" "*"#,
+                &[],
+                r#"{"fields":{"log.file":"/p","other":"x"}}"#,
+            ),
+            "/p other=x"
+        );
+    }
+
+    #[test]
+    fn malformed_repetition_errors_and_is_not_swallowed() {
+        // An operator-less `$name( … )` must error even when a valid repetition
+        // follows on the next line — previously the bare-separator scan absorbed
+        // the following block, silently rendering nothing.
+        assert!(Formatter::new("$key(a => b)\n$fields( $key )*", true, false).is_err());
+        // A real bare separator right after `)` still parses.
+        assert!(Formatter::new("$cols( $key ),*", true, false).is_ok());
+    }
+
+    #[test]
     fn column_rep_csv() {
         assert_eq!(
             render(r#"$cols( $key ),*"#, &["ts", "level"], r#"{"ts":"1","level":"INFO"}"#),
@@ -257,6 +291,24 @@ mod dsl_tests {
         assert_eq!(
             render(r#"$cols( ${value:csv} ),*"#, &["ts", "level"], r#"{"ts":"1","level":"a,b"}"#),
             "1,\"a,b\""
+        );
+    }
+
+    #[test]
+    fn object_cell_is_compact_and_escaped() {
+        // A nested object in a table cell must stay on one line and be quoted
+        // for the dialect — never pretty-printed across rows.
+        assert_eq!(
+            render(r#"$cols( ${value:csv} ),*"#, &["fields"], r#"{"fields":{"m":"a,b","n":5}}"#),
+            r#""{""m"":""a,b"",""n"":5}""#
+        );
+        assert_eq!(
+            render(r#"$cols( ${value:md} )" | "*"#, &["fields"], r#"{"fields":{"m":"x"}}"#),
+            r#"{"m":"x"}"#
+        );
+        assert_eq!(
+            render(r#"$cols( ${value:tsv} )\t*"#, &["fields"], r#"{"fields":{"m":"x"}}"#),
+            r#"{"m":"x"}"#
         );
     }
 

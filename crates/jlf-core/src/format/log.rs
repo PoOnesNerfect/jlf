@@ -348,30 +348,84 @@ fn render_rep<'a>(
 
 /// Walk a name path from a `Json` node (used for `${value.path}` in a rep).
 fn walk<'a>(mut val: &'a Json<'a>, names: &FieldNames) -> &'a Json<'a> {
-    for t in names {
-        val = match t {
-            FieldType::Name(n) => val.get(n),
-            FieldType::Index(i) => val.get_i(*i),
-        };
+    let mut i = 0;
+    while i < names.len() {
+        match &names[i] {
+            FieldType::Index(idx) => {
+                val = val.get_i(*idx);
+                i += 1;
+            }
+            FieldType::Name(n) => {
+                let direct = val.get(n);
+                if !direct.is_null() {
+                    val = direct;
+                    i += 1;
+                    continue;
+                }
+                // Not a nested key: the remaining name tokens may be a single
+                // flattened dotted key (e.g. tracing's `log.file` stored as one
+                // literal key). Try joining consecutive names with '.', keeping
+                // the longest match so the most specific key wins. Nested lookup
+                // is tried first above, so real nesting still takes precedence.
+                let mut joined = n.clone();
+                let mut best: Option<(String, usize)> = None;
+                let mut j = i + 1;
+                while let Some(FieldType::Name(m)) = names.get(j) {
+                    joined.push('.');
+                    joined.push_str(m);
+                    if !val.get(&joined).is_null() {
+                        best = Some((joined.clone(), j + 1));
+                    }
+                    j += 1;
+                }
+                match best {
+                    Some((key, end)) => {
+                        val = val.get(&key);
+                        i = end;
+                    }
+                    None => return direct,
+                }
+            }
+        }
     }
     val
 }
 
 /// True when `base + key` was already consumed by an earlier field reference, so
 /// a repetition over `base` should skip that entry (e.g. `${fields.message}` up
-/// top drops `message` from a later `$fields( … )`).
+/// top drops `message` from a later `$fields( … )`). The trailing tokens after
+/// `base` are joined with '.', so a flattened key like `log.file` (referenced as
+/// `${fields.log.file}`) is also recognised and skipped.
 fn key_consumed(used_fields: &SmallVec<[&Field; 5]>, base: &[FieldType], key: &str) -> bool {
     with_excluded(used_fields, |excluded| {
         excluded.iter().any(|path| {
-            path.len() == base.len() + 1
+            path.len() > base.len()
                 && base.iter().zip(path.iter()).all(|(b, p)| match (b, p) {
                     (FieldType::Name(n), PathToken::Name(x)) => x == n,
                     (FieldType::Index(i), PathToken::Index(x)) => x == i,
                     _ => false,
                 })
-                && matches!(&path[base.len()], PathToken::Name(x) if *x == key)
+                && join_names_eq(&path[base.len()..], key)
         })
     })
+}
+
+/// Whether the `Name` tokens of `rest` joined with '.' equal `key` (and there
+/// are no `Index` tokens) — recognising a flattened dotted key like `log.file`.
+fn join_names_eq(rest: &[PathToken<'_>], key: &str) -> bool {
+    let mut joined = String::new();
+    for (i, tok) in rest.iter().enumerate() {
+        match tok {
+            PathToken::Name(n) => {
+                if i > 0 {
+                    joined.push('.');
+                }
+                joined.push_str(n);
+            }
+            PathToken::Index(_) => return false,
+        }
+    }
+    joined == key
 }
 
 /// Resolve a field accessor to the pointed-at `Json` (no rest handling).
@@ -401,13 +455,7 @@ fn rest_arg_without_content<'a>(
                 return !with_excluded(used_fields, |excluded| json.has_rest_content(excluded));
             }
             Field::Names(names) => {
-                let mut val = json;
-                for arg in names {
-                    val = match arg {
-                        FieldType::Name(name) => val.get(name),
-                        FieldType::Index(index) => val.get_i(*index),
-                    };
-                }
+                let val = walk(json, names);
                 if !val.is_null() {
                     return false; // this fallback renders; rest isn't reached
                 }
@@ -453,13 +501,7 @@ fn test_cond<'a>(
                 }
             }
             Field::Names(names) => {
-                let mut val = json;
-                for arg in names {
-                    match arg {
-                        FieldType::Name(name) => val = val.get(name),
-                        FieldType::Index(index) => val = val.get_i(*index),
-                    }
-                }
+                let val = walk(json, names);
                 test_cond2(cond, val)
             }
         };
@@ -560,8 +602,6 @@ fn write_arg<'a>(
     let mut val = &Json::Null;
 
     for field in field_options {
-        val = json;
-
         match field {
             Field::Whole => {
                 return write_arg2(f, format, json);
@@ -591,16 +631,7 @@ fn write_arg<'a>(
                 };
             }
             Field::Names(names) => {
-                for arg in names {
-                    match arg {
-                        FieldType::Name(name) => {
-                            val = val.get(name);
-                        }
-                        FieldType::Index(index) => {
-                            val = val.get_i(*index);
-                        }
-                    }
-                }
+                val = walk(json, names);
 
                 if !val.is_null() {
                     used_fields.push(field);
@@ -630,7 +661,7 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
     let Format {
         style,
         compact,
-        is_json,
+        is_json: _,
         indent,
         optional: _,
         escape,
@@ -660,35 +691,21 @@ fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt:
             write!(f, "{}", val)?;
         }
     } else if json.is_object() || json.is_array() {
-        match (is_json, compact) {
-            (true, true) => {
-                if style.is_some() {
-                    write!(f, "{}", json.styled(*json_styles))?;
-                } else {
-                    write!(f, "{}", json)?;
-                }
+        if escape != Escape::None {
+            // A table/markup cell must stay on one line and be quoted for its
+            // dialect, so nested objects/arrays render as compact JSON (no
+            // ANSI) and then get escaped — never pretty-printed across rows.
+            write_escaped(f, escape, &json.to_string())?;
+        } else if *compact {
+            if style.is_some() {
+                write!(f, "{}", json.styled(*json_styles))?;
+            } else {
+                write!(f, "{}", json)?;
             }
-            (true, false) => {
-                if style.is_some() {
-                    write!(f, "{:?}", json.indented(indent).styled(*json_styles))?;
-                } else {
-                    write!(f, "{:?}", json.indented(indent))?;
-                }
-            }
-            (false, true) => {
-                if style.is_some() {
-                    write!(f, "{}", json.styled(*json_styles))?;
-                } else {
-                    write!(f, "{}", json)?;
-                }
-            }
-            (false, false) => {
-                if style.is_some() {
-                    write!(f, "{:?}", json.indented(indent).styled(*json_styles))?;
-                } else {
-                    write!(f, "{:?}", json.indented(indent))?;
-                }
-            }
+        } else if style.is_some() {
+            write!(f, "{:?}", json.indented(indent).styled(*json_styles))?;
+        } else {
+            write!(f, "{:?}", json.indented(indent))?;
         }
     }
 
