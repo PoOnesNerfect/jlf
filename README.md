@@ -248,7 +248,7 @@ target format (the `x,y` above is quoted). Redirect to a file as usual:
 jlf @csv ts,level,message -i app.log > out.csv
 ```
 
-**Redaction** masks fields by name (comma-separated globs), for both the view
+**Redaction** masks fields by name or path (comma-separated), for both the view
 and exports:
 
 ```sh
@@ -256,7 +256,8 @@ printf '{"user":"bob","token":"secret"}\n' | jlf -c --redact token
 # -> {"user":"bob","token":"***"}
 ```
 
-Globs match nested paths too, e.g. `--redact password,*.email`.
+A bare name or `*.name` matches that key at any depth; a dotted path targets a
+specific one, e.g. `--redact password,*.email,fields.message`.
 
 ## Interactive viewer (`jlf-tui`)
 
@@ -312,7 +313,14 @@ on screen **dimmed** rather than vanishing as you type.
 Press **Tab** to autocomplete: it suggests the sample's field paths — nested and
 array ones included (`fields.status`, `spans.0.method`) — then the comparison
 operators, then that field's actual values, so you rarely have to type a full
-`level=error` by hand.
+`level=error` by hand. **Tab/Shift-Tab** or **↑/↓** move through the suggestions,
+**Enter** fills the highlighted one, **Esc** dismisses them, and **Ctrl-W** (plus
+the usual **Ctrl-U/K/A/E**) edit the line.
+
+The screen shows two bordered panels — the **raw sample record** (colored, with
+the fields you type highlighted) above the **preview** of your command. When a
+record is taller than its panel, **PgUp/PgDn** scroll the sample so you can read
+all of it.
 
 ```sh
 jlf-it app.log          # build against a file
