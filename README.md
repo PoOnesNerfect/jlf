@@ -10,7 +10,7 @@
 
 **jlf** is a CLI that converts hard-to-read JSON logs into colorful human-readable logs.
 
-> **Preview: 0.4 is in review.** A large rework — a new `$` template DSL, reusable
+> **🚧 Preview: 0.4 is in review.** A large rework — a new `$` template DSL, reusable
 > recipes, an assistive `jlf it` command builder, and a full-screen `jlf tui`
 > viewer — is under review in
 > [#5](https://github.com/PoOnesNerfect/jlf/pull/5). `cargo install jlf` still
@@ -19,6 +19,8 @@
 > ```sh
 > cargo install jlf jlf-it jlf-tui --version 0.4.0-dev
 > ```
+>
+> Feedback on the PR is welcome.
 
 Simply pipe your JSON logs with `jlf`.
 
