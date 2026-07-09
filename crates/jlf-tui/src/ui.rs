@@ -142,6 +142,9 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(text), area);
 }
 
+/// The always-visible key hint shown on the prompt line in Normal mode.
+const HINT: &str = "↑↓ move · ⏎ detail · a actions · / search · : command · ? help · q quit";
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let follow = if app.follow { "● follow" } else { "‖ paused" };
     let position = if app.view.is_empty() {
@@ -154,11 +157,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("/{}", app.filter_text)
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::raw(format!("  {follow}   {position} records   {filter}")),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    ];
+    // Transient feedback (filter cleared, N match, errors, saved…) rides in the
+    // status bar so it never hides the key hints on the prompt line.
+    if !app.status.is_empty() {
+        spans.push(Span::styled(
+            format!("   ·   {}", app.status),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
@@ -243,10 +254,8 @@ fn draw_prompt(f: &mut Frame, app: &App, area: Rect) {
     let line = match app.mode {
         Mode::Search => Line::from(format!("/{}", app.input)),
         Mode::Command => Line::from(format!(":{}", app.input)),
-        Mode::Normal => Line::from(Span::styled(
-            &app.status,
-            Style::default().fg(Color::DarkGray),
-        )),
+        // Always show the key hints here so they're never hidden by a message.
+        Mode::Normal => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
     };
     f.render_widget(Paragraph::new(line), area);
 }

@@ -55,6 +55,10 @@ fn main() -> color_eyre::Result<()> {
         Some(f) => Some(Source::File(f)),
         None => piped,
     };
+    // A live pipe (`cmd -f | jlf tui`) has an upstream producer that keeps
+    // running after we quit, so the shell blocks on it. Note it so we can stop
+    // it on exit.
+    let from_pipe = matches!(source, Some(Source::Pipe(_)) | Some(Source::Stdin));
     let rx = match source {
         Some(s) => reader::spawn(s, true),
         None => channel().1,
@@ -68,8 +72,31 @@ fn main() -> color_eyre::Result<()> {
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
+    if from_pipe {
+        stop_pipeline_producer();
+    }
     result
 }
+
+/// When our input was a live pipe, terminate the upstream producer on exit so
+/// the shell doesn't block waiting on a still-running `… -f`. We signal only our
+/// own process group, and only when it is a subordinate pipeline group (its
+/// group id differs from the session id) — so the interactive shell, which leads
+/// the session, is never signalled.
+#[cfg(unix)]
+fn stop_pipeline_producer() {
+    unsafe {
+        if libc::getpgrp() != libc::getsid(0) {
+            // Ignore the signal in ourselves (we're already exiting cleanly),
+            // then send it to the rest of the group (the producer).
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            libc::kill(0, libc::SIGTERM);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn stop_pipeline_producer() {}
 
 /// Ensure fd 0 is a real terminal so crossterm can read key events there.
 ///

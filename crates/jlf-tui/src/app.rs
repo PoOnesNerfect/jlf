@@ -107,7 +107,7 @@ impl App {
             mode: Mode::Normal,
             input: String::new(),
             filter_text: String::new(),
-            status: "↑↓ move · ⏎ detail · a actions · / search · : command · ? help · q quit".into(),
+            status: String::new(),
             summary: None,
             help: false,
             show_actions: false,
