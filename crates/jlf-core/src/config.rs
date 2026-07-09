@@ -394,7 +394,9 @@ where
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
-    pub format: Option<String>,
+    /// The default output template — a `$`-DSL string, usually `${@output}`.
+    /// Named `out` to match a recipe's content key.
+    pub out: Option<String>,
     pub compact: Option<bool>,
     pub no_color: Option<bool>,
     pub strict: Option<bool>,
@@ -412,8 +414,8 @@ impl ConfigFile {
             field_aliases: _,
         } = other;
 
-        if let Some(format) = config2.format {
-            self.config.format = Some(format);
+        if let Some(out) = config2.out {
+            self.config.out = Some(out);
         }
         if let Some(compact) = config2.compact {
             self.config.compact = Some(compact);

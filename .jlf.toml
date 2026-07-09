@@ -3,7 +3,7 @@
 # See the README (Recipes and configuration) for the full recipe model.
 
 [config]
-format   = "${@output}"   # the default format renders the `output` recipe
+out      = "${@output}"   # the default output template renders the `output` recipe
 compact  = false
 no_color = false
 strict   = false

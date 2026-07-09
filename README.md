@@ -588,7 +588,7 @@ Inspect resolved recipes with `jlf list`, and expand one with `jlf expand NAME`.
 
 ```toml
 [config]
-format   = "${@output}"
+out      = "${@output}"
 compact  = false
 no_color = false
 strict   = false

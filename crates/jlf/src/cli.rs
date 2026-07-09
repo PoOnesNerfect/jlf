@@ -319,7 +319,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     }
 
     if let Some(format) = format {
-        config.format = Some(format);
+        config.out = Some(format);
     }
     if compact {
         config.compact = Some(true);
@@ -330,7 +330,7 @@ pub fn run() -> Result<(), color_eyre::Report> {
     if strict {
         config.strict = Some(true);
     }
-    let template = config.format.unwrap_or_else(|| "${@output}".to_owned());
+    let template = config.out.unwrap_or_else(|| "${@output}".to_owned());
     let compact = config.compact.unwrap_or(false);
     let no_color_cfg = config.no_color.unwrap_or(false);
     let strict = config.strict.unwrap_or(false);
