@@ -52,6 +52,17 @@ echo '{"user":{"id":7}}' | jlf '${user.id}'
 # -> 7
 ```
 
+**Flattened dotted keys** — structured loggers (tracing, Serilog, …) often store
+a literal key that itself contains a dot, like `"log.file"`, under `fields`. A
+dotted path resolves those too: it first tries real nesting, then falls back to
+the longest matching flattened key (real nesting wins when both exist), so you
+don't need to escape anything.
+
+```sh
+echo '{"fields":{"log.file":"/app.rs","log.line":42}}' | jlf '${fields.log.file}:${fields.log.line}'
+# -> /app.rs:42
+```
+
 **Fallback chains** with `|` — the first *present* field wins:
 
 ```sh

@@ -261,9 +261,9 @@ specific one, e.g. `--redact password,*.email,fields.message`.
 
 ## Interactive viewer (`jlf-tui`)
 
-`jlf-tui` is a full-screen terminal app that brings viewing, filtering,
-redaction, and summaries together with vi-style keys. It **live-tails** its
-input, so it works on a growing file or a pipe.
+`jlf-tui` is a full-screen terminal app for viewing, filtering, redacting, and
+summarizing logs with vi-style keys. It **live-tails** its input, so it works on
+a growing file or a pipe, and it renders records in color.
 
 ```sh
 tail -f app.log | jlf-tui     # follow a live stream
@@ -271,30 +271,45 @@ jlf-tui app.log               # open a file (keeps following appends)
 jlf-tui app.log level=error   # start with a filter applied
 ```
 
-Layout: a scrolling record list, a pretty-printed detail pane for the selected
-record, a status bar (follow state, position, filter), and a prompt line.
+Layout: a colored record list, an optional detail pane (**Enter** toggles it)
+showing the selected record as syntax-highlighted JSON, a status bar (follow
+state, position, filter, and transient messages), and a hint line that always
+lists the keys.
 
 | key | action |
 | --- | ------ |
 | `j`/`k`, `↓`/`↑` | move selection |
 | `g`/`G` | jump to top / bottom |
 | `Ctrl-d`/`Ctrl-u` | half-page down / up |
+| `Enter` | open / close the detail pane |
 | `J`/`K` | scroll the detail pane |
 | `f` | toggle follow (auto-scroll to newest) |
-| `/` | filter — type `key=value`; **Tab/↑↓** pick an autocompletion, `Enter` fills it or applies the filter |
-| `:` | command — `count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`, `csv\|tsv\|md cols`, `q` |
-| `Esc` | dismiss the autocomplete popup, close a summary, or clear the filter |
+| `a` | **Actions** panel — summaries, export, save-as-recipe |
+| `/` | filter / search (see below) |
+| `:` | command (see below) |
+| `?` | help overlay |
+| `Esc` | close a popup, or clear the filter |
 | `q` | quit |
 
-While typing a filter (`/`), it autocompletes from the loaded records: field
-paths (nested and array ones like `fields.status`, `spans.0.method`), then the
-comparison operators, then that field's actual values. **Tab**/**Shift-Tab** or
-**↑**/**↓** move through the suggestions, **Enter** fills the highlighted one
-(and a final `Enter` with no popup applies the filter), **Esc** dismisses the
-popup, and **Ctrl-W** deletes the last word.
+**Filter and search** (`/`): tokens shaped like `field=value` (operators `=`,
+`!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter structurally; **bare words** match
+anywhere in the raw record, and you can mix them (`/level=error timeout`). It
+autocompletes field paths (nested and array ones like `fields.status`,
+`spans.0.method`), then operators, then that field's values — **Tab/↑↓** move,
+**Enter** fills, **Esc** dismisses.
 
-For example: `/` `level=error` `Enter` to keep errors, then `:top user`, or
-`:csv ts,level,msg` to write the current view to `jlf-export.csv`.
+**Commands** (`:`) also autocomplete (the verb, then a field). Available:
+`count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`,
+`csv|tsv|md cols [file]`, `follow`, `save name`, `help`, `quit`. Summaries and
+exports run against the **current filtered view**.
+
+**Actions panel** (`a`) is a one-stop menu: pick a summary (count/stats/top/uniq)
+with a group-by field, export as csv/tsv/md, or **save the current filter and
+redaction as a `[recipe.NAME]`** in your workspace config — reusable from the CLI
+as `jlf @name`.
+
+For example: `/error` to search, `Enter` to inspect a record, then `a` → "Stats"
+→ pick a field, or `:save errors` to keep the view as a recipe.
 
 ## Command builder (`jlf-it`)
 
@@ -328,13 +343,17 @@ head -200 app.log | jlf-it   # ...or a finite pipe (used as the sample)
 jlf-it                  # ...or pick a sample interactively
 ```
 
-The header lists the record's fields to help you pick, the layout uses the `$`
-template syntax (`$ts $msg`, `${level}`), and when you're happy you can run it,
-or save it as a `[recipe.NAME]` block in your `.jlf.toml` (or user config) to use
-later with `jlf @NAME`.
+The main menu shows each part with a single-key accelerator (`[f]` filters,
+`[t]` fields, `[r]` run, `[s]` save, …), a **live preview**, and the equivalent
+command, all in bordered panels. The preview is curated — near-identical records
+collapse and errors float up, so you see variety rather than the first
+repetitive lines. When you're happy, **Run it** streams the built command against
+the real input (re-reading a file, or resuming a live pipe, so
+`docker logs -f | jlf-it` keeps tailing), or **Save** it as a `[recipe.NAME]`
+block in your `.jlf.toml` (or user config) to reuse with `jlf @NAME`.
 
-Give it a finite sample (a file, or `head -N …`), not a live stream — it reads a
-bounded sample and needs a terminal for the prompts.
+It works on a file, a finite pipe, or a live stream — it reads a bounded sample
+for the preview and needs a terminal for the prompts.
 
 ## Custom formatting
 
