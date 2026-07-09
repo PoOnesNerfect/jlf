@@ -530,7 +530,7 @@ All keys are optional; a recipe uses only the ones its role needs.
 | `count` / `stats` / `top` / `uniq` | run a summary over a field; `by` groups, `n` sets top-N |
 | `escape` | default escape for interpolated values (`html`/`csv`/`tsv`/`md`/`none`); also marks the recipe as a format |
 | `redact` / `compact` | mask fields; force compact |
-| `format` | render through another output format (built-in `csv`/`tsv`/`md`, or a format recipe by name) |
+| `format` | the output *encoding* — same axis as `--format` (`csv`/`tsv`/`md`, or a format recipe by name). `out` is *what* to show; `format` is how to wrap it |
 | `base` | inherit another recipe (`@other`), then override its keys |
 
 A single-field `out` can carry inline render modifiers after a `:` —
@@ -557,13 +557,16 @@ printf '{"level":"INFO","msg":"a<b"}\n' | jlf @report
 # -> </ul>
 ```
 
-A format defines the *frame*; a report that pairs a format with saved columns
-and a filter is a second recipe that references it:
+`format` names an *encoding* — the same axis as `--format md` or the built-in
+`csv`/`tsv`/`md` — so a custom frame like `report` is just another value it can
+take. `out` still says *what* to show (here, which columns); `format` says how to
+wrap it. Just as `format = "md"` renders columns as a Markdown table, this renders
+them through the `report` frame above:
 
 ```toml
 [recipe.errdump]
-format = "report"               # use the frame above
-out    = "timestamp,level,msg"  # its columns
+out    = "timestamp,level,msg"  # what to show (the columns)
+format = "report"               # how to wrap it (the frame above; cf. --format)
 filter = "level=error"
 ```
 
