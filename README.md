@@ -655,4 +655,3 @@ serde_json::Value:  ~2.84 µs / line
 
 - **[docs/DSL.md](docs/DSL.md)** — the complete template language reference, with
   a runnable example for every construct.
-- **[docs/VISION.md](docs/VISION.md)** — the design and rationale.
