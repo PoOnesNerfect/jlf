@@ -178,19 +178,17 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
 
     if !active {
         // Idle: surface the currently-applied filter (if any) in the otherwise
-        // empty input row, so it's easy to see what's narrowing the view.
+        // empty input row, so it's easy to see what's narrowing the view. Shown
+        // with the same `/` prefix you type it with.
         if !app.filter_text.is_empty() {
             let line = Line::from(vec![
                 Span::styled(
-                    " filter ",
-                    Style::default().fg(Color::Black).bg(Color::Cyan),
+                    " /",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    format!(" {}", app.filter_text),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    format!("   {} of {} records", app.view_len(), app.total()),
+                    format!("   ({} of {})", app.view_len(), app.total()),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]);
@@ -199,7 +197,7 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
                 inner,
             );
         }
-        return; // empty framed box (no active filter)
+        return; // empty framed box (no active filter) (no active filter)
     }
     let input = match app.mode {
         Mode::Search => format!("/{}", app.input),
