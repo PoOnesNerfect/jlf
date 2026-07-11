@@ -1,5 +1,5 @@
 use ansi_to_tui::IntoText;
-use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -315,10 +315,15 @@ fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
-        .track_symbol(Some("│"))
+        .track_symbol(None)
         .thumb_symbol("█")
         .thumb_style(Style::default().fg(Color::Cyan));
-    f.render_stateful_widget(bar, area.inner(Margin::new(0, 1)), &mut state);
+    // Span the full box height (including the border rows) so the thumb reaches
+    // the very top/bottom frame when the selection is at either end — otherwise
+    // it stops a row short and reads as "not quite at the edge". With no track
+    // symbol, only the thumb is painted, so the border and its corners show
+    // through everywhere the thumb isn't.
+    f.render_stateful_widget(bar, area, &mut state);
 }
 
 /// Expanded list (toggled with `c`): each record spans multiple lines — header
