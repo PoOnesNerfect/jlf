@@ -147,12 +147,24 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         }
         Line::from(spans)
     } else {
-        let label = match app.mode {
-            Mode::Search => " filter (/) ",
-            Mode::Command => " command (:) ",
-            Mode::Normal => " press / to filter  ·  : to run a command ",
-        };
-        Line::from(Span::styled(label, Style::default().fg(border)))
+        match app.mode {
+            Mode::Search => Line::from(Span::styled(" filter ", Style::default().fg(border))),
+            Mode::Command => Line::from(Span::styled(" command ", Style::default().fg(border))),
+            // Show the keys as distinct, bracketed tokens so it's clear each is a
+            // key to press, not part of the sentence.
+            Mode::Normal => {
+                let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                let dim = Style::default().fg(Color::DarkGray);
+                Line::from(vec![
+                    Span::styled(" [", dim),
+                    Span::styled("/", key),
+                    Span::styled("] filter", dim),
+                    Span::styled("   [", dim),
+                    Span::styled(":", key),
+                    Span::styled("] command ", dim),
+                ])
+            }
+        }
     };
 
     let block = Block::bordered()
