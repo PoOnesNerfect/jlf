@@ -30,8 +30,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         draw_list(f, app, main);
     }
-    if app.suggestions_visible() {
-        draw_suggestions(f, app, sug);
+    if matches!(app.mode, Mode::Search | Mode::Command) {
+        draw_input_section(f, app, sug);
     }
     draw_bar(f, app, bar);
 
@@ -124,72 +124,77 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
-fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
-    let (cands, sel) = app.suggestions();
-    let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
-    for (i, c) in cands.iter().enumerate() {
-        let style = if Some(i) == sel {
-            Style::default().fg(Color::Black).bg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        spans.push(Span::styled(format!(" {c} "), style));
-        spans.push(Span::raw(" "));
-    }
-    // Candidates on the first row, the key hint on its own row below.
-    let text = vec![
-        Line::from(spans),
-        Line::from(Span::styled(
-            "   Tab/↑↓ cycle · ⏎ apply · Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-    f.render_widget(Paragraph::new(text), area);
+/// The reserved two-row section while typing a `/` filter or `:` command: the
+/// suggestion candidates on top (blank when there are none) and the input line
+/// itself on the bottom row, just above the bar. The completion key hints live
+/// in the bar (see [`draw_bar`]), so no row is spent on them here.
+fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
+    let candidates = if app.suggestions_visible() {
+        let (cands, sel) = app.suggestions();
+        let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
+        for (i, c) in cands.iter().enumerate() {
+            let style = if Some(i) == sel {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(format!(" {c} "), style));
+            spans.push(Span::raw(" "));
+        }
+        Line::from(spans)
+    } else {
+        Line::from("")
+    };
+    let input = match app.mode {
+        Mode::Search => format!("/{}", app.input),
+        Mode::Command => format!(":{}", app.input),
+        Mode::Normal => String::new(),
+    };
+    f.render_widget(Paragraph::new(vec![candidates, Line::from(input)]), area);
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
 const HINT: &str = "↑↓ move · ⏎ detail · c expand · a actions · / search · : command · ? help · q quit";
 
-/// The single bottom bar: while typing a filter/command it shows that input;
-/// otherwise it shows the status (follow, position, filter, transient message)
-/// followed by the key hints, all on one line.
+/// The bottom bar: always shows the status (follow, position, filter, transient
+/// message). Its trailing hint section shows the normal key hints, or — while
+/// typing a `/` filter or `:` command — that mode's completion help, so those
+/// don't need a separate row (the input itself lives in the section above, see
+/// [`draw_input_section`]).
 fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
-    let line = match app.mode {
-        Mode::Search => Line::from(format!("/{}", app.input)),
-        Mode::Command => Line::from(format!(":{}", app.input)),
-        Mode::Normal => {
-            let follow = if app.follow { "● follow" } else { "‖ paused" };
-            let position = if app.view_len() == 0 {
-                "0/0".to_string()
-            } else {
-                format!("{}/{}", app.selected + 1, app.view_len())
-            };
-            let filter = if app.filter_text.is_empty() {
-                "no filter".to_string()
-            } else {
-                // Show how many records matched out of the total held.
-                format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
-            };
-            let mut spans = vec![
-                Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                Span::raw(format!("  {follow}   {position} records   {filter}")),
-            ];
-            // Transient feedback (filter cleared, N match, errors, saved…).
-            if !app.status.is_empty() {
-                spans.push(Span::styled(
-                    format!("   ·   {}", app.status),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            // Key hints fill the rest of the line (clipped on narrow terminals).
-            spans.push(Span::styled(
-                format!("    {HINT}"),
-                Style::default().fg(Color::DarkGray),
-            ));
-            Line::from(spans)
-        }
+    let follow = if app.follow { "● follow" } else { "‖ paused" };
+    let position = if app.view_len() == 0 {
+        "0/0".to_string()
+    } else {
+        format!("{}/{}", app.selected + 1, app.view_len())
     };
-    f.render_widget(Paragraph::new(line), area);
+    let filter = if app.filter_text.is_empty() {
+        "no filter".to_string()
+    } else {
+        // Show how many records matched out of the total held.
+        format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
+    };
+    let mut spans = vec![
+        Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+        Span::raw(format!("  {follow}   {position} records   {filter}")),
+    ];
+    // Transient feedback (filter cleared, N match, errors, saved…).
+    if !app.status.is_empty() {
+        spans.push(Span::styled(
+            format!("   ·   {}", app.status),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    // The hint section: the completion help while typing, else the key hints.
+    let hints = match app.mode {
+        Mode::Search | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
+        Mode::Normal => HINT,
+    };
+    spans.push(Span::styled(
+        format!("    {hints}"),
+        Style::default().fg(Color::DarkGray),
+    ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Fraction of the viewport kept between the cursor and the top/bottom edge
