@@ -486,6 +486,13 @@ impl Scanner<'_> {
         content: &str,
         rep_depth: usize,
     ) -> Result<(), FormatError> {
+        // A quoted hole is a literal, not a field: `${"text":mods}` renders the
+        // text with the arg's modifiers (so raw text can be styled/escaped).
+        if let Some(quote) = content.trim_start().chars().next() {
+            if quote == '"' || quote == '\'' {
+                return self.push_literal_arg(pieces, args, content.trim_start(), quote);
+            }
+        }
         let (name_part, mut format) = match content.split_once(':') {
             Some((n, styles)) => (n.trim(), parse_format(Some(styles), self.no_color, self.compact)?),
             None => (content, parse_format(None, self.no_color, self.compact)?),
@@ -499,6 +506,54 @@ impl Scanner<'_> {
         };
         let mut fields = FieldOptions::new();
         push_field(&mut fields, name_part, rep_depth)?;
+        args.push((fields, format));
+        pieces.push(Piece::Arg(args.len() - 1));
+        Ok(())
+    }
+
+    /// Parse a `${"text":mods}` quoted-literal hole: read the quoted text (with
+    /// `\n`/`\t`/`\r`/`\\`/`\"`/`\'` escapes), then apply any `:modifiers`.
+    fn push_literal_arg(
+        &self,
+        pieces: &mut Vec<Piece>,
+        args: &mut Vec<Arg>,
+        content: &str,
+        quote: char,
+    ) -> Result<(), FormatError> {
+        let mut lit = String::new();
+        let mut chars = content.char_indices();
+        chars.next(); // consume the opening quote
+        let mut escaped = false;
+        let mut close_end = None;
+        for (idx, c) in chars {
+            if escaped {
+                match c {
+                    'n' => lit.push('\n'),
+                    't' => lit.push('\t'),
+                    'r' => lit.push('\r'),
+                    other => lit.push(other), // \\, \", \', and any other: literal
+                }
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote {
+                close_end = Some(idx + c.len_utf8());
+                break;
+            } else {
+                lit.push(c);
+            }
+        }
+        let close_end = close_end.ok_or(FormatError::UnterminatedLiteral)?;
+        let styles = match content[close_end..].trim() {
+            "" => None,
+            rest => Some(
+                rest.strip_prefix(':')
+                    .ok_or_else(|| FormatError::LiteralTrailing(rest.to_owned()))?,
+            ),
+        };
+        let format = parse_format(styles, self.no_color, self.compact)?;
+        let mut fields = FieldOptions::new();
+        fields.push(Field::Literal(lit));
         args.push((fields, format));
         pieces.push(Piece::Arg(args.len() - 1));
         Ok(())
@@ -1006,5 +1061,11 @@ pub enum FormatError {
     OrphanArm(String),
     #[error("Invalid numeric range in a `$when( … )` arm: '{0}'")]
     BadRange(String),
+
+    #[error("Unterminated quoted literal in `${{ … }}` — a `${{\"text\"}}` literal needs a closing quote")]
+    UnterminatedLiteral,
+
+    #[error("Unexpected text after a `${{\"text\"}}` literal — only `:modifiers` may follow (got '{0}')")]
+    LiteralTrailing(String),
 }
 

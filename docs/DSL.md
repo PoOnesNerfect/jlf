@@ -25,8 +25,10 @@ so the examples read cleanly.
 Two families make up the whole language:
 
 1. **Interpolation** — `${ … }` (and the bare `$name`) fills a hole with a field
-   value. Everything inside `${ }` is a hole, never literal text. Literal text
-   lives *outside* the braces; use `$$` for a literal `$`.
+   value. Everything inside `${ }` is a hole, never literal text — *except* a
+   quoted string, which is a constant: `${"text":mods}` renders `text` with the
+   arg's modifiers, so raw text can be styled or escaped like a value. Ordinary
+   literal text lives *outside* the braces; use `$$` for a literal `$`.
 2. **Blocks** — the self-closing `$name( … )` forms: repetition (`$( )`,
    `$path( )`, `$cols( )`, `$rows( )`), conditionals (`$if`/`$has`/`$config`),
    and `$match`. Each closes on its balanced `)` — no end marker.
@@ -108,6 +110,17 @@ A modifier follows a `:` inside `${ … }`. Combine several with commas.
 ```sh
 echo '{"level":"INFO"}' | jlf '${level:fg=cyan,bold}'   # cyan bold on a terminal
 ```
+
+To style *literal* text (a label, brackets, a separator) rather than a field,
+use a quoted hole — the same modifiers apply:
+
+```sh
+echo '{"level":"INFO"}' | jlf '${"[":bright black}${level}${"]":bright black}'
+# -> muted [ … ] around the colored level
+```
+
+Note `bright black` is the terminal's palette gray (`ESC[90m`); it is a color, unlike
+the `dimmed` attribute (`ESC[2m`), which some terminals render inconsistently.
 
 **JSON rendering** for object/array values:
 
@@ -438,6 +451,7 @@ separator inline: `${@timestamp}${@level}${@message}$config(compact => \t)$else(
 | ---- | ------- |
 | `$name`, `${a.b.c}` | a field, nested by `.` |
 | `${a\|b\|c}` | fallback chain; first present wins |
+| `${"text":mod}` | a literal string (styled/escaped like a value) |
 | `${field:mod}` | modifiers: styling (`fg=`, `dimmed`), `json`, escaping (`csv`/`html`/…) |
 | `${.}` / `${..}` | whole record / the rest (fields not yet shown) |
 | `${?field}` | optional; if empty, one adjacent space collapses |

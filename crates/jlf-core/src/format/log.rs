@@ -431,9 +431,12 @@ fn join_names_eq(rest: &[PathToken<'_>], key: &str) -> bool {
 /// Resolve a field accessor to the pointed-at `Json` (no rest handling).
 fn resolve_field<'a>(json: &'a Json<'a>, field: &Field) -> &'a Json<'a> {
     match field {
-        Field::Whole | Field::Rest | Field::ColValue | Field::ColKey | Field::ColValuePath(_) => {
-            json
-        }
+        Field::Whole
+        | Field::Rest
+        | Field::ColValue
+        | Field::ColKey
+        | Field::ColValuePath(_)
+        | Field::Literal(_) => json,
         Field::Names(names) => walk(json, names),
     }
 }
@@ -451,6 +454,7 @@ fn rest_arg_without_content<'a>(
         match field {
             Field::Whole => return false,
             Field::ColValue | Field::ColKey | Field::ColValuePath(_) => return false,
+            Field::Literal(_) => return false,
             Field::Rest => {
                 return !with_excluded(used_fields, |excluded| json.has_rest_content(excluded));
             }
@@ -504,6 +508,9 @@ fn test_cond<'a>(
                 let val = walk(json, names);
                 test_cond2(cond, val)
             }
+            // A literal is never a directive subject in practice (directives
+            // parse their subject separately), but treat it as present.
+            Field::Literal(s) => *cond == Cond::Has || !s.is_empty(),
         };
 
         // A fallback list (`a|b|c`) is satisfied as soon as one option is:
@@ -630,6 +637,7 @@ fn write_arg<'a>(
                     None => Ok(()),
                 };
             }
+            Field::Literal(s) => return write_scalar_str(f, format, s),
             Field::Names(names) => {
                 val = walk(json, names);
 

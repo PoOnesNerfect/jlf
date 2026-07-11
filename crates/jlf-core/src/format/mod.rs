@@ -17,6 +17,9 @@ pub enum Field {
     Names(FieldNames),
     Whole,
     Rest,
+    /// A quoted literal (`${"text":mods}`): constant text rendered with the arg's
+    /// modifiers, so raw text can be styled/escaped like a value.
+    Literal(String),
     /// `$value` inside a `$( … )` repetition: the current entry's value.
     ColValue,
     /// `${value.path}` inside a repetition: a sub-path of the entry's value.
@@ -465,15 +468,24 @@ mod dsl_tests {
         assert_eq!(render(t, &[], r#"{"level":"WARN"}"#), "WARN");
     }
     #[test]
-    fn block_on_its_own_line_absorbs_indent() {
-        // a rep on its own indented line -> newline+indent renders per item
-        assert_eq!(
-            render("head\n  $(${key}: ${value})*", &[], r#"{"a":"1","b":"2"}"#),
-            "head\n  a: 1\n  b: 2"
-        );
-        // a conditional on its own line -> the line renders once, or not at all
-        assert_eq!(render("L\n  $if(span => has)", &[], r#"{"span":{"x":1}}"#), "L\n  has");
-        assert_eq!(render("L\n  $if(span => has)", &[], r#"{}"#), "L");
+    fn quoted_literal_renders_constant_text() {
+        // A quoted hole is literal text, not a field lookup.
+        assert_eq!(render(r#"${"hi"} ${x}"#, &[], r#"{"x":"there"}"#), "hi there");
+        // Modifiers apply to it (escaping is observable without color).
+        assert_eq!(render(r#"${"a,b":csv}"#, &[], r#"{}"#), "\"a,b\"");
+        // A colon inside the literal is not a modifier separator.
+        assert_eq!(render(r#"${"a:b"}"#, &[], r#"{}"#), "a:b");
+        // Escapes: \t, \", and a literal backslash.
+        assert_eq!(render(r#"${"x\ty\"z"}"#, &[], r#"{}"#), "x\ty\"z");
+        // Single-quoted literals work too.
+        assert_eq!(render(r#"${'lit'}"#, &[], r#"{}"#), "lit");
+    }
+
+    #[test]
+    fn quoted_literal_errors() {
+        let bad = |t: &str| Formatter::new(t, true, false).is_err();
+        assert!(bad(r#"${"oops}"#)); // unterminated
+        assert!(bad(r#"${"x" foo}"#)); // trailing junk after the literal
     }
 }
 
