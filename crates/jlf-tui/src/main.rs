@@ -17,6 +17,9 @@ use ratatui::DefaultTerminal;
 use app::{App, Mode};
 use reader::Source;
 
+/// Records the selection jumps for a Shift-J / Shift-K "fast move".
+const JUMP: isize = 7;
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
@@ -257,8 +260,22 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('u') => app.move_page(-1, false),
         KeyCode::Char('D') | KeyCode::PageDown => app.move_page(1, true),
         KeyCode::Char('U') | KeyCode::PageUp => app.move_page(-1, true),
-        KeyCode::Char('J') => app.detail_scroll = app.detail_scroll.saturating_add(1),
-        KeyCode::Char('K') => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        // Shift-J/K: scroll the detail pane while it's open (you're inspecting
+        // one record), otherwise fast-move the selection by a few records.
+        KeyCode::Char('J') => {
+            if app.show_detail {
+                app.detail_scroll = app.detail_scroll.saturating_add(1);
+            } else {
+                app.move_by(JUMP);
+            }
+        }
+        KeyCode::Char('K') => {
+            if app.show_detail {
+                app.detail_scroll = app.detail_scroll.saturating_sub(1);
+            } else {
+                app.move_by(-JUMP);
+            }
+        }
         KeyCode::Char('f') => app.toggle_follow(),
         KeyCode::Char('c') => app.expanded = !app.expanded,
         KeyCode::Char('a') => app.open_actions(),

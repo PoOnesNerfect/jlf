@@ -75,7 +75,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "Keys",
         "  ↑/k ↓/j   move            ⏎    detail on / off",
         "  d/u       half page down / up   D/U  full page",
-        "  g/G       top / bottom     J/K  scroll detail",
+        "  g/G       top / bottom     J/K  jump 7 / scroll detail",
         "  a         actions panel    f    follow on / off",
         "  c         compact / expand rows",
         "  /         filter / search  :    command",
