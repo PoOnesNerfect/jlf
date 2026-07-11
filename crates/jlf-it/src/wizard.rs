@@ -511,9 +511,10 @@ fn draw_frame(
 /// refreshes on every keystroke. `dim` selects the dimming filter preview;
 /// `complete` drives autocompletion of fields, then operators, then values.
 ///
-/// Keys: Tab/Shift-Tab and ↑/↓ move the highlighted suggestion; Enter accepts the
-/// highlight (or commits the field when there's nothing to accept); ←/→/Home/End
-/// move the cursor; Esc backs out.
+/// Suggestions never auto-select: they show dimmed until you press Tab/Shift-Tab
+/// (or ↑/↓), which selects and *fills* successive candidates into the input so
+/// Enter applies immediately. Editing the buffer deselects; Enter always commits
+/// what's shown; Esc exits without applying; ←/→/Home/End move the cursor.
 fn live_edit(
     ctx: &Ctx,
     b: &mut Builder,
@@ -525,12 +526,9 @@ fn live_edit(
 ) -> Prompt {
     let mut buf: Vec<char> = initial.chars().collect();
     let mut pos = buf.len();
-    let mut sel = 0usize; // highlighted suggestion
-    let mut dismissed = false; // suggestions hidden (Esc) so Enter commits
-    // Whether the user has actively moved through the suggestions (Tab/↑↓). Only
-    // then does Enter fill from an *empty* buffer — otherwise Enter on an empty
-    // field commits the empty value, so you can clear a filter and confirm it.
-    let mut engaged = false;
+    // Active Tab-cycle over the frozen candidate list, or None when nothing is
+    // selected (the initial state, and after any edit).
+    let mut cycle: Option<Cycle> = None;
     let mut sample_scroll = 0usize; // PgUp/PgDn scroll of the sample frame
     let sample_len = ctx
         .example
@@ -545,9 +543,18 @@ fn live_edit(
         let _ = ctx.term.hide_cursor();
         draw_body(ctx, &preview_b, dim, &highlight, sample_scroll, 4);
 
-        let (tok_start, tok_end, all) = suggestions(complete, &buf, pos, ctx.cat);
-        let cands = if dismissed { Vec::new() } else { all };
-        sel = if cands.is_empty() { 0 } else { sel.min(cands.len() - 1) };
+        // While cycling, keep showing the frozen candidate list with the active
+        // one highlighted; otherwise recompute live suggestions and highlight
+        // nothing (Tab selects the first).
+        let live = if cycle.is_none() {
+            suggestions(complete, &buf, pos, ctx.cat).2
+        } else {
+            Vec::new()
+        };
+        let (cands, hi): (&[String], Option<usize>) = match &cycle {
+            Some(c) => (&c.cands, Some(c.idx)),
+            None => (&live, None),
+        };
 
         // Always emit the suggestion + hint lines (blank when none) so the input
         // row never moves.
@@ -560,7 +567,7 @@ fn live_edit(
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    if i == sel {
+                    if Some(i) == hi {
                         style(format!(" {c} ")).black().on_cyan().to_string()
                     } else {
                         style(format!(" {c} ")).dim().to_string()
@@ -569,7 +576,7 @@ fn live_edit(
                 .collect::<Vec<_>>()
                 .join(" ");
             line(&mut foot, &format!("{} {}", style("⇥").dim(), row));
-            line(&mut foot, &format!("  {}", style("Tab/↑↓ pick · ⏎ fill · Esc dismiss").dim()));
+            line(&mut foot, &format!("  {}", style("Tab/↑↓ cycle · ⏎ apply · Esc cancel").dim()));
         }
         line(&mut foot, &style(prompt).cyan().to_string());
         // Input line: erase its tail and everything below it (stale rows from a
@@ -585,52 +592,27 @@ fn live_edit(
         let _ = std::io::stdout().flush();
 
         match ctx.term.read_key() {
-            // Enter fills the highlighted suggestion when completing a partial
-            // token, or from an empty buffer only once you've moved through the
-            // list; otherwise it commits the buffer — so clearing to empty and
-            // pressing Enter applies the empty value (e.g. clears a filter).
+            // Enter always commits what's shown — Tab has already filled any
+            // chosen suggestion, so there's nothing left to accept here. An empty
+            // buffer commits the empty value (e.g. clears a filter).
             Ok(Key::Enter) => {
-                if !cands.is_empty() && (!s.is_empty() || engaged) {
-                    let repl: Vec<char> = cands[sel].chars().collect();
-                    buf.splice(tok_start..tok_end, repl.iter().copied());
-                    pos = tok_start + repl.len();
-                    sel = 0;
-                    engaged = false;
-                } else {
-                    apply(b, &s);
-                    return Ok(());
-                }
+                apply(b, &s);
+                return Ok(());
             }
-            // With a non-empty buffer, Esc first dismisses the popup (so Enter
-            // can commit what you typed); with an empty field there's nothing to
-            // keep, so Esc exits straight away.
-            Ok(Key::Escape) => {
-                if !cands.is_empty() && !s.trim().is_empty() {
-                    dismissed = true;
-                } else {
-                    return Err(());
-                }
-            }
+            // Esc exits the field without applying.
+            Ok(Key::Escape) => return Err(()),
             // PgDn/PgUp scroll the sample-record frame.
             Ok(Key::PageDown) => {
                 sample_scroll = (sample_scroll + 3).min(sample_len.saturating_sub(1));
             }
             Ok(Key::PageUp) => sample_scroll = sample_scroll.saturating_sub(3),
+            // Tab/↓ select and fill the next candidate (Shift-Tab/↑ the previous),
+            // cycling the frozen list; the first press selects the first item.
             Ok(Key::Tab) | Ok(Key::ArrowDown) => {
-                dismissed = false;
-                engaged = true;
-                let n = suggestions(complete, &buf, pos, ctx.cat).2.len();
-                if n > 0 {
-                    sel = (sel + 1) % n;
-                }
+                cycle_step(&mut cycle, &mut buf, &mut pos, complete, ctx.cat, 1);
             }
             Ok(Key::BackTab) | Ok(Key::ArrowUp) => {
-                dismissed = false;
-                engaged = true;
-                let n = suggestions(complete, &buf, pos, ctx.cat).2.len();
-                if n > 0 {
-                    sel = (sel + n - 1) % n;
-                }
+                cycle_step(&mut cycle, &mut buf, &mut pos, complete, ctx.cat, -1);
             }
             Ok(Key::Char(c)) => {
                 match c {
@@ -649,29 +631,95 @@ fn live_edit(
                         pos += 1;
                     }
                 }
-                sel = 0;
-                dismissed = false;
-                engaged = false;
+                cycle = None;
             }
             Ok(Key::Backspace) if pos > 0 => {
                 pos -= 1;
                 buf.remove(pos);
-                sel = 0;
-                dismissed = false;
-                engaged = false;
+                cycle = None;
             }
             Ok(Key::Del) if pos < buf.len() => {
                 buf.remove(pos);
-                sel = 0;
-                dismissed = false;
-                engaged = false;
+                cycle = None;
             }
-            Ok(Key::ArrowLeft) => pos = pos.saturating_sub(1),
-            Ok(Key::ArrowRight) if pos < buf.len() => pos += 1,
-            Ok(Key::Home) => pos = 0,
-            Ok(Key::End) => pos = buf.len(),
+            Ok(Key::ArrowLeft) => {
+                pos = pos.saturating_sub(1);
+                cycle = None;
+            }
+            Ok(Key::ArrowRight) if pos < buf.len() => {
+                pos += 1;
+                cycle = None;
+            }
+            Ok(Key::Home) => {
+                pos = 0;
+                cycle = None;
+            }
+            Ok(Key::End) => {
+                pos = buf.len();
+                cycle = None;
+            }
             Ok(_) => {}
             Err(_) => return Err(()),
+        }
+    }
+}
+
+/// A frozen Tab-cycle over a suggestion list. `cands` is captured when cycling
+/// begins so filling successive items doesn't collapse the list; `base` is the
+/// text the user had typed (restored when the cycle steps past either end and
+/// deselects); `filled` tracks how many chars the current candidate occupies at
+/// `start`, so the next step replaces exactly that span.
+struct Cycle {
+    start: usize,
+    base: Vec<char>,
+    cands: Vec<String>,
+    idx: usize,
+    filled: usize,
+}
+
+/// Advance the Tab-cycle by `delta` (±1), filling the selected candidate into
+/// `buf`. The ring is `[typed text] → 0 → 1 → … → N-1 → [typed text]`, so
+/// stepping past either end deselects and restores what you typed. Starting a
+/// cycle captures the current token's candidates; a no-op when there are none.
+fn cycle_step(
+    cycle: &mut Option<Cycle>,
+    buf: &mut Vec<char>,
+    pos: &mut usize,
+    complete: Complete,
+    cat: &Catalog,
+    delta: isize,
+) {
+    match cycle.take() {
+        None => {
+            let (start, end, cands) = suggestions(complete, buf, *pos, cat);
+            if cands.is_empty() {
+                return;
+            }
+            let base: Vec<char> = buf[start..end].to_vec();
+            let idx = if delta >= 0 { 0 } else { cands.len() - 1 };
+            let repl: Vec<char> = cands[idx].chars().collect();
+            let filled = repl.len();
+            buf.splice(start..end, repl);
+            *pos = start + filled;
+            *cycle = Some(Cycle { start, base, cands, idx, filled });
+        }
+        Some(mut c) => {
+            let next = c.idx as isize + delta;
+            if next < 0 || next >= c.cands.len() as isize {
+                // Stepped past a boundary: deselect and restore the typed text,
+                // leaving the cycle ended (taken above).
+                let base = std::mem::take(&mut c.base);
+                *pos = c.start + base.len();
+                buf.splice(c.start..c.start + c.filled, base);
+            } else {
+                c.idx = next as usize;
+                let repl: Vec<char> = c.cands[c.idx].chars().collect();
+                let filled = repl.len();
+                buf.splice(c.start..c.start + c.filled, repl);
+                c.filled = filled;
+                *pos = c.start + filled;
+                *cycle = Some(c);
+            }
         }
     }
 }

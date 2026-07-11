@@ -749,6 +749,7 @@ dependencies = [
  "dialoguer",
  "etcetera",
  "jlf-core",
+ "libc",
  "serde_json",
 ]
 
