@@ -1,8 +1,11 @@
 use ansi_to_tui::IntoText;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
 use crate::app::{App, Mode};
@@ -252,6 +255,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     }
     if app.expanded {
         draw_list_expanded(f, app, area, block, inner_h, total);
+        draw_scrollbar(f, app, area, total);
         return;
     }
 
@@ -293,6 +297,28 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
     f.render_stateful_widget(list, area, &mut state);
+    draw_scrollbar(f, app, area, total);
+}
+
+/// A vertical scrollbar on the list's right border, marking the selected
+/// record's position in the whole stream. Drawn only when the records don't all
+/// fit (otherwise there's nothing to scroll), and inset by one row so it doesn't
+/// clobber the block's rounded corners.
+fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
+    let page = app.page.get().max(1);
+    if total <= page {
+        return;
+    }
+    let mut state = ScrollbarState::new(total)
+        .viewport_content_length(page)
+        .position(app.selected);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .thumb_style(Style::default().fg(Color::Cyan));
+    f.render_stateful_widget(bar, area.inner(Margin::new(0, 1)), &mut state);
 }
 
 /// Expanded list (toggled with `c`): each record spans multiple lines — header

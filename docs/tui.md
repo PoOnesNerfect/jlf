@@ -102,6 +102,9 @@ bottom edge. At the very bottom the newest record sits at the bottom edge, so
 moving up walks the cursor through the visible records before the view scrolls.
 A record taller than the viewport is shown from its top.
 
+A scrollbar on the list's right edge marks the selected record's position in the
+whole stream. It appears only when the records don't all fit on screen.
+
 ## Filter and search
 
 Press `/` to filter. The input mixes two kinds of token:
