@@ -191,7 +191,7 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · ⏎ detail · c expand · a actions · / search · : command · ? help · q quit";
+const HINT: &str = "↑↓ move · g/G top/bottom · d/u page · ⏎ detail · c expand · a actions · ? help · q quit";
 
 /// The bottom bar: always shows the status (follow, position, filter, transient
 /// message). Its trailing hint section shows the normal key hints, or — while
