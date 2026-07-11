@@ -8,13 +8,19 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Fixed layout: the list (+ optional detail) fills everything above a single
-    // bottom bar. The suggestion popup, when typing, overlays the bottom of the
-    // list rather than taking layout space, so nothing shifts when you press
-    // `/` or `:`.
-    let areas = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
+    // Fixed layout: the list (+ optional detail), then a permanently-reserved
+    // two-row area for completion suggestions, then the single bottom bar. The
+    // suggestion rows are blank until you type `/` or `:`, so filling them never
+    // resizes the list or shifts anything.
+    let areas = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .split(f.area());
     let main = areas[0];
-    let bar = areas[1];
+    let sug = areas[1];
+    let bar = areas[2];
 
     if app.show_detail {
         let [list_area, detail_area] =
@@ -24,17 +30,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         draw_list(f, app, main);
     }
-    draw_bar(f, app, bar);
     if app.suggestions_visible() {
-        let h = 2u16.min(main.height);
-        let overlay = Rect {
-            x: main.x,
-            y: main.y + main.height - h,
-            width: main.width,
-            height: h,
-        };
-        draw_suggestions(f, app, overlay);
+        draw_suggestions(f, app, sug);
     }
+    draw_bar(f, app, bar);
 
     if app.help {
         draw_help(f, main);
@@ -137,8 +136,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(format!(" {c} "), style));
         spans.push(Span::raw(" "));
     }
-    // Candidates on the first row, the key hint on its own row below. A dark
-    // background makes the overlaid popup legible over the list underneath.
+    // Candidates on the first row, the key hint on its own row below.
     let text = vec![
         Line::from(spans),
         Line::from(Span::styled(
@@ -146,11 +144,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )),
     ];
-    f.render_widget(Clear, area);
-    f.render_widget(
-        Paragraph::new(text).style(Style::default().bg(Color::Black)),
-        area,
-    );
+    f.render_widget(Paragraph::new(text), area);
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
