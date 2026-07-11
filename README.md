@@ -163,7 +163,10 @@ jlf 'lvl|level|severity=error'  # fallback fields — first present wins
 Operators: `=` `!=` (string), `>` `>=` `<` `<=` (numeric), `~` `!~` (substring).
 Nested keys use dots (`data.user.id=7`). Numeric operators and `stats` read a
 leading number from the value, so a unit-suffixed field like `"6.193 ms"` is
-compared and aggregated as `6.193`.
+compared and aggregated as `6.193`. If the values aren't numeric, the ordering
+operators fall back to comparing RFC 3339 timestamps, so
+`ts>2026-07-11T15:00:00Z` (or a partial bound like `ts>2026-07-11`) works
+chronologically.
 
 ```sh
 printf '%s\n' \
