@@ -633,11 +633,13 @@ impl App {
     }
 
     /// One-line rendering of a record for the compact list (parses, redacts,
-    /// formats). Any newlines the template emits are collapsed so each record
-    /// occupies exactly one row — otherwise the list windowing (one item = one
-    /// row) mis-counts and leaves a stray blank row while scrolling.
+    /// formats). Newlines the template emits become tabs so each record occupies
+    /// exactly one row — otherwise the list windowing (one item = one row)
+    /// mis-counts and leaves a stray blank row while scrolling. The renderer
+    /// expands the tabs to aligned columns (see `ansi_text`), so the segments
+    /// that were separate lines line up in tab-stop columns.
     pub fn render_row(&self, line: &str) -> String {
-        self.render_with(line, &self.row_fmt).replace('\n', "  ")
+        self.render_with(line, &self.row_fmt).replace('\n', "\t")
     }
 
     /// Multi-line rendering of a record for the expanded list — header line plus

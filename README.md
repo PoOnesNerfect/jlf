@@ -595,14 +595,15 @@ filter = "level=error"
 
 A `[recipe.NAME.<flag>]` sub-table overrides individual keys when a flag holds
 (`compact`, `no_color`, `strict`). The default `output` uses this so `--compact`
-keeps the JSON inline:
+keeps the JSON inline, separated by a tab (rendered at the terminal's tab stops)
+instead of a newline:
 
 ```toml
 [recipe.output]
 out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-out = "${@timestamp} ${@level} ${@message} ${@data}"
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
 ```
 
 ### The default configuration
@@ -623,7 +624,7 @@ strict   = false
 out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-out = "${@timestamp} ${@level} ${@message} ${@data}"
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
 
 [recipe.timestamp]
 out = "timestamp:dimmed"

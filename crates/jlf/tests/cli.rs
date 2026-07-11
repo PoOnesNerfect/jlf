@@ -537,8 +537,9 @@ mod recipes_config {
         );
         // template
         assert_eq!(run_in_cfg(cfg, &["${@lat}ms ${message}"], logs), "42ms fast\n800ms slow\n");
-        // filter: @lat>500 keeps the slow one (via the duration fallback)
-        assert_eq!(run_in_cfg(cfg, &["@lat>500", "-c"], logs), "slow {\"duration\":800}\n");
+        // filter: @lat>500 keeps the slow one (via the duration fallback).
+        // Compact (`-c`) separates the message from the JSON with a tab.
+        assert_eq!(run_in_cfg(cfg, &["@lat>500", "-c"], logs), "slow\t{\"duration\":800}\n");
         // summary: count breaks down by the resolved value
         let out = run_in_cfg(cfg, &["count", "@lat"], logs);
         assert!(out.contains("42"), "got:\n{out}");

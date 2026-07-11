@@ -490,32 +490,54 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
+/// Standard tab-stop width used when expanding tabs in rendered content.
+const TAB_STOP: usize = 8;
+
 /// Parse an ANSI string into styled ratatui text; fall back to plain on error.
-/// Control characters left in the *content* (a stray `\r`, `\t`, backspace… from
-/// the log itself) are stripped: `into_text` has already turned real ANSI escape
-/// sequences into styles, so anything control-like remaining is literal data
-/// that would otherwise move the terminal cursor and corrupt the frame (e.g. a
-/// `\r` jumps to column 0 and overwrites the border — which ratatui never
-/// repaints, so the damage sticks).
+/// Control characters left in the *content* (a stray `\r`, backspace… from the
+/// log itself) are stripped, since `into_text` has already turned real ANSI
+/// escape sequences into styles, so anything control-like remaining is literal
+/// data that would otherwise move the terminal cursor and corrupt the frame
+/// (e.g. a `\r` jumps to column 0 and overwrites the border — which ratatui
+/// never repaints, so the damage sticks). Tabs are expanded to spaces up to the
+/// next tab stop (ratatui doesn't lay out tabs), tracked across spans so the
+/// columns stay aligned — this is how compact rows lay out the segments that
+/// were separate template lines.
 fn ansi_text(s: String) -> Text<'static> {
     let mut text = s.clone().into_text().unwrap_or_else(|_| Text::from(s));
     for line in &mut text.lines {
+        let mut col = 0usize;
         for span in &mut line.spans {
-            if span.content.chars().any(char::is_control) {
-                let cleaned: String = span
-                    .content
-                    .chars()
-                    .filter_map(|c| match c {
-                        '\t' => Some(' '),
-                        c if c.is_control() => None,
-                        c => Some(c),
-                    })
-                    .collect();
-                span.content = cleaned.into();
+            if span.content.chars().any(|c| c.is_control()) {
+                span.content = expand_controls(&span.content, &mut col).into();
+            } else {
+                col += span.content.chars().count();
             }
         }
     }
     text
+}
+
+/// Strip corrupting control chars and expand tabs to the next [`TAB_STOP`],
+/// advancing `col` (the running display column of the line so tabs from later
+/// spans still land on tab stops).
+fn expand_controls(content: &str, col: &mut usize) -> String {
+    let mut out = String::new();
+    for c in content.chars() {
+        match c {
+            '\t' => {
+                let pad = TAB_STOP - (*col % TAB_STOP);
+                out.push_str(&" ".repeat(pad));
+                *col += pad;
+            }
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                *col += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Parse an ANSI string known to be a single line into one styled `Line`.
@@ -597,6 +619,12 @@ mod tests {
     use std::sync::mpsc::channel;
 
     fn buffer_text(lines: &[&str]) -> String {
+        render_app(lines, |_| {})
+    }
+
+    /// Build an app from `lines`, apply `setup` (e.g. toggle detail/expanded),
+    /// render one frame, and return the flattened terminal buffer as text.
+    fn render_app(lines: &[&str], setup: impl FnOnce(&mut App)) -> String {
         let (tx, rx) = channel();
         for l in lines {
             tx.send((*l).to_string()).unwrap();
@@ -604,6 +632,7 @@ mod tests {
         drop(tx);
         let mut app = App::new(rx).unwrap();
         app.drain_input();
+        setup(&mut app);
 
         let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
         term.draw(|f| draw(f, &app)).unwrap();
@@ -624,15 +653,30 @@ mod tests {
         let text = buffer_text(&[r#"{"level":"info","msg":"hello world"}"#]);
         assert!(text.contains("jlf-tui"), "missing header:\n{text}");
         assert!(text.contains("records"), "missing list title:\n{text}");
-        assert!(text.contains("detail"), "missing detail title:\n{text}");
         assert!(text.contains("hello world"), "missing record:\n{text}");
     }
 
     #[test]
     fn detail_pane_pretty_prints_selected() {
-        let text = buffer_text(&[r#"{"a":{"b":1}}"#]);
+        // Detail is opt-in (Enter), so open it before rendering.
+        let text = render_app(&[r#"{"a":{"b":1}}"#], |app| app.show_detail = true);
+        assert!(text.contains("detail"), "missing detail title:\n{text}");
         // pretty JSON puts the nested key on its own indented line
         assert!(text.contains("\"b\""), "detail not pretty:\n{text}");
+    }
+
+    #[test]
+    fn tabs_expand_to_aligned_columns() {
+        // A tab advances to the next multiple of TAB_STOP; `col` carries across
+        // spans so later tabs still align. Other control chars are dropped.
+        let mut col = 0;
+        assert_eq!(expand_controls("ab\tc", &mut col), "ab      c");
+        assert_eq!(col, 9);
+        // Continuing on the same line, a leading tab pads from the running col.
+        assert_eq!(expand_controls("\tx", &mut col), "       x");
+        // A stray carriage return is stripped, not rendered.
+        let mut c2 = 0;
+        assert_eq!(expand_controls("be\rfore", &mut c2), "before");
     }
 
     #[test]

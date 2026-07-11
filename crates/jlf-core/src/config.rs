@@ -319,7 +319,7 @@ pub fn default_variables() -> Vec<(String, String)> {
     [
         (
             "output",
-            "${@timestamp}${@level}${@message}$config(compact =>  )$else(\\n)${@data}",
+            "${@timestamp}${@level}${@message}$config(compact => \\t)$else(\\n)${@data}",
         ),
         ("timestamp", "${?timestamp:dimmed} "),
         (

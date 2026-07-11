@@ -12,12 +12,13 @@ strict   = false
 #   a `$…` template, an `a,b,c` column list, or a single `field[:mods]` value.
 # `output` is the entry point: it joins the recipes below. Each is optional, so
 # an absent field collapses its space — you write ${@name}, not ${?@name}.
-# output.compact only changes the separator before the JSON.
+# output.compact only changes the separator before the JSON: a tab (rendered at
+# the terminal's tab stops) instead of the newline the multi-line output uses.
 [recipe.output]
 out = "${@timestamp} ${@level} ${@message}\n${@data}"
 
 [recipe.output.compact]
-out = "${@timestamp} ${@level} ${@message} ${@data}"
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
 
 # A single field[:mods] `out` is a value: reusable as ${@name} in a template,
 # and usable as @name in filters (@timestamp>...) and summaries (stats @message).

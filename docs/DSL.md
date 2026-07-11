@@ -422,15 +422,15 @@ printf '{"timestamp":"t1","level":"WARN","message":"slow","code":5}\n{"note":"ra
 ```
 
 The second record has no timestamp/level/message, so those collapse and only
-`@data` prints. `--compact` keeps the JSON inline:
+`@data` prints. `--compact` keeps the JSON inline, separated by a tab:
 
 ```sh
 printf '{"timestamp":"t1","level":"WARN","message":"slow","code":5}\n' | jlf -c
-# -> t1 WARN slow {"code":5}
+# -> t1 WARN slow<TAB>{"code":5}
 ```
 
 The built-in default (used when no config is present) is equivalent, choosing the
-separator inline: `${@timestamp}${@level}${@message}$config(compact =>  )$else(\n)${@data}`.
+separator inline: `${@timestamp}${@level}${@message}$config(compact => \t)$else(\n)${@data}`.
 
 ## Cheatsheet
 
