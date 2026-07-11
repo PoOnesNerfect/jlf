@@ -169,7 +169,13 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         Mode::Command => format!(":{}", app.input),
         Mode::Normal => String::new(),
     };
+    let prefix = 1u16; // the `/` or `:`
     f.render_widget(Paragraph::new(Line::from(input)), inner);
+    // Place a real terminal cursor at the end of the typed text (editing is
+    // end-of-input only) so it's clear where you're typing.
+    let cursor_x = (inner.x + prefix + app.input.chars().count() as u16)
+        .min(inner.x + inner.width.saturating_sub(1));
+    f.set_cursor_position((cursor_x, inner.y));
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
