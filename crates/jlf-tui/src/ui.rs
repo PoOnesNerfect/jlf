@@ -177,7 +177,29 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     if !active {
-        return; // empty framed box
+        // Idle: surface the currently-applied filter (if any) in the otherwise
+        // empty input row, so it's easy to see what's narrowing the view.
+        if !app.filter_text.is_empty() {
+            let line = Line::from(vec![
+                Span::styled(
+                    " filter ",
+                    Style::default().fg(Color::Black).bg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!(" {}", app.filter_text),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("   {} of {} records", app.view_len(), app.total()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            f.render_widget(
+                Paragraph::new(truncate_line(line, inner.width as usize)),
+                inner,
+            );
+        }
+        return; // empty framed box (no active filter)
     }
     let input = match app.mode {
         Mode::Search => format!("/{}", app.input),
