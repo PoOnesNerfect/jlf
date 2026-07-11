@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // it's an empty, titled frame so the space reads as a deliberate input area.
     let areas = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Length(1),
     ])
     .split(f.area());
@@ -122,34 +122,20 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
-/// The framed input box. Always drawn (so the layout never shifts): while typing
-/// a `/` filter or `:` command it holds the input line and, above it, the
-/// suggestion candidates; when idle it's an empty titled frame, so the reserved
-/// space reads as a deliberate input area rather than blank rows.
+/// The framed input box. Always drawn (so the layout never shifts) and only
+/// three rows tall: the top border doubles as the row for suggestion candidates
+/// while typing (or the box title when idle / no candidates), the single inner
+/// row holds the `/` filter or `:` command input, and the bottom border closes
+/// it. Idle it's an empty titled frame, so the reserved space reads as a
+/// deliberate input area rather than blank rows.
 fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
-    let (title, dim) = match app.mode {
-        Mode::Search => (" filter (/) ".to_string(), false),
-        Mode::Command => (" command (:) ".to_string(), false),
-        Mode::Normal => ("  /  filter    :  command  ".to_string(), true),
-    };
-    let border = if dim { Color::DarkGray } else { Color::Cyan };
-    let block = Block::bordered()
-        .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            title,
-            Style::default().fg(if dim { Color::DarkGray } else { Color::Cyan }),
-        ));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let active = matches!(app.mode, Mode::Search | Mode::Command);
+    let border = if active { Color::Cyan } else { Color::DarkGray };
 
-    if matches!(app.mode, Mode::Normal) {
-        return; // empty framed box
-    }
-
-    // Candidates on the first inner row, the input on the second.
-    let candidates = if app.suggestions_visible() {
+    // The top border row: the candidates while cycling, else a label.
+    let title = if app.suggestions_visible() {
         let (cands, sel) = app.suggestions();
-        let mut spans = vec![Span::styled("⇥ ", Style::default().fg(Color::DarkGray))];
+        let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
         for (i, c) in cands.iter().enumerate() {
             let style = if Some(i) == sel {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -161,14 +147,29 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         }
         Line::from(spans)
     } else {
-        Line::from("")
+        let label = match app.mode {
+            Mode::Search => " filter (/) ",
+            Mode::Command => " command (:) ",
+            Mode::Normal => "  /  filter    :  command  ",
+        };
+        Line::from(Span::styled(label, Style::default().fg(border)))
     };
+
+    let block = Block::bordered()
+        .border_style(Style::default().fg(border))
+        .title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if !active {
+        return; // empty framed box
+    }
     let input = match app.mode {
         Mode::Search => format!("/{}", app.input),
         Mode::Command => format!(":{}", app.input),
         Mode::Normal => String::new(),
     };
-    f.render_widget(Paragraph::new(vec![candidates, Line::from(input)]), inner);
+    f.render_widget(Paragraph::new(Line::from(input)), inner);
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
