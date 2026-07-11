@@ -274,16 +274,19 @@ jlf-tui app.log level=error   # start with a filter applied
 Layout: a colored record list, an optional detail pane (**Enter** toggles it)
 showing the selected record as syntax-highlighted JSON, a status bar (follow
 state, position, filter, and transient messages), and a hint line that always
-lists the keys.
+lists the keys. The list is one dense line per record by default; **`c`** expands
+it to the full multi-line rendering (header + pretty data), like piped `jlf`.
 
 | key | action |
 | --- | ------ |
 | `j`/`k`, `↓`/`↑` | move selection |
 | `g`/`G` | jump to top / bottom |
-| `Ctrl-d`/`Ctrl-u` | half-page down / up |
+| `d`/`u` | half page down / up |
+| `D`/`U` | full page down / up |
 | `Enter` | open / close the detail pane |
 | `J`/`K` | scroll the detail pane |
 | `f` | toggle follow (auto-scroll to newest) |
+| `c` | compact / expand the record rows |
 | `a` | **Actions** panel — summaries, export, save-as-recipe |
 | `/` | filter / search (see below) |
 | `:` | command (see below) |
@@ -291,17 +294,29 @@ lists the keys.
 | `Esc` | close a popup, or clear the filter |
 | `q` | quit |
 
+**Memory over long streams.** A viewer that held every line would grow without
+bound on a busy `tail -f`. Instead `jlf-tui` keeps the **first** and **most
+recent** records resident — the two places `g` and `G` jump to — and spills the
+middle to a temp file, paging chunks back on demand (prefetching just off the
+visible edges so scrolling stays smooth). Memory stays bounded no matter how long
+the stream runs; the temp file is removed on exit. Summaries and filters still
+cover the **whole** stream (memory and file), not just what's in RAM.
+
 **Filter and search** (`/`): tokens shaped like `field=value` (operators `=`,
 `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter structurally; **bare words** match
 anywhere in the raw record, and you can mix them (`/level=error timeout`). It
 autocompletes field paths (nested and array ones like `fields.status`,
-`spans.0.method`), then operators, then that field's values — **Tab/↑↓** move,
-**Enter** fills, **Esc** dismisses.
+`spans.0.method`), then operators, then that field's values. Nothing is selected
+until you press **Tab/↓**, which selects and fills successive candidates (so
+**Enter** applies immediately); **Shift-Tab/↑** steps back, returning to what you
+typed past the first item; **Esc** exits.
 
 **Commands** (`:`) also autocomplete (the verb, then a field). Available:
 `count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`,
 `csv|tsv|md cols [file]`, `follow`, `save name`, `help`, `quit`. Summaries and
-exports run against the **current filtered view**.
+exports run against the **current filtered view** over the whole stream (memory
+and spilled file); a summary shows a `computing…` progress line while it folds a
+large store and keeps updating live as new records arrive.
 
 **Actions panel** (`a`) is a one-stop menu: pick a summary (count/stats/top/uniq)
 with a group-by field, export as csv/tsv/md, or **save the current filter and
@@ -328,9 +343,10 @@ on screen **dimmed** rather than vanishing as you type.
 Press **Tab** to autocomplete: it suggests the sample's field paths — nested and
 array ones included (`fields.status`, `spans.0.method`) — then the comparison
 operators, then that field's actual values, so you rarely have to type a full
-`level=error` by hand. **Tab/Shift-Tab** or **↑/↓** move through the suggestions,
-**Enter** fills the highlighted one, **Esc** dismisses them, and **Ctrl-W** (plus
-the usual **Ctrl-U/K/A/E**) edit the line.
+`level=error` by hand. Nothing is selected until you press **Tab/↓**, which
+selects and fills successive candidates (so **Enter** applies immediately);
+**Shift-Tab/↑** steps back, returning to what you typed past the first item;
+**Esc** exits; and **Ctrl-W** (plus the usual **Ctrl-U/K/A/E**) edit the line.
 
 The screen shows two bordered panels — the **raw sample record** (colored, with
 the fields you type highlighted) above the **preview** of your command. When a
