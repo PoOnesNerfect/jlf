@@ -307,7 +307,7 @@ fn draw_list_expanded(
     f: &mut Frame,
     app: &App,
     area: Rect,
-    block: Block,
+    block_widget: Block,
     inner_h: usize,
     total: usize,
 ) {
@@ -318,35 +318,43 @@ fn draw_list_expanded(
     let bar = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
     use std::rc::Rc;
+    // A record's content lines plus whether its template asked for a trailing
+    // blank separator; see the memoizing `block` closure below.
+    type Block = Rc<(Vec<Line<'static>>, bool)>;
 
-    // Guttered, width-clipped display lines for a record, memoized (behind `Rc`
-    // so the scroll math's repeated length checks don't deep-clone) and rendered
-    // at most once per frame. Mirrors the CLI, which writes the record then
-    // appends exactly one newline (`cli.rs`) — so a template that ends in a
-    // newline yields a blank separator line and one that doesn't renders records
-    // back-to-back. The separation is the template's, never blindly inserted.
-    let cache: RefCell<HashMap<usize, Rc<Vec<Line>>>> = RefCell::new(HashMap::new());
-    let block_lines = |i: usize| -> Rc<Vec<Line<'static>>> {
+    // A record's guttered, width-clipped content lines, plus whether its template
+    // asked for a trailing blank separator (it ends in a newline). Memoized
+    // behind `Rc` so the scroll math's repeated length checks don't deep-clone.
+    // The separator is tracked here but emitted only *between* records, never
+    // after the last visible one, so the bottom row is never a stray blank.
+    let cache: RefCell<HashMap<usize, Block>> = RefCell::new(HashMap::new());
+    let block = |i: usize| -> Block {
         if let Some(v) = cache.borrow().get(&i) {
             return v.clone();
         }
         let selected = i == app.selected;
         let gutter = || Span::styled(if selected { "▌ " } else { "  " }, bar);
         let record = app.record(i).unwrap_or_else(|| Rc::from(""));
-        let rendered = format!("{}\n", app.render_record(&record));
-        let lines: Vec<Line> = rendered
-            .split_terminator('\n')
+        let rendered = app.render_record(&record);
+        let had_sep = rendered.ends_with('\n');
+        let body = rendered.strip_suffix('\n').unwrap_or(&rendered);
+        let lines: Vec<Line> = body
+            .split('\n')
             .map(|raw| {
                 let mut spans = vec![gutter()];
                 spans.extend(truncate_line(ansi_line(raw.to_owned()), inner_w.saturating_sub(2)).spans);
                 Line::from(spans)
             })
             .collect();
-        let lines = Rc::new(lines);
-        cache.borrow_mut().insert(i, lines.clone());
-        lines
+        let v = Rc::new((lines, had_sep));
+        cache.borrow_mut().insert(i, v.clone());
+        v
     };
-    let height = |i: usize| block_lines(i).len();
+    // A record's effective height including the separator that follows it.
+    let height = |i: usize| -> usize {
+        let b = block(i);
+        b.0.len() + b.1 as usize
+    };
 
     let margin = scroll_margin(inner_h);
     let sel_h = height(app.selected);
@@ -387,24 +395,87 @@ fn draw_list_expanded(
     while top < max_top && above(top) + sel_h + margin > inner_h {
         top += 1;
     }
-    app.scroll_top.set(top);
 
-    // Emit records from `top` down, clipped to the viewport. Each record's lines
-    // already carry the CLI's one-newline terminator, so blank separators appear
-    // only when the template asks for them.
-    let mut lines: Vec<Line> = Vec::new();
-    let mut shown = 0usize;
-    for i in top..total {
-        lines.extend(block_lines(i).iter().cloned());
-        shown += 1;
-        if lines.len() >= inner_h {
+    // Build the visible lines from a start index, inserting a blank separator
+    // between records that asked for one (never a trailing one).
+    let build_from = |start: usize| -> Vec<Line<'static>> {
+        let mut out: Vec<Line> = Vec::new();
+        for i in start..total {
+            if i > start && block(i - 1).1 {
+                out.push(Line::from(""));
+            }
+            out.extend(block(i).0.iter().cloned());
+        }
+        out
+    };
+    // Whether every record from `from` to the end fits within the viewport (kept
+    // cheap by bailing out as soon as it overflows).
+    let window_fits = |from: usize| -> bool {
+        let mut r = 0usize;
+        for i in from..total {
+            r += block(i).0.len();
+            if i + 1 < total && block(i).1 {
+                r += 1;
+            }
+            if r > inner_h {
+                return false;
+            }
+        }
+        true
+    };
+
+    // The topmost record actually rendered — persisted so next frame's scrolloff
+    // math matches what's on screen (otherwise the fill/anchor and the sticky top
+    // diverge and the cursor gets pinned).
+    let render_top;
+    let mut lines = if window_fits(top) {
+        // Near the buffer end the content underfills the viewport: pull earlier
+        // records in until it overflows, then bottom-anchor (clip the top record)
+        // so the last record sits flush at the bottom with no empty rows.
+        let mut start = top;
+        while start > 0 && window_fits(start - 1) {
+            start -= 1;
+        }
+        // one more record (if any) so the panel fills, then keep the last screenful
+        start = start.saturating_sub(1);
+        render_top = start;
+        let mut full = build_from(start);
+        if full.len() > inner_h {
+            full = full.split_off(full.len() - inner_h);
+        }
+        full
+    } else {
+        // Scrolled up: emit from `top` and clip the bottom to the viewport.
+        render_top = top;
+        let mut out: Vec<Line> = Vec::new();
+        for i in top..total {
+            if i > top && block(i - 1).1 {
+                out.push(Line::from(""));
+            }
+            out.extend(block(i).0.iter().cloned());
+            if out.len() >= inner_h {
+                break;
+            }
+        }
+        out.truncate(inner_h);
+        out
+    };
+    lines.truncate(inner_h);
+    app.scroll_top.set(render_top);
+
+    // Page size (for d/u/D/U): records that fit from the rendered top.
+    let mut page = 0usize;
+    let mut h = 0usize;
+    for i in render_top..total {
+        h += height(i);
+        page += 1;
+        if h >= inner_h {
             break;
         }
     }
-    lines.truncate(inner_h);
-    app.page.set(shown.max(1));
+    app.page.set(page.max(1));
 
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    f.render_widget(Paragraph::new(lines).block(block_widget), area);
 }
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
