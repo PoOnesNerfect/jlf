@@ -8,13 +8,13 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Fixed layout: the list (+ optional detail), then a permanently-reserved
-    // two-row area for completion suggestions, then the single bottom bar. The
-    // suggestion rows are blank until you type `/` or `:`, so filling them never
-    // resizes the list or shifts anything.
+    // Fixed layout: the list (+ optional detail), then one reserved row that's
+    // blank until you type `/` or `:` (then it holds the input and its
+    // candidates), then the single bottom bar. Reserving the row keeps the list
+    // height fixed, so nothing shifts when you start or stop typing.
     let areas = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(f.area());
@@ -124,14 +124,19 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
-/// The reserved two-row section while typing a `/` filter or `:` command: the
-/// suggestion candidates on top (blank when there are none) and the input line
-/// itself on the bottom row, just above the bar. The completion key hints live
-/// in the bar (see [`draw_bar`]), so no row is spent on them here.
+/// The reserved one-row section while typing a `/` filter or `:` command: the
+/// input line, followed inline by the suggestion candidates (when there are
+/// any). The completion key hints live in the bar (see [`draw_bar`]).
 fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
-    let candidates = if app.suggestions_visible() {
+    let input = match app.mode {
+        Mode::Search => format!("/{}", app.input),
+        Mode::Command => format!(":{}", app.input),
+        Mode::Normal => String::new(),
+    };
+    let mut spans = vec![Span::raw(input)];
+    if app.suggestions_visible() {
         let (cands, sel) = app.suggestions();
-        let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
+        spans.push(Span::styled("   ⇥ ", Style::default().fg(Color::DarkGray)));
         for (i, c) in cands.iter().enumerate() {
             let style = if Some(i) == sel {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -141,16 +146,8 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(format!(" {c} "), style));
             spans.push(Span::raw(" "));
         }
-        Line::from(spans)
-    } else {
-        Line::from("")
-    };
-    let input = match app.mode {
-        Mode::Search => format!("/{}", app.input),
-        Mode::Command => format!(":{}", app.input),
-        Mode::Normal => String::new(),
-    };
-    f.render_widget(Paragraph::new(vec![candidates, Line::from(input)]), area);
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
