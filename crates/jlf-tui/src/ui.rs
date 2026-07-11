@@ -159,7 +159,7 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" [", dim),
                     Span::styled("/", key),
                     Span::styled("] filter", dim),
-                    Span::styled("   [", dim),
+                    Span::styled("  ·  [", dim),
                     Span::styled(":", key),
                     Span::styled("] command ", dim),
                 ])
