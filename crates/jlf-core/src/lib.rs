@@ -16,7 +16,7 @@ mod expand;
 pub use expand::expanded_format;
 
 mod filter;
-pub use filter::{matches_all, Filter};
+pub use filter::{matches_all, parse_number, Filter};
 
 mod redact;
 pub use redact::redact;

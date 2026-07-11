@@ -91,9 +91,9 @@ impl Filter {
             Op::Contains => self.values.iter().any(|v| field.contains(v.as_str())),
             Op::NotContains => self.values.iter().all(|v| !field.contains(v.as_str())),
             Op::Gt | Op::Lt | Op::Ge | Op::Le => {
-                let Ok(f) = field.parse::<f64>() else { return false };
+                let Some(f) = parse_number(field) else { return false };
                 self.values.iter().any(|v| {
-                    v.parse::<f64>().is_ok_and(|n| match self.op {
+                    parse_number(v).is_some_and(|n| match self.op {
                         Op::Gt => f > n,
                         Op::Lt => f < n,
                         Op::Ge => f >= n,
@@ -109,6 +109,24 @@ impl Filter {
 /// All filters must match (AND).
 pub fn matches_all(filters: &[Filter], json: &Json) -> bool {
     filters.iter().all(|f| f.matches(json))
+}
+
+/// Parse a number from a field value for ordering/aggregation, tolerating a
+/// trailing unit like the ` ms` in `"6.193 ms"` or a `%`/`s` suffix that logs
+/// often attach. Strict `f64` parsing is tried first; otherwise the leading
+/// numeric run (optional sign, digits, decimal, exponent) is taken and parsed,
+/// so `"6.193 ms"` -> 6.193, `"200ms"` -> 200, and `"ok"` -> None. This lets
+/// `n>500` filters and `stats` work on human-formatted numeric fields.
+pub fn parse_number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<f64>() {
+        return Some(n);
+    }
+    let end = s
+        .find(|c: char| !matches!(c, '0'..='9' | '.' | '-' | '+' | 'e' | 'E'))
+        .unwrap_or(s.len());
+    let head = s[..end].trim_end_matches(['.', '-', '+', 'e', 'E']);
+    head.parse::<f64>().ok()
 }
 
 #[cfg(test)]
@@ -170,6 +188,22 @@ mod tests {
         assert!(matches("latency_ms<=510", r));
         // non-numeric field never satisfies an ordering op
         assert!(!matches("latency_ms>x", r#"{"latency_ms":"abc"}"#));
+        // a number with a unit suffix still compares numerically
+        assert!(matches("latency>500", r#"{"latency":"510 ms"}"#));
+        assert!(!matches("latency>500", r#"{"latency":"6.193 ms"}"#));
+    }
+
+    #[test]
+    fn parse_number_tolerates_units() {
+        assert_eq!(parse_number("510"), Some(510.0));
+        assert_eq!(parse_number("6.193 ms"), Some(6.193));
+        assert_eq!(parse_number("200ms"), Some(200.0));
+        assert_eq!(parse_number("-3.5 s"), Some(-3.5));
+        assert_eq!(parse_number("1.5e3 units"), Some(1500.0));
+        assert_eq!(parse_number("  42  "), Some(42.0));
+        assert_eq!(parse_number("ok"), None);
+        assert_eq!(parse_number("$5"), None);
+        assert_eq!(parse_number(""), None);
     }
 
     #[test]

@@ -958,7 +958,7 @@ fn run_stats(args: Vec<String>, fmt: Option<TableFmt>, input: &[String]) -> Resu
                 && (filters.is_empty() || jlf_core::matches_all(&filters, &json))
             {
                 let v = resolve_first(&json, &field);
-                match scalar(v).and_then(|s| s.parse::<f64>().ok()) {
+                match scalar(v).and_then(jlf_core::parse_number) {
                     Some(n) => {
                         let key = group
                             .as_ref()

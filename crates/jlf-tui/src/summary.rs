@@ -102,7 +102,7 @@ impl Agg {
                 }
             }
             Kind::Stats => {
-                if let Some(x) = value.and_then(|s| s.parse::<f64>().ok()) {
+                if let Some(x) = value.and_then(jlf_core::parse_number) {
                     self.digest.add(x);
                 }
             }

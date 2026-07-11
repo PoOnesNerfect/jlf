@@ -111,7 +111,9 @@ Press `/` to filter. The input mixes two kinds of token:
 
 - **Structured filters** — `field op value`, with operators `=`, `!=`, `>`,
   `>=`, `<`, `<=`, `~` (contains), `!~` (does not contain). Example:
-  `/level=error status>=500`.
+  `/level=error status>=500`. Numeric operators (and `stats`) read a leading
+  number from the value, so a unit-suffixed field like `"6.193 ms"` compares and
+  aggregates as `6.193`.
 - **Bare words** — any token that isn't a `field op value` matches anywhere in
   the raw record text, case-insensitively. Example: `/timeout`.
 

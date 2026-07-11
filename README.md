@@ -161,7 +161,9 @@ jlf 'lvl|level|severity=error'  # fallback fields — first present wins
 ```
 
 Operators: `=` `!=` (string), `>` `>=` `<` `<=` (numeric), `~` `!~` (substring).
-Nested keys use dots (`data.user.id=7`).
+Nested keys use dots (`data.user.id=7`). Numeric operators and `stats` read a
+leading number from the value, so a unit-suffixed field like `"6.193 ms"` is
+compared and aggregated as `6.193`.
 
 ```sh
 printf '%s\n' \
