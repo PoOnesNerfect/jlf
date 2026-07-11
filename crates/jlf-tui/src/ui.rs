@@ -429,17 +429,20 @@ fn draw_list_expanded(
     // diverge and the cursor gets pinned).
     let render_top;
     let mut lines = if window_fits(top) {
-        // Near the buffer end the content underfills the viewport: pull earlier
-        // records in until it overflows, then bottom-anchor (clip the top record)
-        // so the last record sits flush at the bottom with no empty rows.
+        // Near the buffer end the content underfills the viewport. `start` is the
+        // first record whose window (start..end) still fits; that's the first
+        // fully-visible record, so persist it as the top (keeping the scrolloff
+        // math consistent with the screen — otherwise the persisted top sits a
+        // record above what's shown and the next keypress scrolls spuriously).
         let mut start = top;
         while start > 0 && window_fits(start - 1) {
             start -= 1;
         }
-        // one more record (if any) so the panel fills, then keep the last screenful
-        start = start.saturating_sub(1);
         render_top = start;
-        let mut full = build_from(start);
+        // Build from one record earlier so the panel fills, then bottom-anchor
+        // (clip that earlier record's top) so the last record is flush at the
+        // bottom with no empty rows.
+        let mut full = build_from(start.saturating_sub(1));
         if full.len() > inner_h {
             full = full.split_off(full.len() - inner_h);
         }
