@@ -8,13 +8,13 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Fixed layout: the list (+ optional detail), then one reserved row that's
-    // blank until you type `/` or `:` (then it holds the input and its
-    // candidates), then the single bottom bar. Reserving the row keeps the list
-    // height fixed, so nothing shifts when you start or stop typing.
+    // Fixed layout: the list (+ optional detail), then a framed input box, then
+    // the single bottom bar. The box is always present (so nothing shifts) and
+    // holds the `/` filter or `:` command input with its candidates; when idle
+    // it's an empty, titled frame so the space reads as a deliberate input area.
     let areas = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(1),
+        Constraint::Length(4),
         Constraint::Length(1),
     ])
     .split(f.area());
@@ -30,9 +30,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         draw_list(f, app, main);
     }
-    if matches!(app.mode, Mode::Search | Mode::Command) {
-        draw_input_section(f, app, sug);
-    }
+    draw_input_section(f, app, sug);
     draw_bar(f, app, bar);
 
     if app.help {
@@ -124,19 +122,34 @@ fn draw_help(f: &mut Frame, area: Rect) {
     );
 }
 
-/// The reserved one-row section while typing a `/` filter or `:` command: the
-/// input line, followed inline by the suggestion candidates (when there are
-/// any). The completion key hints live in the bar (see [`draw_bar`]).
+/// The framed input box. Always drawn (so the layout never shifts): while typing
+/// a `/` filter or `:` command it holds the input line and, above it, the
+/// suggestion candidates; when idle it's an empty titled frame, so the reserved
+/// space reads as a deliberate input area rather than blank rows.
 fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
-    let input = match app.mode {
-        Mode::Search => format!("/{}", app.input),
-        Mode::Command => format!(":{}", app.input),
-        Mode::Normal => String::new(),
+    let (title, dim) = match app.mode {
+        Mode::Search => (" filter (/) ".to_string(), false),
+        Mode::Command => (" command (:) ".to_string(), false),
+        Mode::Normal => ("  /  filter    :  command  ".to_string(), true),
     };
-    let mut spans = vec![Span::raw(input)];
-    if app.suggestions_visible() {
+    let border = if dim { Color::DarkGray } else { Color::Cyan };
+    let block = Block::bordered()
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(
+            title,
+            Style::default().fg(if dim { Color::DarkGray } else { Color::Cyan }),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if matches!(app.mode, Mode::Normal) {
+        return; // empty framed box
+    }
+
+    // Candidates on the first inner row, the input on the second.
+    let candidates = if app.suggestions_visible() {
         let (cands, sel) = app.suggestions();
-        spans.push(Span::styled("   ⇥ ", Style::default().fg(Color::DarkGray)));
+        let mut spans = vec![Span::styled("⇥ ", Style::default().fg(Color::DarkGray))];
         for (i, c) in cands.iter().enumerate() {
             let style = if Some(i) == sel {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -146,8 +159,16 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(format!(" {c} "), style));
             spans.push(Span::raw(" "));
         }
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+        Line::from(spans)
+    } else {
+        Line::from("")
+    };
+    let input = match app.mode {
+        Mode::Search => format!("/{}", app.input),
+        Mode::Command => format!(":{}", app.input),
+        Mode::Normal => String::new(),
+    };
+    f.render_widget(Paragraph::new(vec![candidates, Line::from(input)]), inner);
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
