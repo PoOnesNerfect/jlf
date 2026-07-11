@@ -1,4 +1,5 @@
 mod app;
+mod store;
 mod catalog;
 mod field;
 mod reader;
@@ -15,10 +16,6 @@ use ratatui::DefaultTerminal;
 
 use app::{App, Mode};
 use reader::Source;
-
-/// Selection moved by a fixed half-page for Ctrl-d/Ctrl-u (the exact viewport
-/// height isn't known to the app, and a fixed jump is predictable enough).
-const HALF_PAGE: isize = 15;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -172,9 +169,24 @@ fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
     loop {
         app.drain_input();
+        // Advance a running summary (folds a batch of records per frame, and
+        // picks up newly-arrived ones) before drawing.
+        app.tick_summary();
+        // A forced repaint (Ctrl-L) clears any externally-corrupted cells that
+        // ratatui's diff would otherwise leave untouched.
+        if std::mem::take(&mut app.force_redraw) {
+            terminal.clear()?;
+        }
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        // While a summary is still catching up, poll briefly so it finishes
+        // quickly; otherwise idle longer to stay cheap.
+        let timeout = if app.summary_computing() {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_millis(100)
+        };
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     handle_key(app, key.code, key.modifiers);
@@ -194,12 +206,17 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.quit = true;
         return;
     }
+    // Ctrl-L forces a full repaint from any mode (recover a corrupted display).
+    if ctrl && matches!(code, KeyCode::Char('l')) {
+        app.force_redraw = true;
+        return;
+    }
     match app.mode {
         Mode::Normal => {
             if ctrl {
                 match code {
-                    KeyCode::Char('d') => app.move_by(HALF_PAGE),
-                    KeyCode::Char('u') => app.move_by(-HALF_PAGE),
+                    KeyCode::Char('d') => app.move_page(1, false),
+                    KeyCode::Char('u') => app.move_page(-1, false),
                     _ => {}
                 }
             } else {
@@ -226,7 +243,7 @@ fn handle_normal(app: &mut App, code: KeyCode) {
     // A help or summary popup intercepts dismiss keys first.
     if (app.help || app.summary.is_some()) && matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
         app.help = false;
-        app.summary = None;
+        app.close_summary();
         return;
     }
 
@@ -236,9 +253,14 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('k') | KeyCode::Up => app.move_by(-1),
         KeyCode::Char('g') | KeyCode::Home => app.jump_to_top(),
         KeyCode::Char('G') | KeyCode::End => app.jump_to_bottom(),
-        KeyCode::Char('J') | KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
-        KeyCode::Char('K') | KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::Char('d') => app.move_page(1, false),
+        KeyCode::Char('u') => app.move_page(-1, false),
+        KeyCode::Char('D') | KeyCode::PageDown => app.move_page(1, true),
+        KeyCode::Char('U') | KeyCode::PageUp => app.move_page(-1, true),
+        KeyCode::Char('J') => app.detail_scroll = app.detail_scroll.saturating_add(1),
+        KeyCode::Char('K') => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::Char('f') => app.toggle_follow(),
+        KeyCode::Char('c') => app.expanded = !app.expanded,
         KeyCode::Char('a') => app.open_actions(),
         KeyCode::Char('?') => app.help = !app.help,
         KeyCode::Char('/') => app.enter_search(),
@@ -252,7 +274,7 @@ fn handle_normal(app: &mut App, code: KeyCode) {
             if app.help {
                 app.help = false;
             } else if app.summary.is_some() {
-                app.summary = None;
+                app.close_summary();
             } else if app.show_detail {
                 app.show_detail = false;
             } else if !app.filter_text.is_empty() {
@@ -264,25 +286,22 @@ fn handle_normal(app: &mut App, code: KeyCode) {
 }
 
 fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
-    // Search autocomplete: Tab/Shift-Tab and ↑/↓ move the highlight; Enter fills
-    // the highlighted suggestion, or commits the filter when none is showing;
-    // Esc dismisses the popup, then cancels. Command mode ignores suggestions.
+    // Autocomplete: Tab/Shift-Tab (or ↑/↓, Ctrl-n/p) select and *fill* successive
+    // candidates so Enter applies immediately; nothing is selected until the
+    // first Tab. Enter commits what's shown; Esc exits the field.
     if ctrl {
         match code {
             KeyCode::Char('w') => app.input_delete_word(),
-            KeyCode::Char('n') => app.suggestion_move(1),
-            KeyCode::Char('p') => app.suggestion_move(-1),
+            KeyCode::Char('n') => app.cycle_suggestions(1),
+            KeyCode::Char('p') => app.cycle_suggestions(-1),
             _ => {}
         }
         return;
     }
     match code {
-        KeyCode::Tab | KeyCode::Down if app.suggestions_visible() => app.suggestion_move(1),
-        KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => app.suggestion_move(-1),
+        KeyCode::Tab | KeyCode::Down if app.suggestions_visible() => app.cycle_suggestions(1),
+        KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => app.cycle_suggestions(-1),
         KeyCode::Enter => {
-            if app.suggestions_visible() && app.fill_suggestion() {
-                return;
-            }
             let text = std::mem::take(&mut app.input);
             match app.mode {
                 Mode::Search => app.apply_filter(text),
@@ -292,12 +311,8 @@ fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
             app.mode = Mode::Normal;
         }
         KeyCode::Esc => {
-            if app.suggestions_visible() {
-                app.dismiss_suggestions();
-            } else {
-                app.mode = Mode::Normal;
-                app.input.clear();
-            }
+            app.mode = Mode::Normal;
+            app.input.clear();
         }
         KeyCode::Backspace => app.input_backspace(),
         KeyCode::Char(c) => app.input_char(c),

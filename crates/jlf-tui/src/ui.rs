@@ -74,11 +74,13 @@ fn draw_help(f: &mut Frame, area: Rect) {
     let rows = [
         "Keys",
         "  ↑/k ↓/j   move            ⏎    detail on / off",
+        "  d/u       half page down / up   D/U  full page",
         "  g/G       top / bottom     J/K  scroll detail",
         "  a         actions panel    f    follow on / off",
+        "  c         compact / expand rows",
         "  /         filter / search  :    command",
         "  ?         this help        q    quit",
-        "  Esc       close popup / clear filter",
+        "  Esc       close popup / clear filter        ^L   redraw",
         "",
         "Filter / search  (press /)",
         "  field=value   op: = != > >= < <= ~ !~   (e.g. level=error)",
@@ -123,7 +125,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
     let (cands, sel) = app.suggestions();
     let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
     for (i, c) in cands.iter().enumerate() {
-        let style = if i == sel {
+        let style = if Some(i) == sel {
             Style::default().fg(Color::Black).bg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
@@ -135,7 +137,7 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
     let text = vec![
         Line::from(spans),
         Line::from(Span::styled(
-            "   Tab/↑↓ pick · ⏎ fill · Esc dismiss",
+            "   Tab/↑↓ cycle · ⏎ apply · Esc cancel",
             Style::default().fg(Color::DarkGray),
         )),
     ];
@@ -143,19 +145,20 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · ⏎ detail · a actions · / search · : command · ? help · q quit";
+const HINT: &str = "↑↓ move · ⏎ detail · c expand · a actions · / search · : command · ? help · q quit";
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let follow = if app.follow { "● follow" } else { "‖ paused" };
-    let position = if app.view.is_empty() {
+    let position = if app.view_len() == 0 {
         "0/0".to_string()
     } else {
-        format!("{}/{}", app.selected + 1, app.view.len())
+        format!("{}/{}", app.selected + 1, app.view_len())
     };
     let filter = if app.filter_text.is_empty() {
         "no filter".to_string()
     } else {
-        format!("/{}", app.filter_text)
+        // Show how many records matched out of the total held.
+        format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
     };
     let mut spans = vec![
         Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
@@ -172,30 +175,57 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// Fraction of the viewport kept between the cursor and the top/bottom edge
+/// before scrolling kicks in (a "scrolloff" margin, ~30%).
+fn scroll_margin(inner_h: usize) -> usize {
+    (inner_h * 3 / 10).min(inner_h.saturating_sub(1) / 2)
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered().title(" records ");
     let inner_h = area.height.saturating_sub(2) as usize;
-    let total = app.view.len();
+    let total = app.view_len();
+    let width = area.width as usize;
 
-    // Window: render only the visible slice so a million-line buffer doesn't
-    // build a million widgets per frame. Keep the cursor on screen.
-    let start = app
-        .selected
-        .saturating_sub(inner_h.saturating_sub(1))
-        .min(total.saturating_sub(inner_h));
-    let start = if total <= inner_h { 0 } else { start };
-    let end = (start + inner_h).min(total);
+    if total == 0 {
+        f.render_widget(block, area);
+        return;
+    }
+    if app.expanded {
+        draw_list_expanded(f, app, area, block, inner_h, total);
+        return;
+    }
 
-    let items: Vec<ListItem> = app.view[start..end]
-        .iter()
-        .map(|&i| {
-            let line = ansi_line(app.render_row(&app.lines[i]));
-            ListItem::new(truncate_line(line, area.width as usize))
+    // Compact: one record per row. Scroll with a margin so the cursor moves
+    // freely inside the viewport and only scrolls near the edges; window to the
+    // visible slice so a million-line buffer doesn't build a million widgets.
+    let margin = scroll_margin(inner_h);
+    let max_top = total.saturating_sub(inner_h);
+    let mut top = app.scroll_top.get().min(max_top);
+    if app.selected < top + margin {
+        top = app.selected.saturating_sub(margin);
+    } else if app.selected + 1 + margin > top + inner_h {
+        top = (app.selected + 1 + margin).saturating_sub(inner_h);
+    }
+    top = top.min(max_top);
+    app.scroll_top.set(top);
+    let end = (top + inner_h).min(total);
+    app.page.set(end - top);
+    // Prefetch a screenful beyond each edge so scrolling into the spilled middle
+    // stays smooth.
+    app.prefetch(top.saturating_sub(1));
+    app.prefetch(end);
+
+    let items: Vec<ListItem> = (top..end)
+        .filter_map(|pos| app.record(pos))
+        .map(|rec| {
+            let line = ansi_line(app.render_row(&rec));
+            ListItem::new(truncate_line(line, width))
         })
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.selected.saturating_sub(start)));
+    state.select(Some(app.selected - top));
 
     let list = List::new(items).block(block).highlight_style(
         Style::default()
@@ -206,10 +236,122 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
+/// Expanded list (toggled with `c`): each record spans multiple lines — header
+/// plus pretty data with a blank line between records, exactly like piped `jlf`.
+/// Records have variable heights, so this composes them into a flat line buffer
+/// and clips at line granularity like a pager. The viewport top is a record
+/// index scrolled with the same margin as compact mode, so the cursor moves
+/// freely and only scrolls near the edges; at the buffer's end the content fills
+/// from the bottom. The selected record keeps its own colors, marked by a left
+/// bar (a full-block highlight would bury the syntax coloring).
+fn draw_list_expanded(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    block: Block,
+    inner_h: usize,
+    total: usize,
+) {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let bar = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    use std::rc::Rc;
+
+    // Guttered, width-clipped display lines for a record, memoized (behind `Rc`
+    // so the scroll math's repeated length checks don't deep-clone) and rendered
+    // at most once per frame. Mirrors the CLI, which writes the record then
+    // appends exactly one newline (`cli.rs`) — so a template that ends in a
+    // newline yields a blank separator line and one that doesn't renders records
+    // back-to-back. The separation is the template's, never blindly inserted.
+    let cache: RefCell<HashMap<usize, Rc<Vec<Line>>>> = RefCell::new(HashMap::new());
+    let block_lines = |i: usize| -> Rc<Vec<Line<'static>>> {
+        if let Some(v) = cache.borrow().get(&i) {
+            return v.clone();
+        }
+        let selected = i == app.selected;
+        let gutter = || Span::styled(if selected { "▌ " } else { "  " }, bar);
+        let record = app.record(i).unwrap_or_else(|| Rc::from(""));
+        let rendered = format!("{}\n", app.render_record(&record));
+        let lines: Vec<Line> = rendered
+            .split_terminator('\n')
+            .map(|raw| {
+                let mut spans = vec![gutter()];
+                spans.extend(truncate_line(ansi_line(raw.to_owned()), inner_w.saturating_sub(2)).spans);
+                Line::from(spans)
+            })
+            .collect();
+        let lines = Rc::new(lines);
+        cache.borrow_mut().insert(i, lines.clone());
+        lines
+    };
+    let height = |i: usize| block_lines(i).len();
+
+    let margin = scroll_margin(inner_h);
+    let sel_h = height(app.selected);
+
+    // The topmost record when scrolled fully to the bottom, so content fills from
+    // the bottom and the newest record can sit at the very bottom edge (no forced
+    // margin below it) rather than leaving a gap at the end of the buffer.
+    let mut rows = 0usize;
+    let mut max_top = total - 1;
+    for i in (0..total).rev() {
+        rows += height(i);
+        max_top = i;
+        if rows >= inner_h {
+            break;
+        }
+    }
+
+    // Rows above the selected block for a given viewport top.
+    let above = |t: usize| -> usize { (t..app.selected).map(height).sum() };
+
+    // Sticky scrolloff: start from the persisted top and only move it when the
+    // cursor would leave the margin band, so moving within the viewport doesn't
+    // scroll. Each pass is one-directional (terminates); order matters.
+    let mut top = app.scroll_top.get().min(app.selected);
+    // 1) Keep the selected block's bottom on screen (scroll down if it overflows;
+    //    a block taller than the viewport shows from its own top).
+    while top < app.selected && above(top) + sel_h > inner_h {
+        top += 1;
+    }
+    // 2) Top margin: if the cursor is within `margin` rows of the top, scroll up.
+    while top > 0 && above(top) < margin {
+        top -= 1;
+    }
+    // 3) Bottom margin: scroll down to keep `margin` below the cursor — but only
+    //    while there's more content below to reveal (`top < max_top`). At the
+    //    buffer end this is a no-op, so the newest record rests at the bottom and
+    //    moving up walks the cursor through the viewport before it scrolls.
+    while top < max_top && above(top) + sel_h + margin > inner_h {
+        top += 1;
+    }
+    app.scroll_top.set(top);
+
+    // Emit records from `top` down, clipped to the viewport. Each record's lines
+    // already carry the CLI's one-newline terminator, so blank separators appear
+    // only when the template asks for them.
+    let mut lines: Vec<Line> = Vec::new();
+    let mut shown = 0usize;
+    for i in top..total {
+        lines.extend(block_lines(i).iter().cloned());
+        shown += 1;
+        if lines.len() >= inner_h {
+            break;
+        }
+    }
+    lines.truncate(inner_h);
+    app.page.set(shown.max(1));
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     let text = app
-        .selected_line()
-        .map(|l| ansi_text(app.render_detail(l)))
+        .selected_record()
+        .map(|l| ansi_text(app.render_detail(&l)))
         .unwrap_or_else(|| Text::from("no record selected"));
     let para = Paragraph::new(text)
         .block(Block::bordered().title(" detail "))
@@ -219,8 +361,31 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Parse an ANSI string into styled ratatui text; fall back to plain on error.
+/// Control characters left in the *content* (a stray `\r`, `\t`, backspace… from
+/// the log itself) are stripped: `into_text` has already turned real ANSI escape
+/// sequences into styles, so anything control-like remaining is literal data
+/// that would otherwise move the terminal cursor and corrupt the frame (e.g. a
+/// `\r` jumps to column 0 and overwrites the border — which ratatui never
+/// repaints, so the damage sticks).
 fn ansi_text(s: String) -> Text<'static> {
-    s.clone().into_text().unwrap_or_else(|_| Text::from(s))
+    let mut text = s.clone().into_text().unwrap_or_else(|_| Text::from(s));
+    for line in &mut text.lines {
+        for span in &mut line.spans {
+            if span.content.chars().any(char::is_control) {
+                let cleaned: String = span
+                    .content
+                    .chars()
+                    .filter_map(|c| match c {
+                        '\t' => Some(' '),
+                        c if c.is_control() => None,
+                        c => Some(c),
+                    })
+                    .collect();
+                span.content = cleaned.into();
+            }
+        }
+    }
+    text
 }
 
 /// Parse an ANSI string known to be a single line into one styled `Line`.
@@ -261,20 +426,28 @@ fn draw_prompt(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_summary(f: &mut Frame, summary: &crate::summary::Summary, area: Rect) {
-    let width = summary
+    // Size to the content but keep a comfortable minimum so the panel reads as a
+    // deliberate result rather than a tiny box lost in the middle.
+    let content_w = summary
         .rows
         .iter()
-        .map(|r| r.len())
+        .map(|r| r.chars().count())
         .max()
-        .unwrap_or(10)
-        .max(summary.title.len())
-        + 4;
-    let height = summary.rows.len() + 2;
+        .unwrap_or(0)
+        .max(summary.title.len());
+    let width = (content_w + 6).clamp(40, area.width.saturating_sub(4) as usize);
+    let height = (summary.rows.len() + 4).clamp(7, area.height.saturating_sub(2) as usize);
     let popup = center(area, width as u16, height as u16);
 
-    let text: Vec<Line> = summary.rows.iter().map(|r| Line::from(r.as_str())).collect();
+    // A blank line above the rows gives the numbers room to breathe.
+    let mut text: Vec<Line> = vec![Line::from("")];
+    text.extend(summary.rows.iter().map(|r| Line::from(format!("  {r}"))));
     let block = Block::bordered()
-        .title(format!(" {} ", summary.title))
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Line::from(Span::styled(
+            format!(" {} ", summary.title),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )))
         .title_bottom(" esc to close ");
     f.render_widget(Clear, popup);
     f.render_widget(
@@ -341,4 +514,18 @@ mod tests {
         // pretty JSON puts the nested key on its own indented line
         assert!(text.contains("\"b\""), "detail not pretty:\n{text}");
     }
+
+    #[test]
+    fn control_chars_in_content_are_stripped() {
+        // A literal carriage-return *byte* in a value used to jump the terminal
+        // cursor to column 0 and overwrite the border; it must be removed from
+        // the rendered content so it can never reach the terminal. (Use a real
+        // CR byte, not a JSON `\r` escape, which the parser keeps as literal
+        // text.)
+        let json = "{\"level\":\"info\",\"fields\":{\"message\":\"before\rafter\"}}";
+        let text = buffer_text(&[json]);
+        assert!(text.contains("beforeafter"), "CR not stripped from content:\n{text}");
+        assert!(!text.contains('\r'), "raw CR leaked into the frame:\n{text}");
+    }
+
 }

@@ -1,11 +1,13 @@
 use std::fmt::Write as _;
+use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 
 use jlf_core::{expanded_format, Filter, Formatter, Json};
 
 use crate::catalog::{self, Catalog};
 use crate::field::{path, resolve, scalar};
-use crate::summary::{self, Summary};
+use crate::store::Store;
+use crate::summary::{Agg, Summary};
 
 /// The `:` commands, offered as autocomplete when the command line is open.
 pub const COMMANDS: [&str; 12] = [
@@ -38,13 +40,37 @@ pub enum Mode {
     Command,
 }
 
+/// A frozen Tab-cycle over a suggestion list. `cands` is captured when cycling
+/// begins so filling successive items doesn't collapse the list; `base` is the
+/// text the user had typed (restored when the cycle steps past either end and
+/// deselects); each step truncates the input back to `start` and appends the
+/// selected candidate (or `base`).
+struct Cycle {
+    start: usize,
+    base: String,
+    cands: Vec<String>,
+    idx: usize,
+}
+
+/// How many records to fold per `tick_summary` call, so a summary over a huge
+/// store progresses across frames instead of freezing the UI.
+const SUMMARY_BATCH: usize = 50_000;
+
+/// A running summary: the aggregator plus how far through the view it has folded
+/// (a view position). New records past `cursor` are picked up on later ticks.
+struct SummaryJob {
+    agg: Agg,
+    cursor: usize,
+}
+
 pub struct App {
-    /// Every record received, raw (no trailing newline). Records are kept as
-    /// text and parsed on demand — parsing is ~1µs/line, so re-rendering a
-    /// screenful is free, and we avoid an owned JSON representation.
-    pub lines: Vec<String>,
-    /// Indices into `lines` that pass the current filter.
-    pub view: Vec<usize>,
+    /// Bounded, file-backed record store: recent and oldest records stay in
+    /// memory, the middle spills to a temp file and is paged back on demand.
+    store: Store,
+    /// Logical record indices passing the current filter, or `None` when
+    /// unfiltered — then the view is the identity `0..len`, kept implicit so the
+    /// common (no-filter) case costs no per-record memory.
+    view: Option<Vec<usize>>,
     filters: Vec<Filter>,
     /// Bare (operator-less) words typed into `/`: a record matches when its raw
     /// text contains all of them (case-insensitive) — a plain "search anywhere".
@@ -60,7 +86,11 @@ pub struct App {
     pub input: String,
     pub filter_text: String,
     pub status: String,
+    /// The rendered summary panel, if one is open.
     pub summary: Option<Summary>,
+    /// The running aggregator behind `summary`: it folds the view incrementally
+    /// (across frames for a huge store) and keeps updating as new records arrive.
+    summary_job: Option<SummaryJob>,
     /// Whether the keys/commands help overlay is showing.
     pub help: bool,
     /// Whether the Actions panel is open, and its highlighted row.
@@ -70,35 +100,55 @@ pub struct App {
     pub show_detail: bool,
     pub detail_scroll: u16,
     pub quit: bool,
+    /// Set to force a full repaint next frame (Ctrl-L) — recovers the display if
+    /// something outside our control (e.g. a producer logging to the terminal's
+    /// stderr) has corrupted it.
+    pub force_redraw: bool,
 
     /// Field catalog for search autocomplete, rebuilt when entering search.
     catalog: Catalog,
     sug: Vec<String>,
     sug_start: usize,
-    sug_sel: usize,
-    sug_dismissed: bool,
+    /// Active Tab-cycle over a frozen candidate list, or None when nothing is
+    /// selected (the initial state, and after any edit).
+    sug_cycle: Option<Cycle>,
 
     rx: Receiver<String>,
-    /// Single-line, colored formatter for list rows.
+    /// Single-line, colored formatter for compact list rows.
     row_fmt: Formatter,
+    /// Multi-line, colored formatter for the expanded list (like piped `jlf`).
+    full_fmt: Formatter,
+    /// When true, the list shows each record over multiple lines (header +
+    /// pretty data) like piped `jlf`; toggled with `c`.
+    pub expanded: bool,
+    /// Index of the first visible record. Persisted across frames so the
+    /// viewport scrolls with a margin (see the list renderer) instead of pinning
+    /// the cursor to an edge. Updated at draw time, where the height is known.
+    pub scroll_top: std::cell::Cell<usize>,
+    /// Number of records visible in the last frame, so `d`/`u`/`D`/`U` can page
+    /// by the real viewport size. Set at draw time.
+    pub page: std::cell::Cell<usize>,
 }
 
 impl App {
     pub fn new(rx: Receiver<String>) -> color_eyre::Result<Self> {
-        // Colored, compact list rows (ratatui renders the ANSI); the detail pane
-        // renders syntax-highlighted pretty JSON directly.
-        let compact_vars = match jlf_core::get_config() {
+        // Colored list rows (ratatui renders the ANSI); the detail pane renders
+        // syntax-highlighted pretty JSON directly. Two row formatters: the
+        // `compact` recipe override collapses records to one line, the default
+        // spans multiple lines exactly like piped `jlf`.
+        let vars = |flags: &[&str]| match jlf_core::get_config() {
             Ok(mut cfg) => {
-                cfg.resolve_recipes(&["compact"]);
+                cfg.resolve_recipes(flags);
                 merge_variables(cfg.variables)
             }
             Err(_) => jlf_core::default_variables(),
         };
-        let row_fmt = Formatter::new(&expanded_format("${@output}", &compact_vars), false, true)?;
+        let row_fmt = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), false, true)?;
+        let full_fmt = Formatter::new(&expanded_format("${@output}", &vars(&[])), false, false)?;
 
         Ok(Self {
-            lines: Vec::new(),
-            view: Vec::new(),
+            store: Store::new(),
+            view: None,
             filters: Vec::new(),
             search_terms: Vec::new(),
             redact: Vec::new(),
@@ -109,19 +159,24 @@ impl App {
             filter_text: String::new(),
             status: String::new(),
             summary: None,
+            summary_job: None,
             help: false,
             show_actions: false,
             action_sel: 0,
             show_detail: false,
             detail_scroll: 0,
             quit: false,
+            force_redraw: false,
             catalog: Catalog::default(),
             sug: Vec::new(),
             sug_start: 0,
-            sug_sel: 0,
-            sug_dismissed: false,
+            sug_cycle: None,
             rx,
             row_fmt,
+            full_fmt,
+            expanded: false,
+            scroll_top: std::cell::Cell::new(0),
+            page: std::cell::Cell::new(1),
         })
     }
 
@@ -130,11 +185,15 @@ impl App {
     pub fn drain_input(&mut self) -> bool {
         let mut changed = false;
         while let Ok(line) = self.rx.try_recv() {
-            let idx = self.lines.len();
+            let idx = self.store.len();
             let matched = self.passes(&line);
-            self.lines.push(line);
-            if matched {
-                self.view.push(idx);
+            self.store.push(line);
+            // Keep an explicit filtered view in sync; the unfiltered view is
+            // implicit (identity), so nothing to track there.
+            if let Some(v) = &mut self.view {
+                if matched {
+                    v.push(idx);
+                }
             }
             changed = true;
         }
@@ -170,12 +229,19 @@ impl App {
     }
 
     /// Re-evaluate the filter over all records (after the expression changes).
+    /// With no criteria the view is left implicit (identity); otherwise it's
+    /// materialized by scanning the store (paging the spilled middle back in).
     fn rebuild_view(&mut self) {
-        self.view.clear();
-        for i in 0..self.lines.len() {
-            if self.passes(&self.lines[i]) {
-                self.view.push(i);
+        if self.filters.is_empty() && self.search_terms.is_empty() {
+            self.view = None;
+        } else {
+            let mut v = Vec::new();
+            for i in 0..self.store.len() {
+                if self.passes(&self.store.get(i)) {
+                    v.push(i);
+                }
             }
+            self.view = Some(v);
         }
         self.clamp_selection();
     }
@@ -193,11 +259,57 @@ impl App {
         }
         self.filter_text = text;
         self.rebuild_view();
+        // A change in the view invalidates a running summary — recompute it from
+        // scratch over the new view.
+        if let Some(job) = &mut self.summary_job {
+            job.agg.reset();
+            job.cursor = 0;
+        }
+        self.tick_summary();
         self.status = if self.filters.is_empty() && self.search_terms.is_empty() {
             "filter cleared".into()
         } else {
-            format!("{} match", self.view.len())
+            format!("{} match", self.view_len())
         };
+    }
+
+    // ----- record access ----------------------------------------------------
+
+    /// Total records held (across memory and the spill file).
+    pub fn total(&self) -> usize {
+        self.store.len()
+    }
+
+    /// Number of records in the current view.
+    pub fn view_len(&self) -> usize {
+        self.view.as_ref().map_or(self.store.len(), Vec::len)
+    }
+
+    /// The logical store index for view position `pos`, if in range.
+    fn view_index(&self, pos: usize) -> Option<usize> {
+        match &self.view {
+            Some(v) => v.get(pos).copied(),
+            None => (pos < self.store.len()).then_some(pos),
+        }
+    }
+
+    /// The record at view position `pos` (paging from disk if needed).
+    pub fn record(&self, pos: usize) -> Option<Rc<str>> {
+        self.view_index(pos).map(|i| self.store.get(i))
+    }
+
+    /// Preload the record at view position `pos` so a later render is a cache
+    /// hit (used to prefetch just off the visible edges).
+    pub fn prefetch(&self, pos: usize) {
+        if let Some(i) = self.view_index(pos) {
+            self.store.prefetch(i);
+        }
+    }
+
+    /// The most recent `n` records, oldest-first (for autocomplete catalogs).
+    fn recent(&self, n: usize) -> Vec<Rc<str>> {
+        let len = self.store.len();
+        (len.saturating_sub(n)..len).map(|i| self.store.get(i)).collect()
     }
 
     // ----- search autocomplete ---------------------------------------------
@@ -207,9 +319,9 @@ impl App {
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.input = self.filter_text.clone();
-        self.catalog = Catalog::from_lines(&self.lines, 2000);
-        self.sug_dismissed = false;
-        self.sug_sel = 0;
+        let recent = self.recent(2000);
+        self.catalog = Catalog::from_lines(&recent, 2000);
+        self.sug_cycle = None;
         self.refresh_suggestions();
     }
 
@@ -224,9 +336,9 @@ impl App {
     fn enter_command_with(&mut self, prefix: &str) {
         self.mode = Mode::Command;
         self.input = prefix.to_owned();
-        self.catalog = Catalog::from_lines(&self.lines, 2000);
-        self.sug_dismissed = false;
-        self.sug_sel = 0;
+        let recent = self.recent(2000);
+        self.catalog = Catalog::from_lines(&recent, 2000);
+        self.sug_cycle = None;
         self.refresh_suggestions();
     }
 
@@ -261,9 +373,6 @@ impl App {
         };
         self.sug_start = start;
         self.sug = cands;
-        if self.sug_sel >= self.sug.len() {
-            self.sug_sel = 0;
-        }
     }
 
     pub fn input_char(&mut self, c: char) {
@@ -287,65 +396,80 @@ impl App {
     }
 
     fn after_input_change(&mut self) {
-        self.sug_sel = 0;
-        self.sug_dismissed = false;
+        self.sug_cycle = None;
         if matches!(self.mode, Mode::Search | Mode::Command) {
             self.refresh_suggestions();
         }
     }
 
-    pub fn suggestion_move(&mut self, delta: isize) {
-        if self.sug.is_empty() {
-            return;
+    /// Advance the Tab-cycle by `delta` (±1), filling the selected candidate into
+    /// the input so Enter applies immediately. The ring is `[typed text] → 0 → 1
+    /// → … → N-1 → [typed text]`, so stepping past either end deselects and
+    /// restores what you typed. A no-op when there are no candidates.
+    pub fn cycle_suggestions(&mut self, delta: isize) {
+        match self.sug_cycle.take() {
+            None => {
+                if self.sug.is_empty() {
+                    return;
+                }
+                let start = self.sug_start;
+                let base = self.input[start..].to_string();
+                let idx = if delta >= 0 { 0 } else { self.sug.len() - 1 };
+                self.input.truncate(start);
+                self.input.push_str(&self.sug[idx]);
+                self.sug_cycle = Some(Cycle {
+                    start,
+                    base,
+                    cands: self.sug.clone(),
+                    idx,
+                });
+            }
+            Some(mut c) => {
+                let next = c.idx as isize + delta;
+                self.input.truncate(c.start);
+                if next < 0 || next >= c.cands.len() as isize {
+                    // Stepped past a boundary: deselect and restore the typed
+                    // text, leaving the cycle ended (taken above).
+                    self.input.push_str(&c.base);
+                } else {
+                    c.idx = next as usize;
+                    self.input.push_str(&c.cands[c.idx]);
+                    self.sug_cycle = Some(c);
+                }
+            }
         }
-        self.sug_dismissed = false;
-        let n = self.sug.len() as isize;
-        self.sug_sel = (((self.sug_sel as isize + delta) % n + n) % n) as usize;
-    }
-
-    /// Fill the highlighted suggestion into the input. Returns whether it did.
-    pub fn fill_suggestion(&mut self) -> bool {
-        if self.sug_dismissed || self.sug.is_empty() {
-            return false;
-        }
-        let c = self.sug[self.sug_sel.min(self.sug.len() - 1)].clone();
-        self.input.truncate(self.sug_start);
-        self.input.push_str(&c);
-        self.sug_sel = 0;
-        self.refresh_suggestions();
-        true
-    }
-
-    pub fn dismiss_suggestions(&mut self) {
-        self.sug_dismissed = true;
     }
 
     pub fn suggestions_visible(&self) -> bool {
-        matches!(self.mode, Mode::Search | Mode::Command)
-            && !self.sug_dismissed
-            && !self.sug.is_empty()
+        matches!(self.mode, Mode::Search | Mode::Command) && !self.sug.is_empty()
     }
 
-    pub fn suggestions(&self) -> (&[String], usize) {
-        (&self.sug, self.sug_sel)
+    /// The candidate list to display and the highlighted index (None until Tab
+    /// starts a cycle). While cycling, the frozen list is shown so it doesn't
+    /// collapse as items are filled.
+    pub fn suggestions(&self) -> (&[String], Option<usize>) {
+        match &self.sug_cycle {
+            Some(c) => (&c.cands, Some(c.idx)),
+            None => (&self.sug, None),
+        }
     }
 
     // ----- navigation -------------------------------------------------------
 
     fn clamp_selection(&mut self) {
-        let max = self.view.len().saturating_sub(1);
+        let max = self.view_len().saturating_sub(1);
         self.selected = self.selected.min(max);
     }
 
     pub fn move_by(&mut self, delta: isize) {
-        if self.view.is_empty() {
+        if self.view_len() == 0 {
             return;
         }
-        let new = (self.selected as isize + delta).clamp(0, self.view.len() as isize - 1);
+        let new = (self.selected as isize + delta).clamp(0, self.view_len() as isize - 1);
         self.selected = new as usize;
         // Moving away from the newest record stops follow; reaching the end
         // re-enables it.
-        self.follow = self.selected + 1 == self.view.len();
+        self.follow = self.selected + 1 == self.view_len();
         self.detail_scroll = 0;
     }
 
@@ -356,9 +480,17 @@ impl App {
     }
 
     pub fn jump_to_bottom(&mut self) {
-        self.selected = self.view.len().saturating_sub(1);
+        self.selected = self.view_len().saturating_sub(1);
         self.follow = true;
         self.detail_scroll = 0;
+    }
+
+    /// Move by a page: the real visible-record count (`whole`) or half of it.
+    /// Positive `dir` moves down, negative up.
+    pub fn move_page(&mut self, dir: isize, whole: bool) {
+        let page = self.page.get().max(1) as isize;
+        let step = if whole { page } else { (page / 2).max(1) };
+        self.move_by(dir * step);
     }
 
     pub fn toggle_follow(&mut self) {
@@ -371,15 +503,27 @@ impl App {
 
     // ----- selected record --------------------------------------------------
 
-    pub fn selected_line(&self) -> Option<&str> {
-        self.view.get(self.selected).map(|&i| self.lines[i].as_str())
+    pub fn selected_record(&self) -> Option<Rc<str>> {
+        self.record(self.selected)
     }
 
-    /// One-line rendering of a record for the list (parses, redacts, formats).
-    /// Any newlines the template emits are collapsed so each record occupies
-    /// exactly one row — otherwise the list windowing (one item = one row)
-    /// mis-counts and leaves a stray blank row while scrolling.
+    /// One-line rendering of a record for the compact list (parses, redacts,
+    /// formats). Any newlines the template emits are collapsed so each record
+    /// occupies exactly one row — otherwise the list windowing (one item = one
+    /// row) mis-counts and leaves a stray blank row while scrolling.
     pub fn render_row(&self, line: &str) -> String {
+        self.render_with(line, &self.row_fmt).replace('\n', "  ")
+    }
+
+    /// Multi-line rendering of a record for the expanded list — header line plus
+    /// pretty data, exactly like piped `jlf`.
+    pub fn render_record(&self, line: &str) -> String {
+        self.render_with(line, &self.full_fmt)
+    }
+
+    /// Parse, redact and format `line` with `fmt`, falling back to the raw line
+    /// on any error.
+    fn render_with(&self, line: &str, fmt: &Formatter) -> String {
         let mut j = Json::Null;
         if j.parse_replace(line).is_err() {
             return line.to_owned();
@@ -388,10 +532,10 @@ impl App {
             jlf_core::redact(&mut j, &self.redact);
         }
         let mut out = String::new();
-        if self.row_fmt.as_log(&j).write_fmt(&mut out).is_err() {
+        if fmt.as_log(&j).write_fmt(&mut out).is_err() {
             return line.to_owned();
         }
-        out.replace('\n', "  ")
+        out
     }
 
     /// Full, colored rendering of a record for the detail pane: syntax-
@@ -407,8 +551,62 @@ impl App {
         format!("{:?}", j.styled(jlf_core::MarkupStyles::default()).indented(2))
     }
 
-    fn view_lines(&self) -> Vec<&str> {
-        self.view.iter().map(|&i| self.lines[i].as_str()).collect()
+    /// Iterate the records in the current view, paging the spilled middle back
+    /// in as needed. Streams (no full materialization) so summaries and export
+    /// stay memory-bounded over very large stores.
+    fn view_iter(&self) -> Box<dyn Iterator<Item = Rc<str>> + '_> {
+        match &self.view {
+            Some(v) => Box::new(v.iter().map(move |&i| self.store.get(i))),
+            None => Box::new((0..self.store.len()).map(move |i| self.store.get(i))),
+        }
+    }
+
+    // ----- summaries --------------------------------------------------------
+
+    /// Begin a summary: build the aggregator and fold in a first batch (small
+    /// stores finish at once; larger ones continue across frames via
+    /// [`Self::tick_summary`]).
+    fn start_summary(&mut self, verb: &str, field: Option<&str>, n: usize) {
+        match Agg::new(verb, field, n) {
+            Ok(agg) => {
+                self.summary_job = Some(SummaryJob { agg, cursor: 0 });
+                self.tick_summary();
+            }
+            Err(msg) => self.status = msg,
+        }
+    }
+
+    /// Fold the next batch of view records into the active summary (and pick up
+    /// records that arrived since the last tick), refreshing the rendered panel.
+    /// A no-op when no summary is open.
+    pub fn tick_summary(&mut self) {
+        let Some(mut job) = self.summary_job.take() else {
+            return;
+        };
+        let total = self.view_len();
+        let end = (job.cursor + SUMMARY_BATCH).min(total);
+        for pos in job.cursor..end {
+            if let Some(rec) = self.record(pos) {
+                job.agg.feed(&rec);
+            }
+        }
+        job.cursor = end;
+        self.summary = Some(job.agg.render(job.cursor, total));
+        self.summary_job = Some(job);
+    }
+
+    /// Whether a summary is still folding records (so the event loop should keep
+    /// ticking promptly instead of idling).
+    pub fn summary_computing(&self) -> bool {
+        self.summary_job
+            .as_ref()
+            .is_some_and(|j| j.cursor < self.view_len())
+    }
+
+    /// Close the summary panel and drop its aggregator.
+    pub fn close_summary(&mut self) {
+        self.summary = None;
+        self.summary_job = None;
     }
 
     // ----- commands ---------------------------------------------------------
@@ -419,32 +617,13 @@ impl App {
         let rest: Vec<&str> = it.collect();
         match verb {
             "q" | "quit" => self.quit = true,
-            "count" => {
-                let lines = self.view_lines();
-                self.summary = Some(summary::count(&lines, rest.first().copied()));
+            "count" => self.start_summary("count", rest.first().copied(), 10),
+            "uniq" => self.start_summary("uniq", rest.first().copied(), 10),
+            "stats" => self.start_summary("stats", rest.first().copied(), 10),
+            "top" => {
+                let n = rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+                self.start_summary("top", rest.first().copied(), n);
             }
-            "uniq" => match rest.first() {
-                Some(f) => {
-                    let lines = self.view_lines();
-                    self.summary = Some(summary::uniq(&lines, f));
-                }
-                None => self.status = "uniq needs a field".into(),
-            },
-            "stats" => match rest.first() {
-                Some(f) => {
-                    let lines = self.view_lines();
-                    self.summary = Some(summary::stats(&lines, f));
-                }
-                None => self.status = "stats needs a field".into(),
-            },
-            "top" => match rest.first() {
-                Some(f) => {
-                    let n = rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
-                    let lines = self.view_lines();
-                    self.summary = Some(summary::top(&lines, f, n));
-                }
-                None => self.status = "top needs a field".into(),
-            },
             "redact" => {
                 self.redact = rest
                     .first()
@@ -499,9 +678,10 @@ impl App {
             let dashes: Vec<String> = header.iter().map(|_| "---".to_owned()).collect();
             write_row(&mut buf, &dashes, sep, md);
         }
-        for &i in &self.view {
+        let mut rows = 0usize;
+        for line in self.view_iter() {
             let mut j = Json::Null;
-            if j.parse_replace(&self.lines[i]).is_err() {
+            if j.parse_replace(&line).is_err() {
                 continue;
             }
             let cells: Vec<String> = cols
@@ -509,9 +689,10 @@ impl App {
                 .map(|c| scalar(resolve(&j, c)).unwrap_or("").to_owned())
                 .collect();
             write_row(&mut buf, &cells, sep, md);
+            rows += 1;
         }
         match std::fs::write(&out_path, buf) {
-            Ok(()) => self.status = format!("wrote {} rows to {out_path}", self.view.len()),
+            Ok(()) => self.status = format!("wrote {rows} rows to {out_path}"),
             Err(e) => self.status = format!("export failed: {e}"),
         }
     }
@@ -574,17 +755,17 @@ mod tests {
     #[test]
     fn ingests_all_records_into_view() {
         let app = app_with(SAMPLE);
-        assert_eq!(app.lines.len(), 3);
-        assert_eq!(app.view.len(), 3);
+        assert_eq!(app.total(), 3);
+        assert_eq!(app.view_len(), 3);
     }
 
     #[test]
     fn filter_narrows_the_view() {
         let mut app = app_with(SAMPLE);
         app.apply_filter("level=error,warn".into());
-        assert_eq!(app.view.len(), 2);
+        assert_eq!(app.view_len(), 2);
         app.apply_filter(String::new());
-        assert_eq!(app.view.len(), 3);
+        assert_eq!(app.view_len(), 3);
     }
 
     #[test]
@@ -609,10 +790,10 @@ mod tests {
         send(SAMPLE[0]);
         app.drain_input();
         app.apply_filter("level=error".into());
-        assert_eq!(app.view.len(), 0);
+        assert_eq!(app.view_len(), 0);
         send(SAMPLE[1]); // an error arrives after the filter is set
         app.drain_input();
-        assert_eq!(app.view.len(), 1);
+        assert_eq!(app.view_len(), 1);
     }
 
     #[test]
@@ -622,6 +803,30 @@ mod tests {
         let s = app.summary.as_ref().unwrap();
         assert_eq!(s.title, "count level");
         assert!(s.rows.iter().any(|r| r.contains("total")));
+    }
+
+    #[test]
+    fn summary_updates_live_as_records_arrive() {
+        let (tx, rx) = channel();
+        let mut app = App::new(rx).unwrap();
+        tx.send(SAMPLE[0].to_string()).unwrap(); // one info
+        app.drain_input();
+        app.run_command("count");
+        assert_eq!(app.summary.as_ref().unwrap().rows[0], "1");
+        // A new record arrives; the next tick folds it into the running total.
+        tx.send(SAMPLE[1].to_string()).unwrap();
+        app.drain_input();
+        app.tick_summary();
+        assert_eq!(app.summary.as_ref().unwrap().rows[0], "2");
+    }
+
+    #[test]
+    fn summary_recomputes_on_filter_change() {
+        let mut app = app_with(SAMPLE);
+        app.run_command("count");
+        assert_eq!(app.summary.as_ref().unwrap().rows[0], "3");
+        app.apply_filter("level=error".into()); // only one record matches
+        assert_eq!(app.summary.as_ref().unwrap().rows[0], "1");
     }
 
     #[test]
@@ -648,7 +853,8 @@ mod tests {
     fn redact_masks_values_in_rendering() {
         let mut app = app_with(&[r#"{"user":"alice","token":"secret"}"#]);
         app.run_command("redact token");
-        let row = app.render_row(app.selected_line().unwrap());
+        let rec = app.selected_record().unwrap();
+        let row = app.render_row(&rec);
         assert!(row.contains("***"));
         assert!(!row.contains("secret"));
     }

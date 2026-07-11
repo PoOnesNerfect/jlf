@@ -20,12 +20,12 @@ pub struct Catalog {
 impl Catalog {
     /// Walk up to `max_records` of the most recent records and collect their
     /// field paths and sample values.
-    pub fn from_lines(lines: &[String], max_records: usize) -> Self {
+    pub fn from_lines<S: AsRef<str>>(lines: &[S], max_records: usize) -> Self {
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut values: HashMap<String, Vec<String>> = HashMap::new();
         for line in lines.iter().rev().take(max_records) {
             let mut j = Json::Null;
-            if j.parse_replace(line).is_ok() {
+            if j.parse_replace(line.as_ref()).is_ok() {
                 walk("", &j, &mut counts, &mut values);
             }
         }
