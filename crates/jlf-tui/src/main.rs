@@ -308,7 +308,16 @@ fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
     // first Tab. Enter commits what's shown; Esc exits the field.
     if ctrl {
         match code {
-            KeyCode::Char('w') => app.input_delete_word(),
+            // Ctrl-W deletes the word to the left; the `/`/`:` prefix isn't part
+            // of the input, so it stops there. On an empty input it deletes the
+            // prefix itself — i.e. exits the mode.
+            KeyCode::Char('w') => {
+                if app.input.is_empty() {
+                    app.mode = Mode::Normal;
+                } else {
+                    app.input_delete_word();
+                }
+            }
             KeyCode::Char('n') => app.cycle_suggestions(1),
             KeyCode::Char('p') => app.cycle_suggestions(-1),
             _ => {}
@@ -331,7 +340,15 @@ fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
             app.mode = Mode::Normal;
             app.input.clear();
         }
-        KeyCode::Backspace => app.input_backspace(),
+        // Backspace deletes the char to the left; on an empty input it deletes
+        // the `/`/`:` prefix — i.e. exits the mode.
+        KeyCode::Backspace => {
+            if app.input.is_empty() {
+                app.mode = Mode::Normal;
+            } else {
+                app.input_backspace();
+            }
+        }
         KeyCode::Char(c) => app.input_char(c),
         _ => {}
     }
