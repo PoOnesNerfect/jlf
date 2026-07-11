@@ -302,8 +302,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
 /// A vertical scrollbar on the list's right border, marking the selected
 /// record's position in the whole stream. Drawn only when the records don't all
-/// fit (otherwise there's nothing to scroll), and inset by one row so it doesn't
-/// clobber the block's rounded corners.
+/// fit (otherwise there's nothing to scroll).
 fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
     let page = app.page.get().max(1);
     if total <= page {
@@ -324,6 +323,18 @@ fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
     // symbol, only the thumb is painted, so the border and its corners show
     // through everywhere the thumb isn't.
     f.render_stateful_widget(bar, area, &mut state);
+
+    // Cap the thumb where it lands on a frame corner with a half block — lower
+    // half at the top, upper half at the bottom — so it meets the corner edge
+    // instead of covering it with a full block hanging past the frame.
+    let x = area.right().saturating_sub(1);
+    for (y, cap) in [(area.top(), "▄"), (area.bottom().saturating_sub(1), "▀")] {
+        if let Some(cell) = f.buffer_mut().cell_mut((x, y)) {
+            if cell.symbol() == "█" {
+                cell.set_symbol(cap);
+            }
+        }
+    }
 }
 
 /// Expanded list (toggled with `c`): each record spans multiple lines — header
