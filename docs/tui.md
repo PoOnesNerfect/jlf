@@ -80,12 +80,16 @@ back on when you return to the bottom (`G`).
 
 Press `c` to switch the list between two renderings:
 
-- **Compact** (default) — one dense line per record. Best for scanning: it fits
-  the most records on screen at once.
+- **Compact** — one dense line per record. Best for scanning: it fits the most
+  records on screen at once. The template's line break becomes a tab, so the JSON
+  data lands in a tab-stop column after the message.
 - **Expanded** — each record over multiple lines, exactly like piped `jlf` (a
   header line plus pretty-printed data). Blank lines between records appear only
   when your `output` recipe's template ends in a newline; the view never inserts
   separators on its own.
+
+Which view opens first follows your config's `compact` flag (`compact = true`
+starts compact, otherwise expanded); `c` toggles it either way.
 
 The detail pane (`Enter`) is independent of this toggle and always pretty-prints
 the single selected record.

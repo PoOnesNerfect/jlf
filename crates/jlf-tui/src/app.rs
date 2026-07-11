@@ -156,6 +156,13 @@ impl App {
         let row_fmt = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), false, true)?;
         let full_fmt = Formatter::new(&expanded_format("${@output}", &vars(&[])), false, false)?;
 
+        // Start in the mode the config asks for: `compact = true` opens in the
+        // one-line view, otherwise the multi-line (expanded) view. `c` toggles it.
+        let compact = jlf_core::get_config()
+            .ok()
+            .and_then(|c| c.config.compact)
+            .unwrap_or(false);
+
         Ok(Self {
             store: Store::new(),
             view: None,
@@ -185,7 +192,7 @@ impl App {
             rx,
             row_fmt,
             full_fmt,
-            expanded: false,
+            expanded: !compact,
             scroll_top: std::cell::Cell::new(0),
             page: std::cell::Cell::new(1),
         })
