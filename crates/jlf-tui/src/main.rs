@@ -226,7 +226,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 handle_normal(app, code);
             }
         }
-        Mode::Search | Mode::Command => handle_input(app, code, ctrl),
+        Mode::Search | Mode::Command => handle_input(app, code, mods),
     }
 }
 
@@ -302,15 +302,18 @@ fn handle_normal(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
+fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
     // Autocomplete: Tab/Shift-Tab (or ↑/↓, Ctrl-n/p) select and *fill* successive
     // candidates so Enter applies immediately; nothing is selected until the
-    // first Tab. Enter commits what's shown; Esc exits the field.
+    // first Tab. Enter commits what's shown; Esc exits the field. The cursor can
+    // move anywhere in the input (arrows, word jumps, Home/End) and editing acts
+    // at that position, mirroring a terminal readline.
     if ctrl {
         match code {
-            // Ctrl-W deletes the word to the left; the `/`/`:` prefix isn't part
-            // of the input, so it stops there. On an empty input it deletes the
-            // prefix itself — i.e. exits the mode.
+            // Ctrl-W deletes the word before the cursor; on an empty input it
+            // deletes the `/`/`:` prefix — i.e. exits the mode.
             KeyCode::Char('w') => {
                 if app.input.is_empty() {
                     app.mode = Mode::Normal;
@@ -318,8 +321,25 @@ fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
                     app.input_delete_word();
                 }
             }
+            KeyCode::Char('u') => app.input_delete_to_start(),
+            KeyCode::Char('k') => app.input_delete_to_end(),
+            KeyCode::Char('d') => app.input_delete_forward(),
+            KeyCode::Char('a') => app.input_home(),
+            KeyCode::Char('e') => app.input_end(),
+            KeyCode::Char('b') | KeyCode::Left => app.input_word_left(),
+            KeyCode::Char('f') | KeyCode::Right => app.input_word_right(),
             KeyCode::Char('n') => app.cycle_suggestions(1),
             KeyCode::Char('p') => app.cycle_suggestions(-1),
+            KeyCode::Char('h') => input_backspace_or_exit(app),
+            _ => {}
+        }
+        return;
+    }
+    // Alt-Left/Right and Alt-b/f jump by word.
+    if alt {
+        match code {
+            KeyCode::Left | KeyCode::Char('b') => app.input_word_left(),
+            KeyCode::Right | KeyCode::Char('f') => app.input_word_right(),
             _ => {}
         }
         return;
@@ -340,16 +360,25 @@ fn handle_input(app: &mut App, code: KeyCode, ctrl: bool) {
             app.mode = Mode::Normal;
             app.input.clear();
         }
-        // Backspace deletes the char to the left; on an empty input it deletes
-        // the `/`/`:` prefix — i.e. exits the mode.
-        KeyCode::Backspace => {
-            if app.input.is_empty() {
-                app.mode = Mode::Normal;
-            } else {
-                app.input_backspace();
-            }
-        }
+        KeyCode::Left => app.input_left(),
+        KeyCode::Right => app.input_right(),
+        KeyCode::Home => app.input_home(),
+        KeyCode::End => app.input_end(),
+        KeyCode::Delete => app.input_delete_forward(),
+        // Backspace deletes the char before the cursor; on an empty input it
+        // deletes the `/`/`:` prefix — i.e. exits the mode.
+        KeyCode::Backspace => input_backspace_or_exit(app),
         KeyCode::Char(c) => app.input_char(c),
         _ => {}
+    }
+}
+
+/// Backspace when there's text, or exit the search/command mode when the input
+/// is already empty (the visual `/`/`:` prefix is what you'd delete next).
+fn input_backspace_or_exit(app: &mut App) {
+    if app.input.is_empty() {
+        app.mode = Mode::Normal;
+    } else {
+        app.input_backspace();
     }
 }

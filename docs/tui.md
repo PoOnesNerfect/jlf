@@ -118,6 +118,14 @@ fills successive candidates so **Enter** applies immediately; **Shift-Tab** /
 **↑** steps back and, past the first item, restores what you typed. **Esc**
 exits the input; editing the text deselects.
 
+While typing a `/` search or `:` command you can move and edit anywhere in the
+line with the usual terminal keys: **←/→** move by character, **Ctrl-←/→** or
+**Alt-←/→** (also **Alt-B/F**) move by word, **Home**/**Ctrl-A** and
+**End**/**Ctrl-E** jump to the start/end. **Backspace** and **Delete** remove the
+character before/after the cursor, **Ctrl-W** deletes the word before it,
+**Ctrl-U** clears to the start, and **Ctrl-K** clears to the end. Backspace (or
+Ctrl-W) on an empty input exits the mode.
+
 Filters and search apply across the whole stream, including records that have
 spilled to disk — not just what's currently in memory.
 

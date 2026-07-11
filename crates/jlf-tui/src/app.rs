@@ -52,6 +52,13 @@ struct Cycle {
     idx: usize,
 }
 
+/// Chars that separate words for word-wise cursor motion and Ctrl-W. Matches how
+/// filters/command args tokenize (whitespace plus `,`/`.`/operator chars), so a
+/// word jump lands on field/value boundaries like `fields.status` or `a>5,b`.
+fn is_word_break(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ',' | '.' | '=' | '~' | '>' | '<' | '!' | ':' | '|')
+}
+
 /// How many records to fold per `tick_summary` call, so a summary over a huge
 /// store progresses across frames instead of freezing the UI.
 const SUMMARY_BATCH: usize = 50_000;
@@ -84,6 +91,9 @@ pub struct App {
 
     pub mode: Mode,
     pub input: String,
+    /// Cursor position within `input`, as a char index (0..=chars). Editing and
+    /// motion (arrows, word jumps, Home/End) all act relative to it.
+    pub input_cursor: usize,
     pub filter_text: String,
     pub status: String,
     /// The rendered summary panel, if one is open.
@@ -156,6 +166,7 @@ impl App {
             follow: true,
             mode: Mode::Normal,
             input: String::new(),
+            input_cursor: 0,
             filter_text: String::new(),
             status: String::new(),
             summary: None,
@@ -319,6 +330,7 @@ impl App {
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.input = self.filter_text.clone();
+        self.input_cursor = self.input.chars().count();
         let recent = self.recent(2000);
         self.catalog = Catalog::from_lines(&recent, 2000);
         self.sug_cycle = None;
@@ -336,6 +348,7 @@ impl App {
     fn enter_command_with(&mut self, prefix: &str) {
         self.mode = Mode::Command;
         self.input = prefix.to_owned();
+        self.input_cursor = self.input.chars().count();
         let recent = self.recent(2000);
         self.catalog = Catalog::from_lines(&recent, 2000);
         self.sug_cycle = None;
@@ -376,23 +389,133 @@ impl App {
     }
 
     pub fn input_char(&mut self, c: char) {
-        self.input.push(c);
+        let at = self.byte_at(self.input_cursor);
+        self.input.insert(at, c);
+        self.input_cursor += 1;
         self.after_input_change();
     }
 
+    /// Delete the char before the cursor (Backspace). No-op at the start.
     pub fn input_backspace(&mut self) {
-        self.input.pop();
+        if self.input_cursor == 0 {
+            return;
+        }
+        let end = self.byte_at(self.input_cursor);
+        let start = self.byte_at(self.input_cursor - 1);
+        self.input.replace_range(start..end, "");
+        self.input_cursor -= 1;
+        self.after_input_change();
+    }
+
+    /// Delete the char under the cursor (Delete / Ctrl-D). No-op at the end.
+    pub fn input_delete_forward(&mut self) {
+        if self.input_cursor >= self.input_len() {
+            return;
+        }
+        let start = self.byte_at(self.input_cursor);
+        let end = self.byte_at(self.input_cursor + 1);
+        self.input.replace_range(start..end, "");
         self.after_input_change();
     }
 
     /// Delete the word before the cursor (Ctrl-W).
     pub fn input_delete_word(&mut self) {
-        let cut = {
-            let trimmed = self.input.trim_end_matches(char::is_whitespace);
-            trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0)
-        };
-        self.input.truncate(cut);
+        let target = self.word_left(self.input_cursor);
+        let start = self.byte_at(target);
+        let end = self.byte_at(self.input_cursor);
+        self.input.replace_range(start..end, "");
+        self.input_cursor = target;
         self.after_input_change();
+    }
+
+    /// Delete from the start of the line to the cursor (Ctrl-U).
+    pub fn input_delete_to_start(&mut self) {
+        let end = self.byte_at(self.input_cursor);
+        self.input.replace_range(..end, "");
+        self.input_cursor = 0;
+        self.after_input_change();
+    }
+
+    /// Delete from the cursor to the end of the line (Ctrl-K).
+    pub fn input_delete_to_end(&mut self) {
+        let start = self.byte_at(self.input_cursor);
+        self.input.truncate(start);
+        self.after_input_change();
+    }
+
+    // ----- input cursor motion ---------------------------------------------
+
+    /// Number of chars in the input.
+    fn input_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Byte offset of char index `n` (clamped to the input length).
+    fn byte_at(&self, n: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(n)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len())
+    }
+
+    /// The char index one word to the left of `from` (skips trailing separators,
+    /// then the word run). Words break on whitespace and `,`/`.`/operator chars,
+    /// matching how filters and command args are tokenized.
+    fn word_left(&self, from: usize) -> usize {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut i = from;
+        while i > 0 && is_word_break(chars[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && !is_word_break(chars[i - 1]) {
+            i -= 1;
+        }
+        i
+    }
+
+    /// The char index one word to the right of `from`.
+    fn word_right(&self, from: usize) -> usize {
+        let chars: Vec<char> = self.input.chars().collect();
+        let n = chars.len();
+        let mut i = from;
+        while i < n && is_word_break(chars[i]) {
+            i += 1;
+        }
+        while i < n && !is_word_break(chars[i]) {
+            i += 1;
+        }
+        i
+    }
+
+    pub fn input_left(&mut self) {
+        self.input_cursor = self.input_cursor.saturating_sub(1);
+        self.sug_cycle = None;
+    }
+
+    pub fn input_right(&mut self) {
+        self.input_cursor = (self.input_cursor + 1).min(self.input_len());
+        self.sug_cycle = None;
+    }
+
+    pub fn input_word_left(&mut self) {
+        self.input_cursor = self.word_left(self.input_cursor);
+        self.sug_cycle = None;
+    }
+
+    pub fn input_word_right(&mut self) {
+        self.input_cursor = self.word_right(self.input_cursor);
+        self.sug_cycle = None;
+    }
+
+    pub fn input_home(&mut self) {
+        self.input_cursor = 0;
+        self.sug_cycle = None;
+    }
+
+    pub fn input_end(&mut self) {
+        self.input_cursor = self.input_len();
+        self.sug_cycle = None;
     }
 
     fn after_input_change(&mut self) {
@@ -438,6 +561,8 @@ impl App {
                 }
             }
         }
+        // A fill rewrites the tail of the input, so keep the cursor at the end.
+        self.input_cursor = self.input.chars().count();
     }
 
     pub fn suggestions_visible(&self) -> bool {
@@ -751,6 +876,44 @@ mod tests {
         r#"{"level":"error","user":"bob","latency_ms":510}"#,
         r#"{"level":"warn","user":"alice","latency_ms":88}"#,
     ];
+
+    #[test]
+    fn input_cursor_edits_and_motion() {
+        let mut app = app_with(SAMPLE);
+        app.enter_search();
+        for c in "abc def".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(app.input, "abc def");
+        assert_eq!(app.input_cursor, 7);
+
+        // Home, then insert at the start.
+        app.input_home();
+        assert_eq!(app.input_cursor, 0);
+        app.input_char('X');
+        assert_eq!(app.input, "Xabc def");
+        assert_eq!(app.input_cursor, 1);
+
+        // End, delete-word-back removes "def".
+        app.input_end();
+        app.input_delete_word();
+        assert_eq!(app.input, "Xabc ");
+        assert_eq!(app.input_cursor, 5);
+
+        // Word-left from the end lands at the start of "Xabc".
+        app.input_word_left();
+        assert_eq!(app.input_cursor, 0);
+
+        // Delete-forward at the start removes 'X'.
+        app.input_delete_forward();
+        assert_eq!(app.input, "abc ");
+        assert_eq!(app.input_cursor, 0);
+
+        // Ctrl-K style: delete to end from the middle.
+        app.input_right();
+        app.input_delete_to_end();
+        assert_eq!(app.input, "a");
+    }
 
     #[test]
     fn ingests_all_records_into_view() {
