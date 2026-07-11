@@ -326,6 +326,8 @@ as `jlf @name`.
 For example: `/error` to search, `Enter` to inspect a record, then `a` → "Stats"
 → pick a field, or `:save errors` to keep the view as a recipe.
 
+See **[docs/tui.md](docs/tui.md)** for the full viewer reference.
+
 ## Command builder (`jlf-it`)
 
 `jlf-it` is an interactive builder that lets you assemble a command and see the
@@ -370,6 +372,8 @@ block in your `.jlf.toml` (or user config) to reuse with `jlf @NAME`.
 
 It works on a file, a finite pipe, or a live stream — it reads a bounded sample
 for the preview and needs a terminal for the prompts.
+
+See **[docs/it.md](docs/it.md)** for the full builder reference.
 
 ## Custom formatting
 
@@ -672,5 +676,11 @@ serde_json::Value:  ~2.84 µs / line
 
 ## More docs
 
+- **[docs/tui.md](docs/tui.md)** — the interactive viewer (`jlf tui`): keys,
+  views, filtering, summaries, and the bounded-memory model.
+- **[docs/it.md](docs/it.md)** — the command builder (`jlf it`): modes, the live
+  preview, autocomplete, and running or saving what you build.
 - **[docs/DSL.md](docs/DSL.md)** — the complete template language reference, with
   a runnable example for every construct.
+- **[docs/colors.md](docs/colors.md)** — the color formats accepted by style
+  modifiers.
