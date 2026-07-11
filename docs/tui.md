@@ -113,9 +113,10 @@ Press `/` to filter. The input mixes two kinds of token:
   `>=`, `<`, `<=`, `~` (contains), `!~` (does not contain). Example:
   `/level=error status>=500`. Numeric operators (and `stats`) read a leading
   number from the value, so a unit-suffixed field like `"6.193 ms"` compares and
-  aggregates as `6.193`. Non-numeric values fall back to RFC 3339 timestamp
-  comparison, so `/ts>2026-07-11T15:00:00Z` (or a partial bound like
-  `/ts>2026-07-11`) filters by time.
+  aggregates as `6.193`. Non-numeric values fall back to timestamp comparison
+  across the common log formats (ISO 8601 / RFC 3339, RFC 2822, Apache
+  common-log, log4j, month-name, syslog), so `/ts>2026-07-11T15:00:00Z` (or a
+  partial bound like `/ts>2026-07-11`) filters by time.
 - **Bare words** — any token that isn't a `field op value` matches anywhere in
   the raw record text, case-insensitively. Example: `/timeout`.
 

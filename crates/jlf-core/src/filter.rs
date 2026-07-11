@@ -141,51 +141,220 @@ fn order_compare(field: &str, value: &str) -> Option<std::cmp::Ordering> {
     }
 }
 
-/// Parse an RFC 3339 / ISO 8601 timestamp to nanoseconds since the Unix epoch,
-/// for chronological ordering. Accepts `YYYY-MM-DD` optionally followed by a
-/// `T`/space and `HH:MM[:SS[.fraction]]`, and an optional `Z` or `±HH:MM`
-/// timezone (UTC assumed when absent). Missing lower components default to zero,
-/// so a filter value like `2026-07-11` or `2026-07-11T15:11` works as a bound.
-/// Returns `None` for anything that isn't a well-formed timestamp.
+/// Parse a timestamp to nanoseconds since the Unix epoch, for chronological
+/// ordering of `>`/`<` filters. Covers the common log formats without a datetime
+/// dependency:
+///
+/// - ISO 8601 / RFC 3339: `2026-07-11T15:11:48.968666Z`, `2026-07-11 15:11:48`,
+///   `2026-07-11T15:11:48+02:00`, `2026/07/11 15:04:05`, `2026-07-11` (date only)
+/// - log4j comma fraction: `2026-07-11 15:11:48,123`
+/// - RFC 2822 / HTTP-date: `Wed, 21 Oct 2015 07:28:00 GMT`, `Tue, 01 Jul 2003 10:52:37 +0200`
+/// - Apache common-log: `10/Oct/2000:13:55:36 -0700`
+/// - month names: `21 Oct 2015 07:28:00`, `Oct 21, 2015 07:28:00`, `11-Jul-2026`
+/// - syslog (no year): `Oct 11 15:11:48` — ordered within a shared sentinel year
+///
+/// Missing lower components default to zero, so a partial bound like
+/// `2026-07-11` or `2026-07-11T15:11` works. Timezones understood: `Z`, `UTC`,
+/// `GMT`, and numeric `±HH:MM` / `±HHMM` / `±HH` (UTC assumed when absent). Named
+/// zone abbreviations (EST, PST, …) are ambiguous and not supported. Returns
+/// `None` for anything that isn't a recognized timestamp.
 pub fn parse_datetime(s: &str) -> Option<i128> {
-    let s = s.trim();
+    let s = strip_weekday(s.trim());
+    parse_iso(s)
+        .or_else(|| parse_clf(s))
+        .or_else(|| parse_named(s))
+        .or_else(|| parse_dmy_dash(s))
+        .or_else(|| parse_syslog(s))
+}
+
+/// Days from civil, seconds-of-day, and timezone combined into epoch nanos.
+fn combine(year: i64, month: i64, day: i64, time_nanos: i128, tz_subtract: i128) -> i128 {
+    days_from_civil(year, month, day) as i128 * NANOS_PER_DAY + time_nanos - tz_subtract
+}
+
+/// ISO 8601 / RFC 3339: `YYYY[-/]MM[-/]DD` optionally followed by a `T`/space and
+/// `HH[:MM[:SS[.,frac]]]` and a timezone (glued or space-separated).
+fn parse_iso(s: &str) -> Option<i128> {
     let (date, rest) = match s.split_once(['T', ' ']) {
         Some((d, r)) => (d, Some(r)),
         None => (s, None),
     };
-
-    let mut d = date.split('-');
-    let year: i64 = d.next()?.parse().ok()?;
-    let month: i64 = int_field(d.next()?, 1, 12)?;
-    let day: i64 = int_field(d.next()?, 1, 31)?;
+    let sep = if date.contains('-') {
+        '-'
+    } else if date.contains('/') {
+        '/'
+    } else {
+        return None;
+    };
+    let mut d = date.split(sep);
+    let year = int_field(d.next()?, 0, 9999)?;
+    let month = int_field(d.next()?, 1, 12)?;
+    let day = int_field(d.next()?, 1, 31)?;
     if d.next().is_some() {
         return None;
     }
+    let (time_nanos, tz) = match rest {
+        Some(rest) => parse_time_and_tz(rest)?,
+        None => (0, 0),
+    };
+    Some(combine(year, month, day, time_nanos, tz))
+}
 
-    let mut nanos = days_from_civil(year, month, day) as i128 * NANOS_PER_DAY;
-
-    if let Some(rest) = rest {
-        let (time, tz) = split_timezone(rest);
-        let mut t = time.split(':');
-        let hour = int_field(t.next()?, 0, 23)?;
-        let minute = match t.next() {
-            Some(m) => int_field(m, 0, 59)?,
-            None => 0,
-        };
-        let (second, frac_nanos) = match t.next() {
-            Some(sec) => {
-                let (whole, frac) = sec.split_once('.').unwrap_or((sec, ""));
-                (int_field(whole, 0, 60)?, parse_fraction_nanos(frac)?)
-            }
-            None => (0, 0),
-        };
-        if t.next().is_some() {
-            return None;
-        }
-        nanos += (hour * 3600 + minute * 60 + second) as i128 * 1_000_000_000 + frac_nanos;
-        nanos -= timezone_offset_nanos(tz)?;
+/// Apache common-log: `DD/Mon/YYYY:HH:MM:SS` with an optional ` ±HHMM` offset.
+fn parse_clf(s: &str) -> Option<i128> {
+    let (dt, tz) = match s.split_once(' ') {
+        Some((a, b)) => (a, parse_tz(b)?),
+        None => (s, 0),
+    };
+    let (date, time) = dt.split_once(':')?;
+    let mut d = date.split('/');
+    let day = int_field(d.next()?, 1, 31)?;
+    let month = month_name(d.next()?)?;
+    let year = int_field(d.next()?, 0, 9999)?;
+    if d.next().is_some() {
+        return None;
     }
-    Some(nanos)
+    Some(combine(year, month, day, parse_time(time)?, tz))
+}
+
+/// Month-name forms: `DD Mon YYYY …` or `Mon DD[,] YYYY …`, with an optional
+/// trailing `HH:MM:SS` time and timezone token.
+fn parse_named(s: &str) -> Option<i128> {
+    let t: Vec<&str> = s.split_whitespace().collect();
+    if t.len() < 3 {
+        return None;
+    }
+    let (year, month, day) = if let Some(month) = month_name(t[0]) {
+        (int_field(t[2], 0, 9999)?, month, int_field(t[1].trim_end_matches(','), 1, 31)?)
+    } else if let Some(month) = month_name(t[1]) {
+        (int_field(t[2], 0, 9999)?, month, int_field(t[0], 1, 31)?)
+    } else {
+        return None;
+    };
+    let time_nanos = match t.get(3) {
+        Some(time) => parse_time(time)?,
+        None => 0,
+    };
+    let tz = match t.get(4) {
+        Some(tz) => parse_tz(tz)?,
+        None => 0,
+    };
+    if t.len() > 5 {
+        return None;
+    }
+    Some(combine(year, month, day, time_nanos, tz))
+}
+
+/// Dash-separated month name: `DD-Mon-YYYY` with an optional ` HH:MM:SS` and tz.
+fn parse_dmy_dash(s: &str) -> Option<i128> {
+    let mut it = s.split_whitespace();
+    let date = it.next()?;
+    let mut d = date.split('-');
+    let day = int_field(d.next()?, 1, 31)?;
+    let month = month_name(d.next()?)?;
+    let year = int_field(d.next()?, 0, 9999)?;
+    if d.next().is_some() {
+        return None;
+    }
+    let time_nanos = match it.next() {
+        Some(time) => parse_time(time)?,
+        None => 0,
+    };
+    let tz = match it.next() {
+        Some(tz) => parse_tz(tz)?,
+        None => 0,
+    };
+    if it.next().is_some() {
+        return None;
+    }
+    Some(combine(year, month, day, time_nanos, tz))
+}
+
+/// syslog / RFC 3164: `Mon DD HH:MM:SS` with no year. Placed in a fixed sentinel
+/// year so such stamps order correctly among themselves (a leap year, so
+/// `Feb 29` is valid); they aren't comparable to year-bearing timestamps.
+fn parse_syslog(s: &str) -> Option<i128> {
+    const SENTINEL_YEAR: i64 = 2000;
+    let t: Vec<&str> = s.split_whitespace().collect();
+    if t.len() != 3 {
+        return None;
+    }
+    let month = month_name(t[0])?;
+    let day = int_field(t[1], 1, 31)?;
+    Some(combine(SENTINEL_YEAR, month, day, parse_time(t[2])?, 0))
+}
+
+/// Drop a leading weekday word (`Mon`/`Monday`, optionally comma-terminated) so
+/// RFC 2822 / HTTP dates fall through to the month-name parser.
+fn strip_weekday(s: &str) -> &str {
+    let end = s.find([',', ' ']).unwrap_or(s.len());
+    let word = s[..end].trim_end_matches(',');
+    if word.len() >= 3 && word.is_ascii() && is_weekday(&word[..3]) {
+        return s[end..].trim_start_matches([',', ' ']);
+    }
+    s
+}
+
+fn is_weekday(prefix3: &str) -> bool {
+    let mut buf = [0u8; 3];
+    buf.copy_from_slice(prefix3.as_bytes());
+    buf.make_ascii_lowercase();
+    matches!(&buf, b"mon" | b"tue" | b"wed" | b"thu" | b"fri" | b"sat" | b"sun")
+}
+
+/// Map an English month name (full or 3-letter, any case, optional trailing `.`)
+/// to its 1-based number.
+fn month_name(s: &str) -> Option<i64> {
+    let s = s.trim_end_matches('.');
+    if s.len() < 3 || !s.is_ascii() || !s.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut buf = [0u8; 3];
+    buf.copy_from_slice(&s.as_bytes()[..3]);
+    buf.make_ascii_lowercase();
+    let months: [&[u8; 3]; 12] = [
+        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov",
+        b"dec",
+    ];
+    months.iter().position(|m| *m == &buf).map(|i| i as i64 + 1)
+}
+
+/// Parse `HH[:MM[:SS[.,frac]]]` into nanoseconds-of-day, tolerating a `.` or `,`
+/// fractional separator (log4j uses the comma).
+fn parse_time(time: &str) -> Option<i128> {
+    let mut t = time.split(':');
+    let hour = int_field(t.next()?, 0, 23)?;
+    let minute = match t.next() {
+        Some(m) => int_field(m, 0, 59)?,
+        None => 0,
+    };
+    let (second, frac_nanos) = match t.next() {
+        Some(sec) => {
+            let (whole, frac) = sec.split_once(['.', ',']).unwrap_or((sec, ""));
+            (int_field(whole, 0, 60)?, parse_fraction_nanos(frac)?)
+        }
+        None => (0, 0),
+    };
+    if t.next().is_some() {
+        return None;
+    }
+    Some((hour * 3600 + minute * 60 + second) as i128 * 1_000_000_000 + frac_nanos)
+}
+
+/// Split a time-of-day from its timezone (glued as in `15:11:48Z` / `…+02:00`,
+/// or a separate token as in `15:11:48 GMT`) and parse both.
+fn parse_time_and_tz(rest: &str) -> Option<(i128, i128)> {
+    if let Some((time, tz)) = rest.split_once(' ') {
+        return Some((parse_time(time)?, parse_tz(tz)?));
+    }
+    if let Some(time) = rest.strip_suffix(['Z', 'z']) {
+        return Some((parse_time(time)?, 0));
+    }
+    // A `+`/`-` after the hour introduces a numeric offset glued to the time.
+    if let Some(pos) = rest.get(1..).and_then(|r| r.find(['+', '-'])).map(|i| i + 1) {
+        return Some((parse_time(&rest[..pos])?, parse_tz(&rest[pos..])?));
+    }
+    Some((parse_time(rest)?, 0))
 }
 
 const NANOS_PER_DAY: i128 = 86_400 * 1_000_000_000;
@@ -200,8 +369,8 @@ fn int_field(s: &str, lo: i64, hi: i64) -> Option<i64> {
     (lo..=hi).contains(&n).then_some(n)
 }
 
-/// Convert the digits after a `.` in the seconds field to nanoseconds, padding
-/// or truncating to 9 digits (`.5` -> 500_000_000). Empty is allowed (0).
+/// Convert the digits after a `.`/`,` in the seconds field to nanoseconds,
+/// padding or truncating to 9 digits (`.5` -> 500_000_000). Empty is allowed (0).
 fn parse_fraction_nanos(frac: &str) -> Option<i128> {
     if frac.is_empty() {
         return Some(0);
@@ -214,35 +383,30 @@ fn parse_fraction_nanos(frac: &str) -> Option<i128> {
     std::str::from_utf8(&digits[..9]).ok()?.parse().ok()
 }
 
-/// Split the time-of-day from a trailing timezone (`Z`, `+HH:MM`, or `-HH:MM`).
-fn split_timezone(rest: &str) -> (&str, Option<&str>) {
-    if let Some(t) = rest.strip_suffix(['Z', 'z']) {
-        return (t, Some("Z"));
+/// Nanoseconds to subtract from a local time to get UTC. `Z`/`UTC`/`GMT` is 0;
+/// numeric `±HH:MM` / `±HHMM` / `±HH` shift accordingly (`+` is ahead of UTC).
+fn parse_tz(tz: &str) -> Option<i128> {
+    match tz {
+        "Z" | "z" | "UTC" | "GMT" | "UT" => return Some(0),
+        _ => {}
     }
-    match rest.rfind(['+', '-']) {
-        Some(pos) => (&rest[..pos], Some(&rest[pos..])),
-        None => (rest, None),
-    }
-}
-
-/// Nanoseconds to subtract to convert a local time to UTC. `None`/`Z` is 0;
-/// `+HH:MM` shifts UTC ahead of local (subtract), `-HH:MM` behind (add).
-fn timezone_offset_nanos(tz: Option<&str>) -> Option<i128> {
-    let tz = match tz {
-        None | Some("Z") => return Some(0),
-        Some(tz) => tz,
-    };
     let (sign, hm) = tz.split_at(1);
-    let (h, m) = hm.split_once(':')?;
+    let sign = match sign {
+        "+" => 1,
+        "-" => -1,
+        _ => return None,
+    };
+    let (h, m) = match hm.split_once(':') {
+        Some((h, m)) => (h, m),
+        None => match hm.len() {
+            4 => (&hm[..2], &hm[2..]),
+            2 => (hm, "00"),
+            _ => return None,
+        },
+    };
     let hours = int_field(h, 0, 23)?;
     let minutes = int_field(m, 0, 59)?;
-    let secs = hours * 3600 + minutes * 60;
-    let nanos = secs as i128 * 1_000_000_000;
-    match sign {
-        "+" => Some(nanos),
-        "-" => Some(-nanos),
-        _ => None,
-    }
+    Some(sign * (hours * 3600 + minutes * 60) as i128 * 1_000_000_000)
 }
 
 /// Days from the Unix epoch (1970-01-01) to a civil date, by Howard Hinnant's
@@ -361,10 +525,7 @@ mod tests {
         assert_eq!(parse_datetime("2026-07-11 15:11:48Z"), Some(base));
         assert_eq!(parse_datetime("2026-07-11T15:11:48+00:00"), Some(base));
         // a +02:00 local time is two hours earlier in UTC
-        assert_eq!(
-            parse_datetime("2026-07-11T17:11:48+02:00"),
-            Some(base)
-        );
+        assert_eq!(parse_datetime("2026-07-11T17:11:48+02:00"), Some(base));
         // ordering across days and the epoch reference
         assert!(parse_datetime("2026-07-12") > parse_datetime("2026-07-11"));
         assert_eq!(parse_datetime("1970-01-01T00:00:00Z"), Some(0));
@@ -372,6 +533,47 @@ mod tests {
         assert_eq!(parse_datetime("2026-13-11"), None);
         assert_eq!(parse_datetime("nope"), None);
         assert_eq!(parse_datetime("2026-07-11T25:00:00Z"), None);
+    }
+
+    #[test]
+    fn parse_datetime_covers_common_formats() {
+        let base = parse_datetime("2015-10-21T07:28:00Z").unwrap();
+        // slash-separated ISO date
+        assert_eq!(parse_datetime("2015/10/21 07:28:00Z"), Some(base));
+        // log4j comma fraction
+        assert_eq!(
+            parse_datetime("2015-10-21 07:28:00,250"),
+            Some(base + 250_000_000)
+        );
+        // RFC 2822 / HTTP-date (leading weekday stripped) with GMT and offsets
+        assert_eq!(parse_datetime("Wed, 21 Oct 2015 07:28:00 GMT"), Some(base));
+        assert_eq!(
+            parse_datetime("Wed, 21 Oct 2015 09:28:00 +02:00"),
+            Some(base)
+        );
+        assert_eq!(parse_datetime("Wed, 21 Oct 2015 05:28:00 -0200"), Some(base));
+        // month-name forms in both orders
+        assert_eq!(parse_datetime("21 Oct 2015 07:28:00"), Some(base));
+        assert_eq!(parse_datetime("Oct 21, 2015 07:28:00"), Some(base));
+        assert_eq!(parse_datetime("October 21, 2015 07:28:00 UTC"), Some(base));
+        // Apache common-log
+        assert_eq!(
+            parse_datetime("21/Oct/2015:07:28:00 +0000"),
+            Some(base)
+        );
+        assert_eq!(
+            parse_datetime("21/Oct/2015:00:28:00 -0700"),
+            Some(base)
+        );
+        // dash-separated month name
+        assert_eq!(parse_datetime("21-Oct-2015 07:28:00"), Some(base));
+        // date-only and partial-time bounds
+        assert_eq!(parse_datetime("2015-10-21"), parse_datetime("2015-10-21T00:00:00Z"));
+        assert_eq!(parse_datetime("2015-10-21T07:28"), parse_datetime("2015-10-21T07:28:00Z"));
+        // syslog (no year) orders within itself; unknown named zones rejected
+        assert!(parse_datetime("Oct 21 07:28:00") < parse_datetime("Oct 21 07:29:00"));
+        assert!(parse_datetime("Feb 09 00:00:00") < parse_datetime("Dec 09 00:00:00"));
+        assert_eq!(parse_datetime("2015-10-21T07:28:00 EST"), None);
     }
 
     #[test]
