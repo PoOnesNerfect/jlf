@@ -9,15 +9,16 @@ use crate::app::{App, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let show_sug = app.suggestions_visible();
-    let mut constraints = vec![Constraint::Length(1), Constraint::Min(0)];
+    // A single bottom bar holds status + hints (or the active input); the
+    // suggestion popup, when shown, sits just above it.
+    let mut constraints = vec![Constraint::Min(0)];
     if show_sug {
         constraints.push(Constraint::Length(2));
     }
     constraints.push(Constraint::Length(1));
     let areas = Layout::vertical(constraints).split(f.area());
-    let (status, main, prompt) = (areas[0], areas[1], areas[areas.len() - 1]);
-
-    draw_status(f, app, status);
+    let main = areas[0];
+    let bar = areas[areas.len() - 1];
 
     if app.show_detail {
         let [list_area, detail_area] =
@@ -28,9 +29,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_list(f, app, main);
     }
     if show_sug {
-        draw_suggestions(f, app, areas[2]);
+        draw_suggestions(f, app, areas[1]);
     }
-    draw_prompt(f, app, prompt);
+    draw_bar(f, app, bar);
 
     if app.help {
         draw_help(f, main);
@@ -147,32 +148,46 @@ fn draw_suggestions(f: &mut Frame, app: &App, area: Rect) {
 /// The always-visible key hint shown on the prompt line in Normal mode.
 const HINT: &str = "↑↓ move · ⏎ detail · c expand · a actions · / search · : command · ? help · q quit";
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let follow = if app.follow { "● follow" } else { "‖ paused" };
-    let position = if app.view_len() == 0 {
-        "0/0".to_string()
-    } else {
-        format!("{}/{}", app.selected + 1, app.view_len())
+/// The single bottom bar: while typing a filter/command it shows that input;
+/// otherwise it shows the status (follow, position, filter, transient message)
+/// followed by the key hints, all on one line.
+fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
+    let line = match app.mode {
+        Mode::Search => Line::from(format!("/{}", app.input)),
+        Mode::Command => Line::from(format!(":{}", app.input)),
+        Mode::Normal => {
+            let follow = if app.follow { "● follow" } else { "‖ paused" };
+            let position = if app.view_len() == 0 {
+                "0/0".to_string()
+            } else {
+                format!("{}/{}", app.selected + 1, app.view_len())
+            };
+            let filter = if app.filter_text.is_empty() {
+                "no filter".to_string()
+            } else {
+                // Show how many records matched out of the total held.
+                format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
+            };
+            let mut spans = vec![
+                Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(format!("  {follow}   {position} records   {filter}")),
+            ];
+            // Transient feedback (filter cleared, N match, errors, saved…).
+            if !app.status.is_empty() {
+                spans.push(Span::styled(
+                    format!("   ·   {}", app.status),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            // Key hints fill the rest of the line (clipped on narrow terminals).
+            spans.push(Span::styled(
+                format!("    {HINT}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+            Line::from(spans)
+        }
     };
-    let filter = if app.filter_text.is_empty() {
-        "no filter".to_string()
-    } else {
-        // Show how many records matched out of the total held.
-        format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
-    };
-    let mut spans = vec![
-        Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(format!("  {follow}   {position} records   {filter}")),
-    ];
-    // Transient feedback (filter cleared, N match, errors, saved…) rides in the
-    // status bar so it never hides the key hints on the prompt line.
-    if !app.status.is_empty() {
-        spans.push(Span::styled(
-            format!("   ·   {}", app.status),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 /// Fraction of the viewport kept between the cursor and the top/bottom edge
@@ -413,16 +428,6 @@ fn truncate_line(line: Line<'static>, max: usize) -> Line<'static> {
         }
     }
     Line::from(spans)
-}
-
-fn draw_prompt(f: &mut Frame, app: &App, area: Rect) {
-    let line = match app.mode {
-        Mode::Search => Line::from(format!("/{}", app.input)),
-        Mode::Command => Line::from(format!(":{}", app.input)),
-        // Always show the key hints here so they're never hidden by a message.
-        Mode::Normal => Line::from(Span::styled(HINT, Style::default().fg(Color::DarkGray))),
-    };
-    f.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_summary(f: &mut Frame, summary: &crate::summary::Summary, area: Rect) {

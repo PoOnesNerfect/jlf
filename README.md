@@ -272,10 +272,11 @@ jlf-tui app.log level=error   # start with a filter applied
 ```
 
 Layout: a colored record list, an optional detail pane (**Enter** toggles it)
-showing the selected record as syntax-highlighted JSON, a status bar (follow
-state, position, filter, and transient messages), and a hint line that always
-lists the keys. The list is one dense line per record by default; **`c`** expands
-it to the full multi-line rendering (header + pretty data), like piped `jlf`.
+showing the selected record as syntax-highlighted JSON, and a single bottom bar
+with the follow state, position, filter, any transient message, and the key hints
+(or the `/` search / `:` command input while you're typing one). The list is one
+dense line per record by default; **`c`** expands it to the full multi-line
+rendering (header + pretty data), like piped `jlf`.
 
 | key | action |
 | --- | ------ |

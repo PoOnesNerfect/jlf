@@ -49,10 +49,9 @@ returns cleanly.
 - **Record list** — the colored records, one dense line each by default.
 - **Detail pane** — opened with `Enter`, shows the selected record as
   syntax-highlighted, pretty-printed JSON.
-- **Status bar** (top) — follow state, position, the active filter (with a
-  `matched of total` count), and transient messages.
-- **Hint line** (bottom) — always lists the main keys, or the `/` search and `:`
-  command input when you're typing one.
+- **Bottom bar** — a single line with the follow state, position, active filter
+  (with a `matched of total` count), any transient message, and the key hints.
+  While you're typing a `/` search or `:` command it shows that input instead.
 
 ## Keys
 
