@@ -49,15 +49,15 @@ returns cleanly.
 - **Record list** — the colored records, one dense line each by default.
 - **Detail pane** — opened with `Enter`, shows the selected record as
   syntax-highlighted, pretty-printed JSON.
-- **Input box** — a framed box below the list. While idle it shows the currently
-  applied filter with its `/` prefix and a `(matched of total)` count, or the
-  `/`/`:` key hints when no filter is set; while you're typing a `/` search or
-  `:` command it holds that input and its completion candidates. Commands (`:`)
-  don't persist here — they produce a summary popup or a status message, and the
-  box returns to showing the filter.
-- **Bottom bar** — a single line with the follow state, position, active filter
-  (with a `matched of total` count), any transient message, and the key hints.
-  While you're typing a `/` search or `:` command it swaps in that mode's hints.
+- **Input box** — a framed box below the list. While idle it's the view's status
+  line: the active filter with its `/` prefix (or "No filter") and a
+  `matched/total records` count. While you're typing a `/` search or `:` command
+  it holds that input and its completion candidates. Commands (`:`) don't persist
+  here — they produce a summary popup or a status message, and the box returns to
+  the status line.
+- **Bottom bar** — the app badge, the follow state, any transient message, and
+  the key hints. While you're typing a `/` search or `:` command it swaps in that
+  mode's hints. (The filter and record count live in the input box above.)
 
 ## Keys
 

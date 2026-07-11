@@ -177,27 +177,27 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     if !active {
-        // Idle: surface the currently-applied filter (if any) in the otherwise
-        // empty input row, so it's easy to see what's narrowing the view. Shown
-        // with the same `/` prefix you type it with.
-        if !app.filter_text.is_empty() {
-            let line = Line::from(vec![
-                Span::styled(
-                    " /",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
+        // Idle: the input row is the view's status line — the active filter (with
+        // the `/` prefix you type it with) or "No filter", then the record count.
+        // This is the single place that shows what's narrowing the view and how
+        // many match, so the bottom bar doesn't repeat it.
+        let dim = Style::default().fg(Color::DarkGray);
+        let count = Span::styled(format!("{}/{} records", app.view_len(), app.total()), dim);
+        let mut spans = if app.filter_text.is_empty() {
+            vec![Span::styled(" No filter", dim)]
+        } else {
+            vec![
+                Span::styled(" /", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!("   ({} of {})", app.view_len(), app.total()),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-            f.render_widget(
-                Paragraph::new(truncate_line(line, inner.width as usize)),
-                inner,
-            );
-        }
-        return; // empty framed box (no active filter) (no active filter)
+            ]
+        };
+        spans.push(Span::styled("   ·   ", dim));
+        spans.push(count);
+        f.render_widget(
+            Paragraph::new(truncate_line(Line::from(spans), inner.width as usize)),
+            inner,
+        );
+        return;
     }
     let input = match app.mode {
         Mode::Search => format!("/{}", app.input),
@@ -216,27 +216,15 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
 /// The always-visible key hint shown on the prompt line in Normal mode.
 const HINT: &str = "↑↓ move · g/G top/bottom · d/u page · ⏎ detail · c expand · a actions · ? help · q quit";
 
-/// The bottom bar: always shows the status (follow, position, filter, transient
-/// message). Its trailing hint section shows the normal key hints, or — while
-/// typing a `/` filter or `:` command — that mode's completion help, so those
-/// don't need a separate row (the input itself lives in the section above, see
-/// [`draw_input_section`]).
+/// The bottom bar: the app badge, follow state, and a transient message, then
+/// the key-hint section (completion help while typing a `/` filter or `:`
+/// command, else the normal keys). The active filter and record count live in
+/// the input box above (see [`draw_input_section`]), so they aren't repeated here.
 fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
     let follow = if app.follow { "● follow" } else { "‖ paused" };
-    let position = if app.view_len() == 0 {
-        "0/0".to_string()
-    } else {
-        format!("{}/{}", app.selected + 1, app.view_len())
-    };
-    let filter = if app.filter_text.is_empty() {
-        "no filter".to_string()
-    } else {
-        // Show how many records matched out of the total held.
-        format!("/{}  ({} of {})", app.filter_text, app.view_len(), app.total())
-    };
     let mut spans = vec![
         Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(format!("  {follow}   {position} records   {filter}")),
+        Span::raw(format!("  {follow}")),
     ];
     // Transient feedback (filter cleared, N match, errors, saved…).
     if !app.status.is_empty() {
