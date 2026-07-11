@@ -150,7 +150,7 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         let label = match app.mode {
             Mode::Search => " filter (/) ",
             Mode::Command => " command (:) ",
-            Mode::Normal => "  /  filter    :  command  ",
+            Mode::Normal => " press / to filter  ·  : to run a command ",
         };
         Line::from(Span::styled(label, Style::default().fg(border)))
     };
