@@ -313,10 +313,11 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     if ctrl {
         match code {
             // Ctrl-W deletes the word before the cursor; on an empty input it
-            // deletes the `/`/`:` prefix — i.e. exits the mode.
+            // deletes the `/`/`:` prefix — exiting the mode (and clearing the
+            // filter, since deleting the whole thing means "no filter").
             KeyCode::Char('w') => {
                 if app.input.is_empty() {
-                    app.mode = Mode::Normal;
+                    exit_search_or_command(app);
                 } else {
                     app.input_delete_word();
                 }
@@ -373,12 +374,23 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     }
 }
 
-/// Backspace when there's text, or exit the search/command mode when the input
-/// is already empty (the visual `/`/`:` prefix is what you'd delete next).
+/// Backspace when there's text, else delete the visual `/`/`:` prefix — which
+/// leaves the field. Deleting the whole `/` filter this way clears the applied
+/// filter (an empty filter means "no filter"), rather than keeping the old one.
 fn input_backspace_or_exit(app: &mut App) {
     if app.input.is_empty() {
-        app.mode = Mode::Normal;
+        exit_search_or_command(app);
     } else {
         app.input_backspace();
     }
+}
+
+/// Leave search/command mode. If a `/` filter was applied, deleting out of the
+/// field clears it so the view is unfiltered again. (Esc, by contrast, cancels
+/// the edit and keeps whatever filter was already applied.)
+fn exit_search_or_command(app: &mut App) {
+    if matches!(app.mode, Mode::Search) && !app.filter_text.is_empty() {
+        app.apply_filter(String::new());
+    }
+    app.mode = Mode::Normal;
 }

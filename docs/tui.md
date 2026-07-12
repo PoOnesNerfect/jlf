@@ -142,7 +142,10 @@ line with the usual terminal keys: **←/→** move by character, **Ctrl-←/→
 **End**/**Ctrl-E** jump to the start/end. **Backspace** and **Delete** remove the
 character before/after the cursor, **Ctrl-W** deletes the word before it,
 **Ctrl-U** clears to the start, and **Ctrl-K** clears to the end. Backspace (or
-Ctrl-W) on an empty input exits the mode.
+Ctrl-W) on an empty input deletes the `/`/`:` prefix and leaves the field —
+and for a `/` filter that also clears the applied filter, so deleting the whole
+thing means "no filter". (**Esc** cancels instead, keeping whatever filter was
+already applied.)
 
 Filters and search apply across the whole stream, including records that have
 spilled to disk — not just what's currently in memory.
