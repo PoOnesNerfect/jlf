@@ -223,6 +223,15 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
             app.search_query.clone(),
             Style::default().fg(Color::Black).bg(SEARCH_HL),
         ));
+        // The current match position out of the total, so `n`/`N` progress is
+        // visible (just the total when the selection isn't on a match).
+        if let Some((current, total)) = app.search_position() {
+            let label = match current {
+                Some(i) => format!(" {i}/{total} matches"),
+                None => format!(" {total} matches"),
+            };
+            spans.push(Span::styled(label, dim));
+        }
         spans.push(Span::styled("   ·   ", dim));
     }
     if app.filter_text.is_empty() {

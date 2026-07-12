@@ -100,6 +100,12 @@ pub struct App {
     /// The active search query (`/`): matched text is highlighted in the list and
     /// `n`/`N` jump between matching records. Empty means no search.
     pub search_query: String,
+    /// Cached view positions matching `search_query`, sorted ascending, with the
+    /// `(query, view_len)` they were computed for. Rebuilt once per search (or
+    /// when the view changes) so `n`/`N` and the `k/total` position are cheap
+    /// lookups rather than a per-frame full scan.
+    search_matches: Vec<usize>,
+    search_matches_key: (String, usize),
     pub status: String,
     /// The rendered summary panel, if one is open.
     pub summary: Option<Summary>,
@@ -181,6 +187,8 @@ impl App {
             input_cursor: 0,
             filter_text: String::new(),
             search_query: String::new(),
+            search_matches: Vec::new(),
+            search_matches_key: (String::new(), 0),
             status: String::new(),
             summary: None,
             summary_job: None,
@@ -283,6 +291,11 @@ impl App {
         }
         self.filter_text = text;
         self.rebuild_view();
+        // The view changed, so the cached search matches (view positions) are
+        // stale — recompute them against the new view.
+        if !self.search_query.is_empty() {
+            self.refresh_search_matches();
+        }
         // A change in the view invalidates a running summary — recompute it from
         // scratch over the new view.
         if let Some(job) = &mut self.summary_job {
@@ -365,23 +378,28 @@ impl App {
     pub fn apply_search(&mut self, query: String) {
         self.search_query = query;
         if self.search_query.is_empty() {
+            self.search_matches.clear();
+            self.search_matches_key = (String::new(), 0);
             self.status = "search cleared".into();
             return;
         }
-        // Jump to the first match at or after the current selection — staying put
-        // if the current record already matches.
-        let needle = self.search_query.to_lowercase();
-        if self.record_matches_search(self.selected, &needle) {
-            self.status = "search set".into();
+        self.refresh_search_matches();
+        if self.search_matches.is_empty() {
+            self.status = "no matches".into();
             return;
         }
-        match self.find_match(self.selected, true, true) {
-            Some(pos) => {
-                self.select(pos);
-                self.status = "search set".into();
-            }
-            None => self.status = "no matches".into(),
+        // Jump to the first match at or after the current selection (staying put
+        // if it already matches), wrapping to the first match past the end.
+        if self.search_matches.binary_search(&self.selected).is_err() {
+            let target = self
+                .search_matches
+                .iter()
+                .find(|&&p| p > self.selected)
+                .copied()
+                .unwrap_or(self.search_matches[0]);
+            self.select(target);
         }
+        self.status = "search set".into();
     }
 
     /// The text currently driving highlighting: the live input while typing a
@@ -400,58 +418,54 @@ impl App {
             .is_some_and(|rec| rec.to_lowercase().contains(needle_lower))
     }
 
-    /// The next view position matching the search, scanning from `from` in the
-    /// given direction (optionally wrapping). `from` itself is included only
-    /// when it's the sole candidate on a wrap.
-    fn find_match(&self, from: usize, forward: bool, wrap: bool) -> Option<usize> {
-        let len = self.view_len();
-        if len == 0 || self.search_query.is_empty() {
-            return None;
+    /// Rebuild the cached match list if it's stale (the query or view changed).
+    /// A full scan of the view, but done at most once per search/view — the
+    /// results power `n`/`N` and the position indicator without re-scanning.
+    fn refresh_search_matches(&mut self) {
+        let key = (self.search_query.clone(), self.view_len());
+        if self.search_matches_key == key {
+            return;
         }
-        let needle = self.search_query.to_lowercase();
-        let step = |p: usize| -> Option<usize> {
-            if forward {
-                (p + 1 < len).then(|| p + 1)
-            } else {
-                p.checked_sub(1)
-            }
+        self.search_matches = if self.search_query.is_empty() {
+            Vec::new()
+        } else {
+            let needle = self.search_query.to_lowercase();
+            (0..self.view_len())
+                .filter(|&p| self.record_matches_search(p, &needle))
+                .collect()
         };
-        let mut p = from;
-        while let Some(next) = step(p) {
-            if self.record_matches_search(next, &needle) {
-                return Some(next);
-            }
-            p = next;
-        }
-        if wrap {
-            // Wrap to the far end and scan back toward `from` (inclusive).
-            let mut p = if forward { 0 } else { len - 1 };
-            loop {
-                if self.record_matches_search(p, &needle) {
-                    return Some(p);
-                }
-                if p == from {
-                    break;
-                }
-                match step(p) {
-                    Some(next) => p = next,
-                    None => break,
-                }
-            }
-        }
-        None
+        self.search_matches_key = key;
     }
 
-    /// Jump to the next (`n`) or previous (`N`) record matching the search.
+    /// Jump to the next (`n`) or previous (`N`) matching record, wrapping around.
     pub fn search_jump(&mut self, forward: bool) {
         if self.search_query.is_empty() {
             self.status = "no active search".into();
             return;
         }
-        match self.find_match(self.selected, forward, true) {
-            Some(pos) => self.select(pos),
-            None => self.status = "no matches".into(),
+        self.refresh_search_matches();
+        if self.search_matches.is_empty() {
+            self.status = "no matches".into();
+            return;
         }
+        let m = &self.search_matches;
+        let target = if forward {
+            m.iter().find(|&&p| p > self.selected).copied().unwrap_or(m[0])
+        } else {
+            m.iter().rev().find(|&&p| p < self.selected).copied().unwrap_or(m[m.len() - 1])
+        };
+        self.select(target);
+    }
+
+    /// For the status line: `(current 1-based match index, total matches)`, where
+    /// the index is `Some` only when the selection is on a match. `None` when
+    /// there's no active search. Reads the cached list — no scan.
+    pub fn search_position(&self) -> Option<(Option<usize>, usize)> {
+        if self.search_query.is_empty() {
+            return None;
+        }
+        let current = self.search_matches.binary_search(&self.selected).ok().map(|i| i + 1);
+        Some((current, self.search_matches.len()))
     }
 
     /// Move the selection to view position `pos`, updating follow/detail state
@@ -1072,16 +1086,24 @@ mod tests {
         // n / N walk between matching records (records 0 and 2 have alice).
         app.search_jump(true);
         assert_eq!(app.selected, 2);
+        // Position is reported as (current match, total matches).
+        assert_eq!(app.search_position(), Some((Some(2), 2)));
         app.search_jump(true); // wraps back to the first match
         assert_eq!(app.selected, 0);
+        assert_eq!(app.search_position(), Some((Some(1), 2)));
         app.search_jump(false); // previous wraps forward to the last match
         assert_eq!(app.selected, 2);
+        // Off a match, only the total is known.
+        app.selected = 1;
+        assert_eq!(app.search_position(), Some((None, 2)));
         // Matching is case-insensitive and spans values.
         app.apply_search("BOB".into());
         assert_eq!(app.selected, 1);
+        assert_eq!(app.search_position(), Some((Some(1), 1)));
         // Clearing removes the search.
         app.apply_search(String::new());
         assert!(app.search_query.is_empty());
+        assert_eq!(app.search_position(), None);
     }
 
     #[test]

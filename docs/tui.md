@@ -121,9 +121,9 @@ rows — every record stays visible, and the matched text is shown reversed in
 yellow. Matching is case-insensitive and looks anywhere in the record (any key
 or value). Type to highlight incrementally; **Enter** jumps to the first match at
 or after the selection, and **`n`** / **`N`** then jump to the next / previous
-matching record (wrapping around). The active query is shown in the status line
-(`/query`). Clear it with **Esc**, or by deleting the whole query and the `/`
-prefix.
+matching record (wrapping around). The active query and your position among the
+matches are shown in the status line (`/query 3/12 matches`). Clear it with
+**Esc**, or by deleting the whole query and the `/` prefix.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.
