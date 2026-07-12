@@ -209,31 +209,32 @@ fn mode_prefix(mode: &Mode) -> char {
     }
 }
 
-/// The idle input row: the view's status line — the active filter (`?…`) or "No
-/// filter" with a record count, plus the active search (`/…`) when set. This is
-/// the single place both are shown, so the bottom bar doesn't repeat them.
+/// The idle input row: the view's status line. The active search (`/…`) comes
+/// first, so it stays where you typed it in the input rather than jumping across
+/// the row; then the active filter (`?…`) or "No filter", then the record count.
+/// This is the single place both are shown, so the bottom bar doesn't repeat them.
 fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let mut spans = if app.filter_text.is_empty() {
-        vec![Span::styled(" No filter", dim)]
-    } else {
-        vec![
-            Span::styled(" ?", key),
-            Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)),
-        ]
-    };
-    spans.push(Span::styled(
-        format!("   ·   {}/{} records", app.view_len(), app.total()),
-        dim,
-    ));
+    let mut spans = vec![Span::raw(" ")];
     if !app.search_query.is_empty() {
-        spans.push(Span::styled("   ·   /", key));
+        spans.push(Span::styled("/", key));
         spans.push(Span::styled(
             app.search_query.clone(),
             Style::default().fg(Color::Black).bg(SEARCH_HL),
         ));
+        spans.push(Span::styled("   ·   ", dim));
     }
+    if app.filter_text.is_empty() {
+        spans.push(Span::styled("No filter", dim));
+    } else {
+        spans.push(Span::styled("?", key));
+        spans.push(Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)));
+    }
+    spans.push(Span::styled(
+        format!("   ·   {}/{} records", app.view_len(), app.total()),
+        dim,
+    ));
     f.render_widget(
         Paragraph::new(truncate_line(Line::from(spans), inner.width as usize)),
         inner,
