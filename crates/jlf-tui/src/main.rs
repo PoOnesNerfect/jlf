@@ -170,11 +170,27 @@ fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
+    // Transient status messages ("search cleared", "N match", …) fade a few
+    // seconds after they appear so they don't linger. Tracked here (not in App)
+    // since it's purely a display concern; a new/changed message resets the clock.
+    const STATUS_TTL: Duration = Duration::from_secs(4);
+    let mut status_since: Option<std::time::Instant> = None;
+    let mut last_status = String::new();
     loop {
         app.drain_input();
         // Advance a running summary (folds a batch of records per frame, and
         // picks up newly-arrived ones) before drawing.
         app.tick_summary();
+        // Expire a transient status after STATUS_TTL; reset the clock whenever
+        // the message changes.
+        if app.status != last_status {
+            last_status = app.status.clone();
+            status_since = (!app.status.is_empty()).then(std::time::Instant::now);
+        } else if status_since.is_some_and(|t| t.elapsed() >= STATUS_TTL) {
+            app.status.clear();
+            last_status.clear();
+            status_since = None;
+        }
         // A forced repaint (Ctrl-L) clears any externally-corrupted cells that
         // ratatui's diff would otherwise leave untouched.
         if std::mem::take(&mut app.force_redraw) {
