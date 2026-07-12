@@ -15,7 +15,8 @@ streams by keeping memory bounded (see [Memory on long streams](#memory-on-long-
 - [Keys](#keys)
 - [Compact and expanded views](#compact-and-expanded-views)
 - [Scrolling](#scrolling)
-- [Filter and search](#filter-and-search)
+- [Search](#search)
+- [Filter](#filter)
 - [Commands](#commands)
 - [The Actions panel](#the-actions-panel)
 - [Summaries](#summaries)
@@ -50,14 +51,14 @@ returns cleanly.
 - **Detail pane** — opened with `Enter`, shows the selected record as
   syntax-highlighted, pretty-printed JSON.
 - **Input box** — a framed box below the list. While idle it's the view's status
-  line: the active filter with its `/` prefix (or "No filter") and a
-  `matched/total records` count. While you're typing a `/` search or `:` command
-  it holds that input and its completion candidates. Commands (`:`) don't persist
-  here — they produce a summary popup or a status message, and the box returns to
-  the status line.
+  line: the active filter with its `?` prefix (or "No filter"), a
+  `matched/total records` count, and the active search (`/query`) when set. While
+  you're typing a `/` search, `?` filter, or `:` command it holds that input and
+  its completion candidates. Commands (`:`) don't persist here — they produce a
+  summary popup or a status message, and the box returns to the status line.
 - **Bottom bar** — the app badge, the follow state, any transient message, and
-  the key hints. While you're typing a `/` search or `:` command it swaps in that
-  mode's hints. (The filter and record count live in the input box above.)
+  the key hints. While you're typing it swaps in that mode's hints. (The filter,
+  search, and record count live in the input box above.)
 
 ## Keys
 
@@ -72,10 +73,12 @@ returns cleanly.
 | `c` | toggle compact / expanded rows |
 | `f` | toggle follow (auto-scroll to the newest record) |
 | `a` | open the **Actions** panel |
-| `/` | filter / search |
+| `/` | search (highlight matches, keep every row) |
+| `n` / `N` | jump to the next / previous search match |
+| `?` | filter (narrow to matching rows) |
 | `:` | command |
-| `?` | help overlay |
-| `Esc` | close a popup, then clear the filter |
+| `h` | help overlay |
+| `Esc` | close a popup, then clear the search, then the filter |
 | `Ctrl-L` | force a full redraw |
 | `q`, `Ctrl-C` | quit |
 
@@ -111,22 +114,37 @@ A record taller than the viewport is shown from its top.
 A scrollbar on the list's right edge marks the selected record's position in the
 whole stream. It appears only when the records don't all fit on screen.
 
-## Filter and search
+## Search
 
-Press `/` to filter. The input mixes two kinds of token:
+Press `/` to search. Search **highlights** matching text without hiding any
+rows — every record stays visible, and the matched text is shown reversed in
+yellow. Matching is case-insensitive and looks anywhere in the record (any key
+or value). Type to highlight incrementally; **Enter** jumps to the first match at
+or after the selection, and **`n`** / **`N`** then jump to the next / previous
+matching record (wrapping around). The active query is shown in the status line
+(`/query`). Clear it with **Esc**, or by deleting the whole query and the `/`
+prefix.
+
+Search and filter are independent and compose: a search highlights within the
+current (possibly filtered) view.
+
+## Filter
+
+Press `?` to filter — this **narrows** the view to matching records. The input
+mixes two kinds of token:
 
 - **Structured filters** — `field op value`, with operators `=`, `!=`, `>`,
   `>=`, `<`, `<=`, `~` (contains), `!~` (does not contain). Example:
-  `/level=error status>=500`. Numeric operators (and `stats`) read a leading
+  `?level=error status>=500`. Numeric operators (and `stats`) read a leading
   number from the value, so a unit-suffixed field like `"6.193 ms"` compares and
   aggregates as `6.193`. Non-numeric values fall back to timestamp comparison
   across the common log formats (ISO 8601 / RFC 3339, RFC 2822, Apache
-  common-log, log4j, month-name, syslog), so `/ts>2026-07-11T15:00:00Z` (or a
-  partial bound like `/ts>2026-07-11`) filters by time.
+  common-log, log4j, month-name, syslog), so `?ts>2026-07-11T15:00:00Z` (or a
+  partial bound like `?ts>2026-07-11`) filters by time.
 - **Bare words** — any token that isn't a `field op value` matches anywhere in
-  the raw record text, case-insensitively. Example: `/timeout`.
+  the raw record text, case-insensitively. Example: `?timeout`.
 
-You can combine them: `/level=error timeout` keeps error records that also
+You can combine them: `?level=error timeout` keeps error records that also
 mention `timeout`. Multiple structured filters are ANDed.
 
 The input autocompletes field paths (including nested and array paths like
@@ -136,18 +154,18 @@ fills successive candidates so **Enter** applies immediately; **Shift-Tab** /
 **↑** steps back and, past the first item, restores what you typed. **Esc**
 exits the input; editing the text deselects.
 
-While typing a `/` search or `:` command you can move and edit anywhere in the
-line with the usual terminal keys: **←/→** move by character, **Ctrl-←/→** or
-**Alt-←/→** (also **Alt-B/F**) move by word, **Home**/**Ctrl-A** and
-**End**/**Ctrl-E** jump to the start/end. **Backspace** and **Delete** remove the
-character before/after the cursor, **Ctrl-W** deletes the word before it,
+While typing a `/` search, `?` filter, or `:` command you can move and edit
+anywhere in the line with the usual terminal keys: **←/→** move by character,
+**Ctrl-←/→** or **Alt-←/→** (also **Alt-B/F**) move by word, **Home**/**Ctrl-A**
+and **End**/**Ctrl-E** jump to the start/end. **Backspace** and **Delete** remove
+the character before/after the cursor, **Ctrl-W** deletes the word before it,
 **Ctrl-U** clears to the start, and **Ctrl-K** clears to the end. Backspace (or
-Ctrl-W) on an empty input deletes the `/`/`:` prefix and leaves the field —
-and for a `/` filter that also clears the applied filter, so deleting the whole
-thing means "no filter". (**Esc** cancels instead, keeping whatever filter was
-already applied.)
+Ctrl-W) on an empty input deletes the `?`/`/`/`:` prefix and leaves the field —
+and for a `?` filter or `/` search that also clears it, so deleting the whole
+thing means "none". (**Esc** cancels instead, keeping whatever was already
+applied.)
 
-Filters and search apply across the whole stream, including records that have
+Filters and searches apply across the whole stream, including records that have
 spilled to disk — not just what's currently in memory.
 
 ## Commands

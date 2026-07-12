@@ -282,8 +282,9 @@ jlf-tui app.log level=error   # start with a filter applied
 
 Layout: a colored record list, an optional detail pane (**Enter** toggles it)
 showing the selected record as syntax-highlighted JSON, and a single bottom bar
-with the follow state, position, filter, any transient message, and the key hints
-(or the `/` search / `:` command input while you're typing one). The list is one
+with the follow state, any transient message, and the key hints (or the input
+line while you're typing a `/` search, `?` filter, or `:` command). The active
+filter, search, and record count show in the framed input box. The list is one
 dense line per record by default; **`c`** expands it to the full multi-line
 rendering (header + pretty data), like piped `jlf`.
 
@@ -298,10 +299,12 @@ rendering (header + pretty data), like piped `jlf`.
 | `f` | toggle follow (auto-scroll to newest) |
 | `c` | compact / expand the record rows |
 | `a` | **Actions** panel — summaries, export, save-as-recipe |
-| `/` | filter / search (see below) |
+| `/` | search — highlight matches (see below) |
+| `n`/`N` | next / previous search match |
+| `?` | filter — narrow to matching rows (see below) |
 | `:` | command (see below) |
-| `?` | help overlay |
-| `Esc` | close a popup, or clear the filter |
+| `h` | help overlay |
+| `Esc` | close a popup, then clear the search, then the filter |
 | `q` | quit |
 
 **Memory over long streams.** A viewer that held every line would grow without
@@ -312,14 +315,20 @@ visible edges so scrolling stays smooth). Memory stays bounded no matter how lon
 the stream runs; the temp file is removed on exit. Summaries and filters still
 cover the **whole** stream (memory and file), not just what's in RAM.
 
-**Filter and search** (`/`): tokens shaped like `field=value` (operators `=`,
-`!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter structurally; **bare words** match
-anywhere in the raw record, and you can mix them (`/level=error timeout`). It
-autocompletes field paths (nested and array ones like `fields.status`,
-`spans.0.method`), then operators, then that field's values. Nothing is selected
-until you press **Tab/↓**, which selects and fills successive candidates (so
-**Enter** applies immediately); **Shift-Tab/↑** steps back, returning to what you
-typed past the first item; **Esc** exits.
+**Search** (`/`): highlights matching text anywhere in a record (any key or
+value, case-insensitive) **without hiding rows** — every record stays visible and
+the matched text is highlighted. **`n`/`N`** jump to the next/previous matching
+record. Type to highlight incrementally; **Enter** jumps to the first match.
+
+**Filter** (`?`): **narrows** to matching records. Tokens shaped like
+`field=value` (operators `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter
+structurally; **bare words** match anywhere in the raw record, and you can mix
+them (`?level=error timeout`). It autocompletes field paths (nested and array
+ones like `fields.status`, `spans.0.method`), then operators, then that field's
+values. Nothing is selected until you press **Tab/↓**, which selects and fills
+successive candidates (so **Enter** applies immediately); **Shift-Tab/↑** steps
+back, returning to what you typed past the first item; **Esc** exits. Search and
+filter compose — a search highlights within the filtered view.
 
 **Commands** (`:`) also autocomplete (the verb, then a field). Available:
 `count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`,
@@ -333,8 +342,9 @@ with a group-by field, export as csv/tsv/md, or **save the current filter and
 redaction as a `[recipe.NAME]`** in your workspace config — reusable from the CLI
 as `jlf @name`.
 
-For example: `/error` to search, `Enter` to inspect a record, then `a` → "Stats"
-→ pick a field, or `:save errors` to keep the view as a recipe.
+For example: `/error` to highlight errors and `n` to jump between them, `Enter`
+to inspect a record, then `a` → "Stats" → pick a field, or `:save errors` to keep
+the view as a recipe.
 
 See **[docs/tui.md](docs/tui.md)** for the full viewer reference.
 

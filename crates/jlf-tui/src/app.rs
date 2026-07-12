@@ -34,7 +34,9 @@ pub const ACTIONS: [(&str, &str); 9] = [
 #[derive(PartialEq)]
 pub enum Mode {
     Normal,
-    /// Typing a filter expression (`/`).
+    /// Typing a filter expression (`?`) — narrows the view.
+    Filter,
+    /// Typing a search query (`/`) — highlights matches without hiding rows.
     Search,
     /// Typing a `:` command.
     Command,
@@ -95,6 +97,9 @@ pub struct App {
     /// motion (arrows, word jumps, Home/End) all act relative to it.
     pub input_cursor: usize,
     pub filter_text: String,
+    /// The active search query (`/`): matched text is highlighted in the list and
+    /// `n`/`N` jump between matching records. Empty means no search.
+    pub search_query: String,
     pub status: String,
     /// The rendered summary panel, if one is open.
     pub summary: Option<Summary>,
@@ -175,6 +180,7 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             filter_text: String::new(),
+            search_query: String::new(),
             status: String::new(),
             summary: None,
             summary_job: None,
@@ -332,16 +338,131 @@ impl App {
 
     // ----- search autocomplete ---------------------------------------------
 
-    /// Enter search mode: seed the input from the active filter and build the
-    /// field catalog from the loaded records.
-    pub fn enter_search(&mut self) {
-        self.mode = Mode::Search;
+    /// Enter filter mode (`?`): seed the input from the active filter and build
+    /// the field catalog from the loaded records so completion works.
+    pub fn enter_filter(&mut self) {
+        self.mode = Mode::Filter;
         self.input = self.filter_text.clone();
         self.input_cursor = self.input.chars().count();
         let recent = self.recent(2000);
         self.catalog = Catalog::from_lines(&recent, 2000);
         self.sug_cycle = None;
         self.refresh_suggestions();
+    }
+
+    /// Enter search mode (`/`): seed the input from the active query. Search
+    /// highlights matches and jumps between them without hiding rows.
+    pub fn enter_search(&mut self) {
+        self.mode = Mode::Search;
+        self.input = self.search_query.clone();
+        self.input_cursor = self.input.chars().count();
+        self.sug_cycle = None;
+        self.sug.clear();
+    }
+
+    /// Commit `query` as the active search and jump to the first match at or
+    /// after the current selection. An empty query clears the search.
+    pub fn apply_search(&mut self, query: String) {
+        self.search_query = query;
+        if self.search_query.is_empty() {
+            self.status = "search cleared".into();
+            return;
+        }
+        // Jump to the first match at or after the current selection — staying put
+        // if the current record already matches.
+        let needle = self.search_query.to_lowercase();
+        if self.record_matches_search(self.selected, &needle) {
+            self.status = "search set".into();
+            return;
+        }
+        match self.find_match(self.selected, true, true) {
+            Some(pos) => {
+                self.select(pos);
+                self.status = "search set".into();
+            }
+            None => self.status = "no matches".into(),
+        }
+    }
+
+    /// The text currently driving highlighting: the live input while typing a
+    /// search, otherwise the committed query. Empty when neither is active.
+    pub fn search_needle(&self) -> &str {
+        match self.mode {
+            Mode::Search => &self.input,
+            _ => &self.search_query,
+        }
+    }
+
+    /// Whether record at view position `pos` contains the search query (matched
+    /// case-insensitively against its raw text — any key or value).
+    fn record_matches_search(&self, pos: usize, needle_lower: &str) -> bool {
+        self.record(pos)
+            .is_some_and(|rec| rec.to_lowercase().contains(needle_lower))
+    }
+
+    /// The next view position matching the search, scanning from `from` in the
+    /// given direction (optionally wrapping). `from` itself is included only
+    /// when it's the sole candidate on a wrap.
+    fn find_match(&self, from: usize, forward: bool, wrap: bool) -> Option<usize> {
+        let len = self.view_len();
+        if len == 0 || self.search_query.is_empty() {
+            return None;
+        }
+        let needle = self.search_query.to_lowercase();
+        let step = |p: usize| -> Option<usize> {
+            if forward {
+                (p + 1 < len).then(|| p + 1)
+            } else {
+                p.checked_sub(1)
+            }
+        };
+        let mut p = from;
+        while let Some(next) = step(p) {
+            if self.record_matches_search(next, &needle) {
+                return Some(next);
+            }
+            p = next;
+        }
+        if wrap {
+            // Wrap to the far end and scan back toward `from` (inclusive).
+            let mut p = if forward { 0 } else { len - 1 };
+            loop {
+                if self.record_matches_search(p, &needle) {
+                    return Some(p);
+                }
+                if p == from {
+                    break;
+                }
+                match step(p) {
+                    Some(next) => p = next,
+                    None => break,
+                }
+            }
+        }
+        None
+    }
+
+    /// Jump to the next (`n`) or previous (`N`) record matching the search.
+    pub fn search_jump(&mut self, forward: bool) {
+        if self.search_query.is_empty() {
+            self.status = "no active search".into();
+            return;
+        }
+        match self.find_match(self.selected, forward, true) {
+            Some(pos) => self.select(pos),
+            None => self.status = "no matches".into(),
+        }
+    }
+
+    /// Move the selection to view position `pos`, updating follow/detail state
+    /// the same way keyboard navigation does.
+    fn select(&mut self, pos: usize) {
+        if self.view_len() == 0 {
+            return;
+        }
+        self.selected = pos.min(self.view_len() - 1);
+        self.follow = self.selected + 1 == self.view_len();
+        self.detail_scroll = 0;
     }
 
     /// Enter command mode: start empty and immediately offer the command list so
@@ -527,7 +648,7 @@ impl App {
 
     fn after_input_change(&mut self) {
         self.sug_cycle = None;
-        if matches!(self.mode, Mode::Search | Mode::Command) {
+        if matches!(self.mode, Mode::Filter | Mode::Command) {
             self.refresh_suggestions();
         }
     }
@@ -573,7 +694,7 @@ impl App {
     }
 
     pub fn suggestions_visible(&self) -> bool {
-        matches!(self.mode, Mode::Search | Mode::Command) && !self.sug.is_empty()
+        matches!(self.mode, Mode::Filter | Mode::Command) && !self.sug.is_empty()
     }
 
     /// The candidate list to display and the highlighted index (None until Tab
@@ -938,6 +1059,29 @@ mod tests {
         assert_eq!(app.view_len(), 2);
         app.apply_filter(String::new());
         assert_eq!(app.view_len(), 3);
+    }
+
+    #[test]
+    fn search_highlights_without_narrowing_and_navigates() {
+        let mut app = app_with(SAMPLE);
+        app.selected = 0;
+        // Search keeps every row (unlike filter) and jumps to the first match.
+        app.apply_search("alice".into());
+        assert_eq!(app.view_len(), 3, "search must not hide rows");
+        assert_eq!(app.selected, 0); // record 0 (alice) already matches
+        // n / N walk between matching records (records 0 and 2 have alice).
+        app.search_jump(true);
+        assert_eq!(app.selected, 2);
+        app.search_jump(true); // wraps back to the first match
+        assert_eq!(app.selected, 0);
+        app.search_jump(false); // previous wraps forward to the last match
+        assert_eq!(app.selected, 2);
+        // Matching is case-insensitive and spans values.
+        app.apply_search("BOB".into());
+        assert_eq!(app.selected, 1);
+        // Clearing removes the search.
+        app.apply_search(String::new());
+        assert!(app.search_query.is_empty());
     }
 
     #[test]

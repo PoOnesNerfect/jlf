@@ -226,7 +226,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 handle_normal(app, code);
             }
         }
-        Mode::Search | Mode::Command => handle_input(app, code, mods),
+        Mode::Filter | Mode::Search | Mode::Command => handle_input(app, code, mods),
     }
 }
 
@@ -279,9 +279,13 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('f') => app.toggle_follow(),
         KeyCode::Char('c') => app.expanded = !app.expanded,
         KeyCode::Char('a') => app.open_actions(),
-        KeyCode::Char('?') => app.help = !app.help,
+        KeyCode::Char('h') => app.help = !app.help,
         KeyCode::Char('/') => app.enter_search(),
+        KeyCode::Char('?') => app.enter_filter(),
         KeyCode::Char(':') => app.enter_command(),
+        // n / N jump to the next / previous record matching the active search.
+        KeyCode::Char('n') => app.search_jump(true),
+        KeyCode::Char('N') => app.search_jump(false),
         // Enter opens/closes the detail pane for the selected record.
         KeyCode::Enter => {
             app.show_detail = !app.show_detail;
@@ -294,6 +298,8 @@ fn handle_normal(app: &mut App, code: KeyCode) {
                 app.close_summary();
             } else if app.show_detail {
                 app.show_detail = false;
+            } else if !app.search_query.is_empty() {
+                app.apply_search(String::new());
             } else if !app.filter_text.is_empty() {
                 app.apply_filter(String::new());
             }
@@ -351,7 +357,8 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
             match app.mode {
-                Mode::Search => app.apply_filter(text),
+                Mode::Filter => app.apply_filter(text),
+                Mode::Search => app.apply_search(text),
                 Mode::Command => app.run_command(&text),
                 Mode::Normal => {}
             }
@@ -367,16 +374,16 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::End => app.input_end(),
         KeyCode::Delete => app.input_delete_forward(),
         // Backspace deletes the char before the cursor; on an empty input it
-        // deletes the `/`/`:` prefix — i.e. exits the mode.
+        // deletes the `?`/`/`/`:` prefix — i.e. exits the mode.
         KeyCode::Backspace => input_backspace_or_exit(app),
         KeyCode::Char(c) => app.input_char(c),
         _ => {}
     }
 }
 
-/// Backspace when there's text, else delete the visual `/`/`:` prefix — which
-/// leaves the field. Deleting the whole `/` filter this way clears the applied
-/// filter (an empty filter means "no filter"), rather than keeping the old one.
+/// Backspace when there's text, else delete the visual prefix — which leaves the
+/// field. Deleting the whole `?` filter or `/` search this way clears it (empty
+/// means none), rather than keeping the previously-applied one.
 fn input_backspace_or_exit(app: &mut App) {
     if app.input.is_empty() {
         exit_search_or_command(app);
@@ -385,12 +392,14 @@ fn input_backspace_or_exit(app: &mut App) {
     }
 }
 
-/// Leave search/command mode. If a `/` filter was applied, deleting out of the
-/// field clears it so the view is unfiltered again. (Esc, by contrast, cancels
-/// the edit and keeps whatever filter was already applied.)
+/// Leave the input field. Deleting out of an applied `?` filter or `/` search
+/// clears it so the view/highlight resets. (Esc, by contrast, cancels the edit
+/// and keeps whatever was already applied.)
 fn exit_search_or_command(app: &mut App) {
-    if matches!(app.mode, Mode::Search) && !app.filter_text.is_empty() {
-        app.apply_filter(String::new());
+    match app.mode {
+        Mode::Filter if !app.filter_text.is_empty() => app.apply_filter(String::new()),
+        Mode::Search if !app.search_query.is_empty() => app.apply_search(String::new()),
+        _ => {}
     }
     app.mode = Mode::Normal;
 }

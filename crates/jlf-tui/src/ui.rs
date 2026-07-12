@@ -82,11 +82,15 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "  g/G       top / bottom     J/K  jump 7 / scroll detail",
         "  a         actions panel    f    follow on / off",
         "  c         compact / expand rows",
-        "  /         filter / search  :    command",
-        "  ?         this help        q    quit",
-        "  Esc       close popup / clear filter        ^L   redraw",
+        "  /         search           n/N  next / prev match",
+        "  ?         filter           :    command",
+        "  h         this help        q    quit",
+        "  Esc       close popup / clear search / clear filter    ^L  redraw",
         "",
-        "Filter / search  (press /)",
+        "Search  (press /)  — highlights matches, keeps every row",
+        "  matches text anywhere in a record (key or value); n/N jump between hits",
+        "",
+        "Filter  (press ?)  — narrows to matching rows",
         "  field=value   op: = != > >= < <= ~ !~   (e.g. level=error)",
         "  bare words    match anywhere in the record (e.g. timeout)",
         "",
@@ -132,7 +136,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
 /// it. Idle it's an empty titled frame, so the reserved space reads as a
 /// deliberate input area rather than blank rows.
 fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
-    let active = matches!(app.mode, Mode::Search | Mode::Command);
+    let active = matches!(app.mode, Mode::Filter | Mode::Search | Mode::Command);
     let border = if active { Color::Cyan } else { Color::DarkGray };
 
     // The top border row: the candidates while cycling, else a label.
@@ -151,18 +155,23 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         Line::from(spans)
     } else {
         match app.mode {
-            Mode::Search => Line::from(Span::styled(" filter ", Style::default().fg(border))),
+            Mode::Search => Line::from(Span::styled(" search ", Style::default().fg(border))),
+            Mode::Filter => Line::from(Span::styled(" filter ", Style::default().fg(border))),
             Mode::Command => Line::from(Span::styled(" command ", Style::default().fg(border))),
             // Show the keys as distinct, bracketed tokens so it's clear each is a
             // key to press, not part of the sentence.
             Mode::Normal => {
                 let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
                 let dim = Style::default().fg(Color::DarkGray);
+                let sep = || Span::styled("  ·  [", dim);
                 Line::from(vec![
                     Span::styled(" [", dim),
                     Span::styled("/", key),
+                    Span::styled("] search", dim),
+                    sep(),
+                    Span::styled("?", key),
                     Span::styled("] filter", dim),
-                    Span::styled("  ·  [", dim),
+                    sep(),
                     Span::styled(":", key),
                     Span::styled("] command ", dim),
                 ])
@@ -177,44 +186,65 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     if !active {
-        // Idle: the input row is the view's status line — the active filter (with
-        // the `/` prefix you type it with) or "No filter", then the record count.
-        // This is the single place that shows what's narrowing the view and how
-        // many match, so the bottom bar doesn't repeat it.
-        let dim = Style::default().fg(Color::DarkGray);
-        let count = Span::styled(format!("{}/{} records", app.view_len(), app.total()), dim);
-        let mut spans = if app.filter_text.is_empty() {
-            vec![Span::styled(" No filter", dim)]
-        } else {
-            vec![
-                Span::styled(" /", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)),
-            ]
-        };
-        spans.push(Span::styled("   ·   ", dim));
-        spans.push(count);
-        f.render_widget(
-            Paragraph::new(truncate_line(Line::from(spans), inner.width as usize)),
-            inner,
-        );
+        draw_status_line(f, app, inner);
         return;
     }
-    let input = match app.mode {
-        Mode::Search => format!("/{}", app.input),
-        Mode::Command => format!(":{}", app.input),
-        Mode::Normal => String::new(),
-    };
-    let prefix = 1u16; // the `/` or `:`
+    let prefix = mode_prefix(&app.mode);
+    let input = format!("{prefix}{}", app.input);
     f.render_widget(Paragraph::new(Line::from(input)), inner);
     // Place a real terminal cursor at the edit position so it's clear where
     // typing and deletion will happen.
-    let cursor_x = (inner.x + prefix + app.input_cursor as u16)
+    let cursor_x = (inner.x + 1 + app.input_cursor as u16)
         .min(inner.x + inner.width.saturating_sub(1));
     f.set_cursor_position((cursor_x, inner.y));
 }
 
+/// The `?`/`/`/`:` prefix character shown before an active input.
+fn mode_prefix(mode: &Mode) -> char {
+    match mode {
+        Mode::Search => '/',
+        Mode::Filter => '?',
+        Mode::Command => ':',
+        Mode::Normal => ' ',
+    }
+}
+
+/// The idle input row: the view's status line — the active filter (`?…`) or "No
+/// filter" with a record count, plus the active search (`/…`) when set. This is
+/// the single place both are shown, so the bottom bar doesn't repeat them.
+fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let mut spans = if app.filter_text.is_empty() {
+        vec![Span::styled(" No filter", dim)]
+    } else {
+        vec![
+            Span::styled(" ?", key),
+            Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)),
+        ]
+    };
+    spans.push(Span::styled(
+        format!("   ·   {}/{} records", app.view_len(), app.total()),
+        dim,
+    ));
+    if !app.search_query.is_empty() {
+        spans.push(Span::styled("   ·   /", key));
+        spans.push(Span::styled(
+            app.search_query.clone(),
+            Style::default().fg(Color::Black).bg(SEARCH_HL),
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(truncate_line(Line::from(spans), inner.width as usize)),
+        inner,
+    );
+}
+
+/// The highlight color for search matches (in the list and the status line).
+const SEARCH_HL: Color = Color::Yellow;
+
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · g/G top/bottom · d/u page · ⏎ detail · c expand · a actions · ? help · q quit";
+const HINT: &str = "↑↓ move · / search · n/N next · ? filter · c expand · a actions · h help · q quit";
 
 /// The bottom bar: the app badge, follow state, and a transient message, then
 /// the key-hint section (completion help while typing a `/` filter or `:`
@@ -233,9 +263,11 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow),
         ));
     }
-    // The hint section: the completion help while typing, else the key hints.
+    // The hint section: completion help while filtering/commanding, a search
+    // hint while searching, else the normal key hints.
     let hints = match app.mode {
-        Mode::Search | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
+        Mode::Filter | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
+        Mode::Search => "⏎ jump to match · Esc cancel",
         Mode::Normal => HINT,
     };
     spans.push(Span::styled(
@@ -287,10 +319,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     app.prefetch(top.saturating_sub(1));
     app.prefetch(end);
 
+    let needle = app.search_needle();
     let items: Vec<ListItem> = (top..end)
         .filter_map(|pos| app.record(pos))
         .map(|rec| {
-            let line = ansi_line(app.render_row(&rec));
+            let line = highlight_line(ansi_line(app.render_row(&rec)), needle);
             ListItem::new(truncate_line(line, width))
         })
         .collect();
@@ -366,6 +399,7 @@ fn draw_list_expanded(
 
     let inner_w = area.width.saturating_sub(2) as usize;
     let bar = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let needle = app.search_needle();
 
     use std::rc::Rc;
     // A record's content lines plus whether its template asked for a trailing
@@ -391,8 +425,9 @@ fn draw_list_expanded(
         let lines: Vec<Line> = body
             .split('\n')
             .map(|raw| {
+                let content = highlight_line(ansi_line(raw.to_owned()), needle);
                 let mut spans = vec![gutter()];
-                spans.extend(truncate_line(ansi_line(raw.to_owned()), inner_w.saturating_sub(2)).spans);
+                spans.extend(truncate_line(content, inner_w.saturating_sub(2)).spans);
                 Line::from(spans)
             })
             .collect();
@@ -598,6 +633,64 @@ fn ansi_line(s: String) -> Line<'static> {
     ansi_text(s).lines.into_iter().next().unwrap_or_default()
 }
 
+/// Highlight case-insensitive occurrences of `needle` in a styled line by
+/// splitting spans at match boundaries and overlaying the search style on the
+/// matched characters (keeping their surrounding colors). ASCII-lowercasing
+/// keeps a 1:1 char count so match positions line up with the original spans.
+fn highlight_line(line: Line<'static>, needle: &str) -> Line<'static> {
+    if needle.is_empty() {
+        return line;
+    }
+    let needle: Vec<char> = needle.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let lower: Vec<char> = line
+        .spans
+        .iter()
+        .flat_map(|s| s.content.chars())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if lower.len() < needle.len() {
+        return line;
+    }
+    // Mark each char position that falls inside a (non-overlapping) match.
+    let mut matched = vec![false; lower.len()];
+    let mut found = false;
+    let mut i = 0;
+    while i + needle.len() <= lower.len() {
+        if lower[i..i + needle.len()] == needle[..] {
+            matched[i..i + needle.len()].fill(true);
+            found = true;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    if !found {
+        return line;
+    }
+    let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
+    // Rebuild spans, breaking each where the matched flag flips.
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut pos = 0;
+    for span in line.spans {
+        let mut seg = String::new();
+        let mut seg_matched = false;
+        for c in span.content.chars() {
+            if !seg.is_empty() && matched[pos] != seg_matched {
+                let style = if seg_matched { span.style.patch(hl) } else { span.style };
+                out.push(Span::styled(std::mem::take(&mut seg), style));
+            }
+            seg_matched = matched[pos];
+            seg.push(c);
+            pos += 1;
+        }
+        if !seg.is_empty() {
+            let style = if seg_matched { span.style.patch(hl) } else { span.style };
+            out.push(Span::styled(seg, style));
+        }
+    }
+    Line::from(out)
+}
+
 /// Clip a styled line to `max` columns, appending an ellipsis (preserving the
 /// per-span styles/colors so truncation keeps the record colored).
 fn truncate_line(line: Line<'static>, max: usize) -> Line<'static> {
@@ -670,6 +763,29 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::sync::mpsc::channel;
+
+    #[test]
+    fn highlight_splits_spans_on_matches() {
+        // "abcABCxyz" searching "abc" (case-insensitive) matches the first two
+        // runs; being adjacent they merge into one highlighted span, then "xyz".
+        let line = Line::from(vec![Span::raw("abcABCxyz")]);
+        let out = highlight_line(line, "abc");
+        let texts: Vec<String> = out.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(texts, vec!["abcABC", "xyz"]);
+        let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
+        assert_eq!(out.spans[0].style, hl);
+        assert_eq!(out.spans[1].style, Style::default());
+    }
+
+    #[test]
+    fn highlight_no_match_is_unchanged() {
+        let line = Line::from(vec![Span::raw("hello"), Span::raw("world")]);
+        let out = highlight_line(line, "zzz");
+        assert_eq!(out.spans.len(), 2);
+        // An empty needle is also a no-op.
+        let line = Line::from(vec![Span::raw("hello")]);
+        assert_eq!(highlight_line(line, "").spans.len(), 1);
+    }
 
     fn buffer_text(lines: &[&str]) -> String {
         render_app(lines, |_| {})
