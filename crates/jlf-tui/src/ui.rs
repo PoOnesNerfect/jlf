@@ -251,11 +251,19 @@ const HINT: &str = "↑↓ move · / search · n/N next · ? filter · c expand 
 /// command, else the normal keys). The active filter and record count live in
 /// the input box above (see [`draw_input_section`]), so they aren't repeated here.
 fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
-    let follow = if app.follow { "● follow" } else { "‖ paused" };
-    let mut spans = vec![
-        Span::styled(" jlf-tui ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(format!("  {follow}")),
-    ];
+    let mut spans = vec![Span::styled(
+        " jlf-tui ",
+        Style::default().fg(Color::Black).bg(Color::Cyan),
+    )];
+    // Follow state: a green dot while auto-scrolling to the newest record, a red
+    // bar when paused.
+    if app.follow {
+        spans.push(Span::styled("  ● ", Style::default().fg(Color::Green)));
+        spans.push(Span::raw("follow"));
+    } else {
+        spans.push(Span::styled("  ‖ ", Style::default().fg(Color::Red)));
+        spans.push(Span::raw("paused"));
+    }
     // Transient feedback (filter cleared, N match, errors, saved…).
     if !app.status.is_empty() {
         spans.push(Span::styled(
