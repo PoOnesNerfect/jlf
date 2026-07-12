@@ -125,6 +125,11 @@ matching record (wrapping around). The active query and your position among the
 matches are shown in the status line (`/query 3/12 matches`). Clear it with
 **Esc**, or by deleting the whole query and the `/` prefix.
 
+`n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
+is shown only while the view is small enough to scan cheaply (~100k records); on
+a larger view the count is omitted rather than shown partially, but navigation
+still works.
+
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.
 

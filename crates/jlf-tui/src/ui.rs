@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, Mode};
+use crate::app::{App, MatchCount, Mode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Fixed layout: the list (+ optional detail), then a framed input box, then
@@ -224,12 +224,16 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
             Style::default().fg(Color::Black).bg(SEARCH_HL),
         ));
         // The current match position out of the total, so `n`/`N` progress is
-        // visible (just the total when the selection isn't on a match).
-        if let Some((current, total)) = app.search_position() {
-            let label = match current {
-                Some(i) => format!(" {i}/{total} matches"),
-                None => format!(" {total} matches"),
-            };
+        // visible. Just the total when the selection isn't on a match; nothing
+        // when the view is too large to count cheaply.
+        let label = match app.search_position() {
+            Some(MatchCount::Counted { current: Some(i), total }) => {
+                Some(format!(" {i}/{total} matches"))
+            }
+            Some(MatchCount::Counted { current: None, total }) => Some(format!(" {total} matches")),
+            _ => None,
+        };
+        if let Some(label) = label {
             spans.push(Span::styled(label, dim));
         }
         spans.push(Span::styled("   ·   ", dim));
