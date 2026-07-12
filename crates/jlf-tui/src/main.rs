@@ -173,7 +173,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
     // Transient status messages ("search cleared", "N match", …) fade a few
     // seconds after they appear so they don't linger. Tracked here (not in App)
     // since it's purely a display concern; a new/changed message resets the clock.
-    const STATUS_TTL: Duration = Duration::from_secs(4);
+    const STATUS_TTL: Duration = Duration::from_secs(2);
     let mut status_since: Option<std::time::Instant> = None;
     let mut last_status = String::new();
     loop {
