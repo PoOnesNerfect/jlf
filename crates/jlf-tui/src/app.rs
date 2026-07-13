@@ -65,6 +65,13 @@ fn is_word_break(c: char) -> bool {
 /// store progresses across frames instead of freezing the UI.
 const SUMMARY_BATCH: usize = 50_000;
 
+/// How many newly-arrived records to ingest per frame. Bounds the per-frame work
+/// during a burst (opening a huge file) so the UI keeps painting — the record
+/// count climbs visibly as a natural progress indicator — instead of blocking one
+/// frame until the whole stream is read. ~50k keeps a frame's ingest well under
+/// ~10ms even with disk spilling.
+const DRAIN_BATCH: usize = 50_000;
+
 /// The largest view (in records) for which search shows a match count. Beyond
 /// this a full scan would page the spilled store from disk, so the count is
 /// omitted rather than computed (or partially — and misleadingly — scanned);
@@ -230,9 +237,18 @@ impl App {
 
     /// Drain any lines the reader thread produced since the last tick. Returns
     /// true if at least one new record arrived (so the caller can redraw).
-    pub fn drain_input(&mut self) -> bool {
+    /// Ingest newly-arrived records, at most [`DRAIN_BATCH`] per call so a burst
+    /// (e.g. opening a million-line file) fills the view progressively across
+    /// frames instead of blocking one frame for the whole stream. Returns
+    /// `(changed, more_pending)`: `more_pending` is true when the batch cap was
+    /// hit and the caller should loop again promptly rather than idle.
+    pub fn drain_input(&mut self) -> (bool, bool) {
         let mut changed = false;
-        while let Ok(line) = self.rx.try_recv() {
+        let mut count = 0;
+        while count < DRAIN_BATCH {
+            let Ok(line) = self.rx.try_recv() else {
+                break;
+            };
             let idx = self.store.len();
             let matched = self.passes(&line);
             self.store.push(line);
@@ -244,11 +260,12 @@ impl App {
                 }
             }
             changed = true;
+            count += 1;
         }
         if changed && self.follow {
             self.jump_to_bottom();
         }
-        changed
+        (changed, count == DRAIN_BATCH)
     }
 
     /// Whether `line` passes the active structured filters and plain-text search

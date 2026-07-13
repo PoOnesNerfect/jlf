@@ -177,7 +177,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
     let mut status_since: Option<std::time::Instant> = None;
     let mut last_status = String::new();
     loop {
-        app.drain_input();
+        let (_, more_input) = app.drain_input();
         // Advance a running summary (folds a batch of records per frame, and
         // picks up newly-arrived ones) before drawing.
         app.tick_summary();
@@ -198,9 +198,13 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
         }
         terminal.draw(|f| ui::draw(f, app))?;
 
-        // While a summary is still catching up, poll briefly so it finishes
-        // quickly; otherwise idle longer to stay cheap.
-        let timeout = if app.summary_computing() {
+        // Poll for input. During a big-file burst there's more buffered input to
+        // ingest, so don't block — loop immediately to keep filling and
+        // repainting (the count climbs as a progress cue). While a summary folds,
+        // poll briefly so it finishes fast without busy-spinning. Otherwise idle.
+        let timeout = if more_input {
+            Duration::from_millis(0)
+        } else if app.summary_computing() {
             Duration::from_millis(5)
         } else {
             Duration::from_millis(100)

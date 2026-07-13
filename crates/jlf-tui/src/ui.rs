@@ -485,7 +485,15 @@ fn draw_list_expanded(
     // Sticky scrolloff: start from the persisted top and only move it when the
     // cursor would leave the margin band, so moving within the viewport doesn't
     // scroll. Each pass is one-directional (terminates); order matters.
-    let mut top = app.scroll_top.get().min(app.selected);
+    //
+    // Clamp the starting `top` to at most `inner_h` records back from the
+    // selection: since every record is ≥1 row, no record earlier than that can
+    // be on screen, and this bounds the `above()` height sums to a viewport's
+    // worth of records. Without it, the first frame after a jump-to-bottom (or a
+    // `G` from the top) sums heights from 0 to the selection — rendering the
+    // whole buffer just to measure it (seconds on a large stream).
+    let floor = app.selected.saturating_sub(inner_h);
+    let mut top = app.scroll_top.get().clamp(floor, app.selected);
     // 1) Keep the selected block's bottom on screen (scroll down if it overflows;
     //    a block taller than the viewport shows from its own top).
     while top < app.selected && above(top) + sel_h > inner_h {
