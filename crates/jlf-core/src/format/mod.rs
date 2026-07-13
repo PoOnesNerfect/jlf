@@ -487,5 +487,33 @@ mod dsl_tests {
         assert!(bad(r#"${"oops}"#)); // unterminated
         assert!(bad(r#"${"x" foo}"#)); // trailing junk after the literal
     }
+
+    #[test]
+    fn ordering_comparisons_tolerate_unit_suffixes() {
+        // A numeric value with a unit suffix must compare by magnitude, not
+        // lexicographically. `$when(<150)` and a `$if` ordering op both apply.
+        let arm = r#"$match(fields.latency $when(<150 => lo) $else(hi))"#;
+        let lo = |v: &str| render(arm, &[], &format!(r#"{{"fields":{{"latency":"{v}"}}}}"#));
+        assert_eq!(lo("17.881 ms"), "lo"); // was "hi" (lexicographic bug)
+        assert_eq!(lo("8.972 ms"), "lo"); // was "hi"
+        assert_eq!(lo("144.306 ms"), "lo");
+        assert_eq!(lo("236.643 ms"), "hi");
+        // Ranges tolerate the suffix too.
+        let rng = r#"$match(fields.latency $when(0..150 => lo) $else(hi))"#;
+        assert_eq!(render(rng, &[], r#"{"fields":{"latency":"17.881 ms"}}"#), "lo");
+        // `$if` ordering op.
+        let cond = r#"$if(d > 100 => big)$else(small)"#;
+        assert_eq!(render(cond, &[], r#"{"d":"17.881 ms"}"#), "small");
+        assert_eq!(render(cond, &[], r#"{"d":"236.6 ms"}"#), "big");
+    }
+
+    #[test]
+    fn equality_stays_a_string_compare() {
+        // Equality must not go numeric on values that merely start with digits,
+        // or "2xx" would wrongly equal "2yy".
+        let t = r#"$if(code == "2xx" => match)$else(no)"#;
+        assert_eq!(render(t, &[], r#"{"code":"2xx"}"#), "match");
+        assert_eq!(render(t, &[], r#"{"code":"2yy"}"#), "no");
+    }
 }
 

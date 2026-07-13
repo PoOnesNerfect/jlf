@@ -161,8 +161,12 @@ break them across lines). The body follows `=>`.
 - `$if(X => body)` — **truthy** test. Empty strings, empty arrays/objects,
   `null`, a missing field, and `0` are false; everything else is true.
 - `$if(X OP literal => body)` — **comparison**. `OP` is `==`, `!=`, `>`, `>=`,
-  `<`, `<=`. Both sides compare numerically when they parse as numbers, otherwise
-  as text; quote a string literal. A missing/non-scalar field never matches.
+  `<`, `<=`. Ordering ops (`<`, `>`, `<=`, `>=`) compare by magnitude — reading a
+  leading number that tolerates a unit suffix like `"17.881 ms"`, then a
+  timestamp, else lexicographically — matching the CLI filter operators. Equality
+  (`==`/`!=`) is exact: numeric only when both sides are whole numbers, otherwise
+  a string compare (quote a string literal). A missing/non-scalar field never
+  matches. The same rules apply to `$when` comparison arms and numeric ranges.
 - `$has(FIELD => body)` — **existence** test. Unlike `$if`, a present-but-falsey
   value (`0`, `""`, `false`) still counts because the field is there.
 - `$config(FLAG => body)` — branch on a config/CLI flag: `compact`, `no_color`,

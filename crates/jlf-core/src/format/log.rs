@@ -553,18 +553,25 @@ fn test_cond2(cond: &Cond, json: &Json<'_>) -> bool {
     }
 }
 
-/// Evaluate `field OP literal`. Compares numerically when both sides parse as
-/// numbers, otherwise lexicographically. Objects/arrays never match.
+/// Evaluate `field OP literal`. Ordering ops (`<`,`>`,`<=`,`>=`) compare
+/// leniently — a leading number tolerating a unit suffix like the ` ms` in
+/// `"17.881 ms"`, then a timestamp, else lexicographically — matching the CLI
+/// filter operators. Equality (`==`/`!=`) stays exact: numeric only when both
+/// sides are whole numbers, otherwise a string compare (so `"2xx"` ≠ `"2yy"`).
+/// Objects/arrays never match.
 fn compare_scalar(json: &Json<'_>, op: CmpOp, rhs: &str) -> bool {
     let Some(lhs) = json.as_str().or_else(|| json.as_value()) else {
         return false;
     };
-    let ord = match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
-        (Ok(a), Ok(b)) => a.partial_cmp(&b),
-        _ => Some(lhs.cmp(rhs)),
+    let ord = match op {
+        CmpOp::Eq | CmpOp::Ne => match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
+            (Ok(a), Ok(b)) => a.partial_cmp(&b),
+            _ => Some(lhs.cmp(rhs)),
+        },
+        _ => order_scalars(lhs, rhs),
     };
     let Some(ord) = ord else {
-        return false; // NaN — no ordering
+        return false; // NaN or otherwise not comparable — no ordering
     };
     match op {
         CmpOp::Eq => ord == Ordering::Equal,
@@ -574,6 +581,19 @@ fn compare_scalar(json: &Json<'_>, op: CmpOp, rhs: &str) -> bool {
         CmpOp::Lt => ord == Ordering::Less,
         CmpOp::Le => ord != Ordering::Greater,
     }
+}
+
+/// Order two scalar strings for a `<`/`>`/`<=`/`>=` comparison: numerically when
+/// both parse as numbers (tolerating a unit suffix), else as timestamps, else
+/// lexicographically. Mirrors the CLI filter's ordering semantics.
+fn order_scalars(lhs: &str, rhs: &str) -> Option<Ordering> {
+    if let (Some(a), Some(b)) = (crate::parse_number(lhs), crate::parse_number(rhs)) {
+        return a.partial_cmp(&b);
+    }
+    if let (Some(a), Some(b)) = (crate::parse_datetime(lhs), crate::parse_datetime(rhs)) {
+        return Some(a.cmp(&b));
+    }
+    Some(lhs.cmp(rhs))
 }
 
 /// Evaluate a `${match}` arm against the (non-null) subject: the wildcard (empty
@@ -591,7 +611,7 @@ fn match_arm(json: &Json<'_>, tests: &[ArmTest]) -> bool {
         } => json
             .as_str()
             .or_else(|| json.as_value())
-            .and_then(|s| s.parse::<f64>().ok())
+            .and_then(crate::parse_number)
             .is_some_and(|v| {
                 lo.is_none_or(|lo| v >= lo)
                     && hi.is_none_or(|hi| if *hi_inclusive { v <= hi } else { v < hi })
