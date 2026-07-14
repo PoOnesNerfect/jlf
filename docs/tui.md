@@ -73,7 +73,7 @@ returns cleanly.
 | `Enter` | open / close the detail pane |
 | `c` | toggle compact / expanded rows |
 | `r` | toggle raw rows (the record as-is instead of the recipe output) |
-| `e` | open the current view in `$EDITOR` (raw JSON, honoring the filter) |
+| `e` | open the current view in `$EDITOR` at the newest record (raw JSON, honoring the filter) |
 | `f` | toggle follow (auto-scroll to the newest record) |
 | `a` | open the **Actions** panel |
 | `/` | search (highlight matches, keep every row) |
@@ -116,8 +116,11 @@ appears in the status line while it's on.
 Press `e` to open the current view in your editor (`$VISUAL`, then `$EDITOR`,
 else `vi`/`notepad`). The records are written to a temp file as raw JSON lines,
 one per record, **honoring the active filter** — so `?level=error` then `e` opens
-just the error records. The viewer suspends while the editor runs and resumes
-when it exits; the temp file is removed afterward (edits aren't saved back).
+just the error records. It opens at the **last line** (the newest record) for
+editors whose line-jump syntax is known (vi/vim/nvim, nano, emacs, kakoune,
+helix, sublime, VS Code); others just open at the top. The viewer suspends while
+the editor runs and resumes when it exits; the temp file is removed afterward
+(edits aren't saved back).
 
 ## Scrolling
 

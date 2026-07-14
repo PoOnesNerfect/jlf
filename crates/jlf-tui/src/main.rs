@@ -250,11 +250,9 @@ fn open_view_in_editor(app: &mut App, terminal: &mut DefaultTerminal) -> color_e
     // Suspend the TUI, run the editor attached to the terminal, then resume.
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;
-    let (editor, args) = editor_command();
-    let status = std::process::Command::new(&editor)
-        .args(&args)
-        .arg(&path)
-        .status();
+    // Logs read newest-last, so open at the last line (the newest record).
+    let (editor, args) = editor_command(&path, count);
+    let status = std::process::Command::new(&editor).args(&args).status();
     enable_raw_mode()?;
     execute!(std::io::stdout(), EnterAlternateScreen)?;
     terminal.clear()?; // repaint from scratch — the editor overwrote the screen
@@ -268,17 +266,58 @@ fn open_view_in_editor(app: &mut App, terminal: &mut DefaultTerminal) -> color_e
     Ok(())
 }
 
-/// The editor to launch: `$VISUAL`, then `$EDITOR`, then a platform default. Any
-/// extra words in the env var (e.g. `code --wait`) become leading arguments.
-fn editor_command() -> (String, Vec<String>) {
+/// Build the editor command: `$VISUAL`, then `$EDITOR`, then a platform default,
+/// plus the file to open positioned at `last_line` (the newest record) when the
+/// editor's line-jump syntax is known. Extra words in the env var (e.g.
+/// `code --wait`) are kept as leading arguments. Returns `(command, args)` where
+/// `args` already includes the file path. For an unrecognized editor the file is
+/// opened without positioning — a wrong flag could be taken as a filename, so we
+/// only add one for editors we know.
+fn editor_command(path: &std::path::Path, last_line: usize) -> (String, Vec<String>) {
     let spec = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| {
-            if cfg!(windows) { "notepad".into() } else { "vi".into() }
-        });
+        .unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
+    build_editor_args(&spec, &path.to_string_lossy(), last_line)
+}
+
+/// Pure editor-argument builder (no env), so it's testable. See [`editor_command`].
+fn build_editor_args(spec: &str, file: &str, last_line: usize) -> (String, Vec<String>) {
     let mut parts = spec.split_whitespace().map(str::to_owned);
     let cmd = parts.next().unwrap_or_else(|| "vi".into());
-    (cmd, parts.collect())
+    let mut args: Vec<String> = parts.collect();
+    let file = file.to_owned();
+
+    // The editor's base name (no path, no `.exe`), lowercased, to pick its
+    // line-jump syntax.
+    let base = std::path::Path::new(&cmd)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match base.as_str() {
+        // `+LINE file` — vi/vim family, nano, emacs, kakoune.
+        "vi" | "vim" | "nvim" | "view" | "gvim" | "mvim" | "nano" | "emacs" | "emacsclient"
+        | "kak"
+            if last_line > 0 =>
+        {
+            args.push(format!("+{last_line}"));
+            args.push(file);
+        }
+        // `file:LINE` — helix, sublime.
+        "hx" | "helix" | "subl" | "sublime_text" if last_line > 0 => {
+            args.push(format!("{file}:{last_line}"));
+        }
+        // `--goto file:LINE` — VS Code and friends.
+        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf"
+            if last_line > 0 =>
+        {
+            args.push("--goto".into());
+            args.push(format!("{file}:{last_line}"));
+        }
+        // Unknown editor (or empty view): just open the file at the start.
+        _ => args.push(file),
+    }
+    (cmd, args)
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
@@ -487,4 +526,50 @@ fn exit_search_or_command(app: &mut App) {
         _ => {}
     }
     app.mode = Mode::Normal;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_editor_args;
+
+    #[test]
+    fn editor_args_open_at_last_line() {
+        // vi/vim family, nano, emacs, kakoune → `+LINE file`
+        assert_eq!(
+            build_editor_args("vim", "/tmp/v.jsonl", 42),
+            ("vim".into(), vec!["+42".into(), "/tmp/v.jsonl".into()])
+        );
+        assert_eq!(
+            build_editor_args("nano", "/tmp/v.jsonl", 5),
+            ("nano".into(), vec!["+5".into(), "/tmp/v.jsonl".into()])
+        );
+        // helix / sublime → `file:LINE`
+        assert_eq!(
+            build_editor_args("hx", "/tmp/v.jsonl", 7),
+            ("hx".into(), vec!["/tmp/v.jsonl:7".into()])
+        );
+        // VS Code → `--goto file:LINE`, keeping extra env args (e.g. --wait)
+        assert_eq!(
+            build_editor_args("code --wait", "/tmp/v.jsonl", 9),
+            (
+                "code".into(),
+                vec!["--wait".into(), "--goto".into(), "/tmp/v.jsonl:9".into()]
+            )
+        );
+        // A full path to the editor still resolves by base name.
+        assert_eq!(
+            build_editor_args("/usr/bin/nvim", "/tmp/v.jsonl", 3),
+            ("/usr/bin/nvim".into(), vec!["+3".into(), "/tmp/v.jsonl".into()])
+        );
+        // Unknown editor → just the file (no risky positioning flag).
+        assert_eq!(
+            build_editor_args("myedit", "/tmp/v.jsonl", 3),
+            ("myedit".into(), vec!["/tmp/v.jsonl".into()])
+        );
+        // Empty view (line 0) → no positioning even for a known editor.
+        assert_eq!(
+            build_editor_args("vim", "/tmp/v.jsonl", 0),
+            ("vim".into(), vec!["/tmp/v.jsonl".into()])
+        );
+    }
 }
