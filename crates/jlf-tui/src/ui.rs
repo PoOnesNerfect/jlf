@@ -82,13 +82,13 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "  g/G       top / bottom     J/K  jump 7 / scroll detail",
         "  a         actions panel    f    follow on / off",
         "  c         compact / expand rows",
-        "  /         search           n/N  next / prev match",
+        "  /         search           n/N  match up / down",
         "  ?         filter           :    command",
         "  h         this help        q    quit",
         "  Esc       close popup / clear search / clear filter    ^L  redraw",
         "",
         "Search  (press /)  — highlights matches, keeps every row",
-        "  matches text anywhere in a record (key or value); n/N jump between hits",
+        "  matches text anywhere in a record (key or value); n/N step up / down",
         "",
         "Filter  (press ?)  — narrows to matching rows",
         "  field=value   op: = != > >= < <= ~ !~   (e.g. level=error)",
@@ -258,7 +258,7 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
 const SEARCH_HL: Color = Color::Yellow;
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · / search · n/N next · ? filter · c expand · a actions · h help · q quit";
+const HINT: &str = "↑↓ move · / search · n/N match ↑↓ · ? filter · c expand · a actions · h help · q quit";
 
 /// The bottom bar: the app badge, follow state, and a transient message, then
 /// the key-hint section (completion help while typing a `/` filter or `:`

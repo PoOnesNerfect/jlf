@@ -318,9 +318,9 @@ cover the **whole** stream (memory and file), not just what's in RAM.
 **Search** (`/`): highlights matching text anywhere in a record (any key or
 value, smart-case — lowercase matches any case, uppercase is exact) **without
 hiding rows** — every record stays visible and
-the matched text is highlighted. **`n`/`N`** jump to the next/previous matching
-record, and the status line shows your position (`/query 3/12 matches`). Type to
-highlight incrementally; **Enter** jumps to the first match.
+the matched text is highlighted. **Enter** jumps to the newest match; **`n`**
+then steps up (older) and **`N`** down (newer), and the status line shows your
+position (`/query 3/12 matches`).
 
 **Filter** (`?`): **narrows** to matching records. Tokens shaped like
 `field=value` (operators `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter

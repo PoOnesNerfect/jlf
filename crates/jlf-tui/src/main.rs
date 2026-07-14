@@ -303,9 +303,11 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('?') => app.enter_filter(),
         KeyCode::Char(':') => app.enter_command(),
-        // n / N jump to the next / previous record matching the active search.
-        KeyCode::Char('n') => app.search_jump(true),
-        KeyCode::Char('N') => app.search_jump(false),
+        // n / N step between search matches. Logs read newest-last, so `n` walks
+        // upward (toward older records) and `N` downward (toward newer), matching
+        // the "newest first" direction Enter jumps to.
+        KeyCode::Char('n') => app.search_jump(false),
+        KeyCode::Char('N') => app.search_jump(true),
         // Enter opens/closes the detail pane for the selected record.
         KeyCode::Enter => {
             app.show_detail = !app.show_detail;

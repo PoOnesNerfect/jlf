@@ -74,7 +74,7 @@ returns cleanly.
 | `f` | toggle follow (auto-scroll to the newest record) |
 | `a` | open the **Actions** panel |
 | `/` | search (highlight matches, keep every row) |
-| `n` / `N` | jump to the next / previous search match |
+| `n` / `N` | step to the search match above / below (up = older, down = newer) |
 | `?` | filter (narrow to matching rows) |
 | `:` | command |
 | `h` | help overlay |
@@ -121,11 +121,12 @@ rows — every record stays visible, and the matched text is shown reversed in
 yellow. Matching looks anywhere in the record (any key or value) and is
 **smart-case**: an all-lowercase query matches case-insensitively, while a query
 with any uppercase matches exactly (which is also the faster path). Type to
-highlight incrementally; **Enter** jumps to the first match at or after the
-selection, and **`n`** / **`N`** then jump to the next / previous matching record
-(wrapping around). The active query and your position among the matches are shown
-in the status line (`/query 3/12 matches`). Clear it with **Esc**, or by deleting
-the whole query and the `/` prefix.
+highlight incrementally; **Enter** jumps to the newest match (the last one, at or
+above the selection — logs read newest-last, so it lands on the most recent hit),
+and then **`n`** steps **up** (toward older records) and **`N`** steps **down**
+(toward newer), wrapping around. The active query and your position among the
+matches are shown in the status line (`/query 3/12 matches`). Clear it with
+**Esc**, or by deleting the whole query and the `/` prefix.
 
 `n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
 is shown only while the view is small enough to scan cheaply (~100k records); on

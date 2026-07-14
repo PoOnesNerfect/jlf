@@ -449,13 +449,14 @@ impl App {
             return;
         }
         self.refresh_search_matches();
-        // Jump to the first match at or after the current selection (incremental,
-        // so it works even when the view is too large to count), staying put if
-        // the current record already matches.
+        // Jump to the first match from the end — the newest matching record at or
+        // above the selection (logs read newest-last, so you usually open search
+        // at the bottom and want the most recent hit). Stay put if the current
+        // record already matches.
         let matcher = SearchMatcher::new(&self.search_query);
         if self.record_matches_search(self.selected, &matcher) {
             self.status = "search set".into();
-        } else if let Some(pos) = self.find_match(self.selected, true) {
+        } else if let Some(pos) = self.find_match(self.selected, false) {
             self.select(pos);
             self.status = "search set".into();
         } else {
@@ -1214,6 +1215,27 @@ mod tests {
         // Lowercase "info" (case-insensitive) matches the one info record.
         app.apply_search("info".into());
         assert_eq!(total(&app), 1);
+    }
+
+    #[test]
+    fn search_jumps_from_the_end_and_n_goes_up() {
+        // records 0 and 2 contain "alice"; start at the bottom (record 2).
+        let mut app = app_with(SAMPLE);
+        app.selected = 2;
+        // Enter lands on the newest match (record 2 already matches → stays).
+        app.apply_search("alice".into());
+        assert_eq!(app.selected, 2);
+        // From a non-matching newest record, Enter jumps up to the last match.
+        app.selected = 2;
+        app.apply_search("42".into()); // only record 0 has latency 42
+        assert_eq!(app.selected, 0);
+        // n walks upward (older); N walks downward (newer).
+        app.apply_search("alice".into());
+        app.selected = 2;
+        app.search_jump(false); // n → up
+        assert_eq!(app.selected, 0);
+        app.search_jump(true); // N → down (wraps to record 2)
+        assert_eq!(app.selected, 2);
     }
 
     #[test]
