@@ -82,6 +82,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "  g/G       top / bottom     J/K  jump 7 / scroll detail",
         "  a         actions panel    f    follow on / off",
         "  c         compact / expand rows",
+        "  r         raw / formatted rows    e    open view in $EDITOR",
         "  /         search           n/N  match up / down",
         "  ?         filter           :    command",
         "  h         this help        q    quit",
@@ -248,6 +249,12 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
         format!("   ·   {}/{} records", app.view_len(), app.total()),
         dim,
     ));
+    if app.raw {
+        spans.push(Span::styled(
+            "   ·   raw",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
     f.render_widget(
         Paragraph::new(truncate_line(Line::from(spans), inner.width as usize)),
         inner,
@@ -258,7 +265,7 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
 const SEARCH_HL: Color = Color::Yellow;
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · / search · n/N match ↑↓ · ? filter · c expand · a actions · h help · q quit";
+const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · e editor · a actions · h help · q quit";
 
 /// The bottom bar: the app badge, follow state, and a transient message, then
 /// the key-hint section (completion help while typing a `/` filter or `:`

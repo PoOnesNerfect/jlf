@@ -216,10 +216,69 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
                 }
             }
         }
+        if std::mem::take(&mut app.pending_editor) {
+            open_view_in_editor(app, terminal)?;
+        }
         if app.quit {
             return Ok(());
         }
     }
+}
+
+/// Write the current (filtered) view to a temp file as raw JSON lines and open it
+/// in the user's editor (`$VISUAL`/`$EDITOR`, else a platform default). The TUI
+/// owns the terminal, so it's suspended (leave the alternate screen, disable raw
+/// mode) around the editor and restored afterward with a forced repaint. All
+/// failures are surfaced as a status message rather than crashing the viewer.
+fn open_view_in_editor(app: &mut App, terminal: &mut DefaultTerminal) -> color_eyre::Result<()> {
+    use ratatui::crossterm::terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    };
+    use ratatui::crossterm::execute;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!("jlf-tui-view-{}.jsonl", std::process::id()));
+
+    let count = match app.write_view_raw(&path) {
+        Ok(n) => n,
+        Err(e) => {
+            app.status = format!("couldn't write temp file: {e}");
+            return Ok(());
+        }
+    };
+
+    // Suspend the TUI, run the editor attached to the terminal, then resume.
+    disable_raw_mode()?;
+    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+    let (editor, args) = editor_command();
+    let status = std::process::Command::new(&editor)
+        .args(&args)
+        .arg(&path)
+        .status();
+    enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?; // repaint from scratch — the editor overwrote the screen
+
+    let _ = std::fs::remove_file(&path);
+    app.status = match status {
+        Ok(s) if s.success() => format!("opened {count} records in {editor}"),
+        Ok(_) => format!("{editor} exited with an error"),
+        Err(e) => format!("couldn't launch {editor}: {e}"),
+    };
+    Ok(())
+}
+
+/// The editor to launch: `$VISUAL`, then `$EDITOR`, then a platform default. Any
+/// extra words in the env var (e.g. `code --wait`) become leading arguments.
+fn editor_command() -> (String, Vec<String>) {
+    let spec = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) { "notepad".into() } else { "vi".into() }
+        });
+    let mut parts = spec.split_whitespace().map(str::to_owned);
+    let cmd = parts.next().unwrap_or_else(|| "vi".into());
+    (cmd, parts.collect())
 }
 
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
@@ -298,6 +357,10 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('f') => app.toggle_follow(),
         KeyCode::Char('c') => app.expanded = !app.expanded,
+        KeyCode::Char('r') => app.toggle_raw(),
+        // `e` opens the current (filtered) view in $EDITOR. It needs to suspend
+        // the terminal, which only the run loop can do, so just flag it here.
+        KeyCode::Char('e') => app.pending_editor = true,
         KeyCode::Char('a') => app.open_actions(),
         KeyCode::Char('h') => app.help = !app.help,
         KeyCode::Char('/') => app.enter_search(),

@@ -181,6 +181,9 @@ pub struct App {
     /// something outside our control (e.g. a producer logging to the terminal's
     /// stderr) has corrupted it.
     pub force_redraw: bool,
+    /// Set when `e` is pressed; the run loop opens the current view in $EDITOR
+    /// (it owns the terminal it must suspend) and clears the flag.
+    pub pending_editor: bool,
 
     /// Field catalog for search autocomplete, rebuilt when entering search.
     catalog: Catalog,
@@ -198,6 +201,10 @@ pub struct App {
     /// When true, the list shows each record over multiple lines (header +
     /// pretty data) like piped `jlf`; toggled with `c`.
     pub expanded: bool,
+    /// When true, the list shows the raw record (the JSON as it arrived) instead
+    /// of the recipe-formatted output; toggled with `r`. Combines with `expanded`:
+    /// compact shows the raw one-liner, expanded shows pretty-printed JSON.
+    pub raw: bool,
     /// Index of the first visible record. Persisted across frames so the
     /// viewport scrolls with a margin (see the list renderer) instead of pinning
     /// the cursor to an edge. Updated at draw time, where the height is known.
@@ -255,6 +262,7 @@ impl App {
             detail_scroll: 0,
             quit: false,
             force_redraw: false,
+            pending_editor: false,
             catalog: Catalog::default(),
             sug: Vec::new(),
             sug_start: 0,
@@ -263,6 +271,7 @@ impl App {
             row_fmt,
             full_fmt,
             expanded: !compact,
+            raw: false,
             scroll_top: std::cell::Cell::new(0),
             page: std::cell::Cell::new(1),
         })
@@ -855,6 +864,11 @@ impl App {
         self.status = if self.follow { "following" } else { "paused" }.into();
     }
 
+    pub fn toggle_raw(&mut self) {
+        self.raw = !self.raw;
+        self.status = if self.raw { "raw logs" } else { "formatted logs" }.into();
+    }
+
     // ----- selected record --------------------------------------------------
 
     pub fn selected_record(&self) -> Option<Rc<str>> {
@@ -866,14 +880,22 @@ impl App {
     /// exactly one row — otherwise the list windowing (one item = one row)
     /// mis-counts and leaves a stray blank row while scrolling. The renderer
     /// expands the tabs to aligned columns (see `ansi_text`), so the segments
-    /// that were separate lines line up in tab-stop columns.
+    /// that were separate lines line up in tab-stop columns. In raw mode the
+    /// record's own text is shown verbatim (control chars are stripped later).
     pub fn render_row(&self, line: &str) -> String {
+        if self.raw {
+            return line.replace('\n', "\t");
+        }
         self.render_with(line, &self.row_fmt).replace('\n', "\t")
     }
 
     /// Multi-line rendering of a record for the expanded list — header line plus
-    /// pretty data, exactly like piped `jlf`.
+    /// pretty data, exactly like piped `jlf`. In raw mode it's the record as
+    /// pretty-printed JSON (every field, no recipe), like the detail pane.
     pub fn render_record(&self, line: &str) -> String {
+        if self.raw {
+            return self.render_detail(line);
+        }
         self.render_with(line, &self.full_fmt)
     }
 
@@ -915,6 +937,21 @@ impl App {
             Some(v) => Box::new(v.iter().map(move |&i| self.store.get(i))),
             None => Box::new((0..self.store.len()).map(move |i| self.store.get(i))),
         }
+    }
+
+    /// Stream the current view's raw records (one JSON line each, honoring the
+    /// active filter) to `path`. Streams via a buffered writer so a huge view
+    /// doesn't materialize in memory. Returns the number of records written.
+    pub fn write_view_raw(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        use std::io::{BufWriter, Write};
+        let mut w = BufWriter::new(std::fs::File::create(path)?);
+        let mut n = 0;
+        for rec in self.view_iter() {
+            writeln!(w, "{rec}")?;
+            n += 1;
+        }
+        w.flush()?;
+        Ok(n)
     }
 
     // ----- summaries --------------------------------------------------------
@@ -1151,6 +1188,33 @@ mod tests {
         let app = app_with(SAMPLE);
         assert_eq!(app.total(), 3);
         assert_eq!(app.view_len(), 3);
+    }
+
+    #[test]
+    fn raw_and_write_view_use_the_original_records() {
+        let mut app = app_with(SAMPLE);
+        // Raw compact rendering is the record verbatim (not the recipe output).
+        app.raw = true;
+        app.expanded = false;
+        assert_eq!(app.render_row(SAMPLE[0]), SAMPLE[0]);
+        // Raw expanded rendering is pretty-printed JSON (multi-line).
+        let pretty = app.render_record(SAMPLE[0]);
+        assert!(pretty.contains('\n') && pretty.contains("\"user\""), "got:\n{pretty}");
+
+        // write_view_raw streams the current view's raw lines, honoring filters.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("jlf-tui-test-{}.jsonl", std::process::id()));
+        let n = app.write_view_raw(&path).unwrap();
+        assert_eq!(n, 3);
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body.lines().count(), 3);
+        assert_eq!(body.lines().next().unwrap(), SAMPLE[0]);
+
+        app.apply_filter("level=error".into());
+        let n = app.write_view_raw(&path).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), SAMPLE[1]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

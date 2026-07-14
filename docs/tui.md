@@ -14,6 +14,7 @@ streams by keeping memory bounded (see [Memory on long streams](#memory-on-long-
 - [Layout](#layout)
 - [Keys](#keys)
 - [Compact and expanded views](#compact-and-expanded-views)
+- [Raw view and opening in an editor](#raw-view-and-opening-in-an-editor)
 - [Scrolling](#scrolling)
 - [Search](#search)
 - [Filter](#filter)
@@ -71,6 +72,8 @@ returns cleanly.
 | `g` / `G`, `Home` / `End` | jump to top / bottom |
 | `Enter` | open / close the detail pane |
 | `c` | toggle compact / expanded rows |
+| `r` | toggle raw rows (the record as-is instead of the recipe output) |
+| `e` | open the current view in `$EDITOR` (raw JSON, honoring the filter) |
 | `f` | toggle follow (auto-scroll to the newest record) |
 | `a` | open the **Actions** panel |
 | `/` | search (highlight matches, keep every row) |
@@ -102,6 +105,19 @@ starts compact, otherwise expanded); `c` toggles it either way.
 
 The detail pane (`Enter`) is independent of this toggle and always pretty-prints
 the single selected record.
+
+## Raw view and opening in an editor
+
+Press `r` to toggle **raw** rows — the record as it arrived, bypassing the recipe
+formatting. It combines with `c`: raw + compact shows the original JSON line,
+raw + expanded shows it pretty-printed (every field, no recipe). A `raw` marker
+appears in the status line while it's on.
+
+Press `e` to open the current view in your editor (`$VISUAL`, then `$EDITOR`,
+else `vi`/`notepad`). The records are written to a temp file as raw JSON lines,
+one per record, **honoring the active filter** — so `?level=error` then `e` opens
+just the error records. The viewer suspends while the editor runs and resumes
+when it exits; the temp file is removed afterward (edits aren't saved back).
 
 ## Scrolling
 

@@ -298,6 +298,8 @@ rendering (header + pretty data), like piped `jlf`.
 | `J`/`K` | scroll the detail pane |
 | `f` | toggle follow (auto-scroll to newest) |
 | `c` | compact / expand the record rows |
+| `r` | raw rows (the record as-is) / formatted |
+| `e` | open the current view in `$EDITOR` (raw JSON, honoring the filter) |
 | `a` | **Actions** panel — summaries, export, save-as-recipe |
 | `/` | search — highlight matches (see below) |
 | `n`/`N` | next / previous search match |
