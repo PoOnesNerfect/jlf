@@ -663,20 +663,24 @@ fn ansi_line(s: String) -> Line<'static> {
     ansi_text(s).lines.into_iter().next().unwrap_or_default()
 }
 
-/// Highlight case-insensitive occurrences of `needle` in a styled line by
-/// splitting spans at match boundaries and overlaying the search style on the
-/// matched characters (keeping their surrounding colors). ASCII-lowercasing
+/// Highlight occurrences of `needle` in a styled line by splitting spans at match
+/// boundaries and overlaying the search style on the matched characters (keeping
+/// their surrounding colors). Smart-case: matches case-insensitively when the
+/// needle is all lowercase, case-sensitively when it has any uppercase — the same
+/// rule search navigation uses, so highlights and `n`/`N` agree. Case-folding
 /// keeps a 1:1 char count so match positions line up with the original spans.
 fn highlight_line(line: Line<'static>, needle: &str) -> Line<'static> {
     if needle.is_empty() {
         return line;
     }
-    let needle: Vec<char> = needle.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let case_sensitive = crate::app::search_case_sensitive(needle);
+    let fold = |c: char| if case_sensitive { c } else { c.to_ascii_lowercase() };
+    let needle: Vec<char> = needle.chars().map(fold).collect();
     let lower: Vec<char> = line
         .spans
         .iter()
         .flat_map(|s| s.content.chars())
-        .map(|c| c.to_ascii_lowercase())
+        .map(fold)
         .collect();
     if lower.len() < needle.len() {
         return line;
@@ -805,6 +809,20 @@ mod tests {
         let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
         assert_eq!(out.spans[0].style, hl);
         assert_eq!(out.spans[1].style, Style::default());
+    }
+
+    #[test]
+    fn highlight_is_smart_case() {
+        // A query with uppercase is case-sensitive: only the exact-case run of
+        // "ABC" is highlighted, not the lowercase "abc".
+        let line = Line::from(vec![Span::raw("abcABCxyz")]);
+        let out = highlight_line(line, "ABC");
+        let texts: Vec<String> = out.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(texts, vec!["abc", "ABC", "xyz"]);
+        let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
+        assert_eq!(out.spans[0].style, Style::default());
+        assert_eq!(out.spans[1].style, hl);
+        assert_eq!(out.spans[2].style, Style::default());
     }
 
     #[test]

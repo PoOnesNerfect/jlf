@@ -761,6 +761,7 @@ dependencies = [
  "color-eyre",
  "jlf-core",
  "libc",
+ "memchr",
  "ratatui",
 ]
 

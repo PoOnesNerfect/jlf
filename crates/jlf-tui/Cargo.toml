@@ -15,6 +15,7 @@ jlf-core = { version = "0.4.0-dev", path = "../jlf-core" }
 ratatui = "0.29"
 color-eyre = "0.6.5"
 ansi-to-tui = "7"
+memchr = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -118,12 +118,14 @@ whole stream. It appears only when the records don't all fit on screen.
 
 Press `/` to search. Search **highlights** matching text without hiding any
 rows — every record stays visible, and the matched text is shown reversed in
-yellow. Matching is case-insensitive and looks anywhere in the record (any key
-or value). Type to highlight incrementally; **Enter** jumps to the first match at
-or after the selection, and **`n`** / **`N`** then jump to the next / previous
-matching record (wrapping around). The active query and your position among the
-matches are shown in the status line (`/query 3/12 matches`). Clear it with
-**Esc**, or by deleting the whole query and the `/` prefix.
+yellow. Matching looks anywhere in the record (any key or value) and is
+**smart-case**: an all-lowercase query matches case-insensitively, while a query
+with any uppercase matches exactly (which is also the faster path). Type to
+highlight incrementally; **Enter** jumps to the first match at or after the
+selection, and **`n`** / **`N`** then jump to the next / previous matching record
+(wrapping around). The active query and your position among the matches are shown
+in the status line (`/query 3/12 matches`). Clear it with **Esc**, or by deleting
+the whole query and the `/` prefix.
 
 `n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
 is shown only while the view is small enough to scan cheaply (~100k records); on

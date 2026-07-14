@@ -316,7 +316,8 @@ the stream runs; the temp file is removed on exit. Summaries and filters still
 cover the **whole** stream (memory and file), not just what's in RAM.
 
 **Search** (`/`): highlights matching text anywhere in a record (any key or
-value, case-insensitive) **without hiding rows** — every record stays visible and
+value, smart-case — lowercase matches any case, uppercase is exact) **without
+hiding rows** — every record stays visible and
 the matched text is highlighted. **`n`/`N`** jump to the next/previous matching
 record, and the status line shows your position (`/query 3/12 matches`). Type to
 highlight incrementally; **Enter** jumps to the first match.

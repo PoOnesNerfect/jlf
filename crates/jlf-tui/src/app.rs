@@ -88,6 +88,39 @@ pub enum MatchCount {
     Uncounted,
 }
 
+/// Smart-case: a search is case-sensitive when its query contains any uppercase
+/// letter, and case-insensitive when it's all lowercase — the ripgrep/vim
+/// convention. A case-sensitive query can use the fast SIMD substring finder.
+pub(crate) fn search_case_sensitive(query: &str) -> bool {
+    query.chars().any(|c| c.is_uppercase())
+}
+
+/// A prepared substring matcher for a search query, built once per scan and
+/// reused across records. Smart-case: an all-lowercase query matches case-
+/// insensitively (lowercasing each record); a query with any uppercase matches
+/// exactly via a SIMD [`memmem::Finder`], which is both faster and more precise.
+enum SearchMatcher {
+    Sensitive(memchr::memmem::Finder<'static>),
+    Insensitive(String),
+}
+
+impl SearchMatcher {
+    fn new(query: &str) -> Self {
+        if search_case_sensitive(query) {
+            Self::Sensitive(memchr::memmem::Finder::new(query).into_owned())
+        } else {
+            Self::Insensitive(query.to_lowercase())
+        }
+    }
+
+    fn is_match(&self, hay: &str) -> bool {
+        match self {
+            Self::Sensitive(finder) => finder.find(hay.as_bytes()).is_some(),
+            Self::Insensitive(lower) => hay.to_lowercase().contains(lower.as_str()),
+        }
+    }
+}
+
 /// A running summary: the aggregator plus how far through the view it has folded
 /// (a view position). New records past `cursor` are picked up on later ticks.
 struct SummaryJob {
@@ -419,8 +452,8 @@ impl App {
         // Jump to the first match at or after the current selection (incremental,
         // so it works even when the view is too large to count), staying put if
         // the current record already matches.
-        let needle = self.search_query.to_lowercase();
-        if self.record_matches_search(self.selected, &needle) {
+        let matcher = SearchMatcher::new(&self.search_query);
+        if self.record_matches_search(self.selected, &matcher) {
             self.status = "search set".into();
         } else if let Some(pos) = self.find_match(self.selected, true) {
             self.select(pos);
@@ -439,11 +472,10 @@ impl App {
         }
     }
 
-    /// Whether record at view position `pos` contains the search query (matched
-    /// case-insensitively against its raw text — any key or value).
-    fn record_matches_search(&self, pos: usize, needle_lower: &str) -> bool {
-        self.record(pos)
-            .is_some_and(|rec| rec.to_lowercase().contains(needle_lower))
+    /// Whether `pos`'s record matches `matcher` (search text anywhere in the raw
+    /// record — any key or value).
+    fn record_matches_search(&self, pos: usize, matcher: &SearchMatcher) -> bool {
+        self.record(pos).is_some_and(|rec| matcher.is_match(&rec))
     }
 
     /// The next/previous view position matching the search, scanning outward from
@@ -454,7 +486,7 @@ impl App {
         if len == 0 || self.search_query.is_empty() {
             return None;
         }
-        let needle = self.search_query.to_lowercase();
+        let matcher = SearchMatcher::new(&self.search_query);
         // Walk all `len` other positions in order, wrapping, so a match anywhere
         // is found (and `from` itself is the last resort on a full wrap).
         (1..=len)
@@ -462,7 +494,7 @@ impl App {
                 let off = if forward { d } else { len - d };
                 (from + off) % len
             })
-            .find(|&p| self.record_matches_search(p, &needle))
+            .find(|&p| self.record_matches_search(p, &matcher))
     }
 
     /// Rebuild the cached match list for the count/position indicator, but only
@@ -479,9 +511,9 @@ impl App {
         self.search_matches = if self.search_query.is_empty() || self.view_len() > COUNT_SCAN_CAP {
             Vec::new()
         } else {
-            let needle = self.search_query.to_lowercase();
+            let matcher = SearchMatcher::new(&self.search_query);
             (0..self.view_len())
-                .filter(|&p| self.record_matches_search(p, &needle))
+                .filter(|&p| self.record_matches_search(p, &matcher))
                 .collect()
         };
         self.search_matches_key = key;
@@ -1150,14 +1182,38 @@ mod tests {
         // Off a match, only the total is known.
         app.selected = 1;
         assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 2 }));
-        // Matching is case-insensitive and spans values.
-        app.apply_search("BOB".into());
+        // Smart-case: a lowercase query matches case-insensitively and spans
+        // values (records 0 and 2 contain "alice").
+        app.apply_search("bob".into());
         assert_eq!(app.selected, 1);
         assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 1 }));
         // Clearing removes the search.
         app.apply_search(String::new());
         assert!(app.search_query.is_empty());
         assert_eq!(app.search_position(), None);
+    }
+
+    #[test]
+    fn search_is_smart_case() {
+        let mut app = app_with(SAMPLE); // values are lowercase (alice/bob/info…)
+        let total = |a: &App| match a.search_position() {
+            Some(MatchCount::Counted { total, .. }) => total,
+            _ => usize::MAX,
+        };
+        // Lowercase query: case-insensitive. "alice" is in records 0 and 2.
+        app.apply_search("alice".into());
+        assert_eq!(total(&app), 2);
+        // Uppercase input still matches (query is lowercase).
+        app.apply_search("ALICE".into());
+        // …no: "ALICE" has uppercase, so it's case-sensitive and won't match the
+        // lowercase data.
+        assert_eq!(total(&app), 0);
+        // Mixed/exact case matches only the exact case.
+        app.apply_search("Alice".into());
+        assert_eq!(total(&app), 0);
+        // Lowercase "info" (case-insensitive) matches the one info record.
+        app.apply_search("info".into());
+        assert_eq!(total(&app), 1);
     }
 
     #[test]
