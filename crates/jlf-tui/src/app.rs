@@ -82,17 +82,17 @@ const DRAIN_BATCH: usize = 50_000;
 /// step is [`SCAN_STEP`], not this.
 const RENDER_MATCH_CAP: usize = 100_000;
 
-/// Time slice for one search-scan step, whether triggered by a keystroke or an
-/// idle frame. Scanning is continuous: each step advances the cursor a little, so
-/// a keystroke never blocks and the count keeps filling in between and after
-/// keystrokes (shown as a running `N+ matches`). Small enough that the key loop
-/// stays responsive on any view size.
-const SCAN_STEP: Duration = Duration::from_millis(30);
+/// Time slice for one background search-scan step. Typing never scans on the key
+/// path — a keystroke only pushes/pops a stack level (instant); this budget bounds
+/// how long the *background* spends scanning per frame. Kept small so, on the
+/// single-threaded event loop, a slice never delays the next keystroke noticeably
+/// (the count just fills in over a few more frames).
+const SCAN_STEP: Duration = Duration::from_millis(8);
 
-/// Largest match list (in entries) a stack level keeps whole. When a frozen
-/// level's list is bigger, it's reduced to just its empty-prefix skip (the
-/// first-match position) — cloning a broad query's huge list costs more than it
-/// saves, but its skip is still worth keeping.
+/// Largest parent match list (in entries) a new level will copy to filter in the
+/// background. Above this, the child instead just resumes past the parent's
+/// empty-prefix (first-match) and re-scans — copying a broad query's huge list
+/// costs more than it saves.
 const LEVEL_LIST_CAP: usize = 50_000;
 
 /// Cap on the scan stack depth (≈ query length). Bounds memory against a
@@ -117,15 +117,19 @@ pub enum MatchCount {
     Partial { found: usize },
 }
 
-/// One level of the incremental-search scan stack: the matches found so far for
-/// `needle` and how far the scan reached (`matches` is exact for view positions
-/// `[0, cursor)`, sorted). The stack holds the chain of prefixes of the current
-/// query, so a keystroke pushes a level and a backspace pops one — each level
-/// keeping its own progress so a popped-back level resumes where it left off.
+/// One level of the incremental-search scan stack, for one prefix of the query.
+/// `matches` holds the hits found so far (sorted); `cursor` is how far records
+/// have been scanned. When a level is pushed for a new character it inherits its
+/// parent's matches as `pending` — candidates still to be re-tested against the
+/// longer needle — which the background filters (from `pending_idx`) before
+/// scanning fresh records past `cursor`. Deferring that filtering is what keeps
+/// typing instant: pushing a level touches no records.
 struct ScanLevel {
     needle: String,
     matches: Vec<usize>,
     cursor: usize,
+    pending: Vec<usize>,
+    pending_idx: usize,
 }
 
 /// Smart-case: a search is case-sensitive when its query contains any uppercase
@@ -527,15 +531,17 @@ impl App {
         self.preview_search();
     }
 
-    /// Incremental preview: with the live input as the needle, advance the scan a
-    /// step and land on the nearest match. An empty input returns to the anchor.
-    /// Doesn't touch `search_query`, so Esc can cancel cleanly; highlighting and
-    /// the count read the live input via `search_needle` while search mode is open.
+    /// Incremental preview, run on every keystroke: realign the scan stack to the
+    /// live input (push/pop a level — **no record scanning**, so typing is always
+    /// instant) and land the selection on the nearest match known so far. The
+    /// background scan fills in the rest over the next frames. Doesn't touch
+    /// `search_query`, so Esc can cancel cleanly; highlighting and the count read
+    /// the live input via `search_needle` while search mode is open.
     fn preview_search(&mut self) {
         if self.search_anchor.is_none() {
             return;
         }
-        self.refresh_search_matches();
+        self.reconcile_scan_stack();
         self.apply_preview_jump();
     }
 
@@ -718,6 +724,7 @@ impl App {
     }
 
     /// How far the active (top) level has scanned (a view position); 0 with none.
+    #[cfg(test)]
     fn scan_cursor(&self) -> usize {
         self.scan_stack.last().map_or(0, |l| l.cursor)
     }
@@ -727,10 +734,13 @@ impl App {
         self.scan_stack.last().map_or("", |l| l.needle.as_str())
     }
 
-    /// Whether the active level's scan covers the whole view (exact count known).
-    /// True with no active search (nothing left to scan).
+    /// Whether the active level's scan covers the whole view (exact count known):
+    /// its inherited candidates are all re-tested and records are scanned to the
+    /// end. True with no active search.
     fn search_count_complete(&self) -> bool {
-        self.scan_stack.is_empty() || self.scan_cursor() >= self.view_len()
+        self.scan_stack
+            .last()
+            .is_none_or(|l| l.pending_idx >= l.pending.len() && l.cursor >= self.view_len())
     }
 
     /// Whether a scan is still in progress — the run loop polls faster while so,
@@ -739,8 +749,8 @@ impl App {
         !self.search_needle().is_empty() && !self.search_count_complete()
     }
 
-    /// Advance a running scan by one step on an idle frame, so the count keeps
-    /// filling in (`N+ matches` → exact) after you stop typing, and re-land the
+    /// Advance a running scan by one background step, so the count keeps filling in
+    /// (`N+ matches` → exact) between and after keystrokes, and re-land the
     /// incremental preview once the scan completes.
     pub fn tick_search_scan(&mut self) {
         if !self.search_scan_computing() {
@@ -752,23 +762,22 @@ impl App {
         }
     }
 
-    /// Point the scan at the current needle and take one [`SCAN_STEP`]. This is
-    /// the interactive entry point (called as you type): the scan doesn't have to
-    /// finish here — idle frames carry it the rest of the way.
+    /// Align the stack with the current needle and take one background step. Used
+    /// by commit/cancel (a single action, not the per-keystroke path — that only
+    /// reconciles, so typing never scans).
     fn refresh_search_matches(&mut self) {
         self.reconcile_scan_stack();
         self.resume_search_scan(Instant::now() + SCAN_STEP);
     }
 
-    /// Align the scan stack with the current needle (and view generation) before
-    /// scanning. The stack holds the prefix chain of the active query:
-    /// - typing a char makes the needle *extend* the top → push a new level seeded
-    ///   from its parent (matches only shrink as the query grows, so filter the
-    ///   parent's matches and resume from the parent's cursor — which already skips
-    ///   whatever empty/scanned prefix the parent covered, monotonically);
-    /// - a backspace or mid-string edit makes the top *not* a prefix of the needle
-    ///   → pop until the top is a prefix, so a popped-back level **resumes exactly
-    ///   where it left off**;
+    /// Align the scan stack with the current needle (and view generation). Runs on
+    /// every keystroke and touches **no records**, so typing is always instant:
+    /// - typing a char extends the top → push a new level that *inherits its
+    ///   parent's matches as `pending`* (to be re-tested against the longer needle
+    ///   by the background) and resumes record-scanning from the parent's cursor;
+    /// - a backspace or mid-string edit makes the top no longer a prefix of the
+    ///   needle → pop until it is, so a popped-back level **resumes where it left
+    ///   off**;
     /// - a rebuilt view (generation change) discards the stack; streaming append
     ///   doesn't (positions stay valid, the cursor just extends over the tail).
     fn reconcile_scan_stack(&mut self) {
@@ -790,61 +799,85 @@ impl App {
         if self.active_needle() == needle {
             return; // already active — resume carries it forward
         }
-        // Seed a new level from its parent (the deepest kept prefix): the parent's
-        // matches filtered by the added characters, and its cursor — so the shared,
-        // already-scanned/empty head is never re-tested.
-        let (matches, cursor) = match self.scan_stack.last() {
-            Some(parent) => {
-                let cursor = parent.cursor;
-                let matcher = SearchMatcher::new(&needle);
-                let matches = parent
-                    .matches
-                    .iter()
-                    .copied()
-                    .filter(|&p| self.record_matches_search(p, &matcher))
-                    .collect();
-                (matches, cursor)
-            }
-            None => (Vec::new(), 0),
+        // Seed the child from its parent without touching records. A small parent
+        // list is copied as `pending` for the background to filter (resuming the
+        // record scan from the parent's cursor); a big one is skipped past its
+        // first match and re-scanned instead of copied.
+        let (cursor, pending) = match self.scan_stack.last() {
+            Some(p) if p.matches.len() <= LEVEL_LIST_CAP => (p.cursor, p.matches.clone()),
+            Some(p) => (p.matches.first().copied().unwrap_or(p.cursor), Vec::new()),
+            None => (0, Vec::new()),
         };
-        // The parent is now frozen; if its list is too big, keep only its
-        // empty-prefix skip (first match) to bound memory.
-        self.downgrade_frozen_top();
+        // A big parent's list isn't inherited, and only a pop back to it would need
+        // it (which re-scans anyway) — so drop it now, keeping just its skip.
+        if self.scan_stack.last().is_some_and(|p| p.matches.len() > LEVEL_LIST_CAP) {
+            let top = self.scan_stack.last_mut().unwrap();
+            top.cursor = top.matches.first().copied().unwrap_or(top.cursor);
+            top.matches = Vec::new();
+            top.pending = Vec::new();
+            top.pending_idx = 0;
+        }
         if self.scan_stack.len() + 1 > MAX_SCAN_STACK {
             let overflow = self.scan_stack.len() + 1 - MAX_SCAN_STACK;
             self.scan_stack.drain(..overflow);
         }
-        self.scan_stack.push(ScanLevel { needle, matches, cursor });
+        self.scan_stack.push(ScanLevel {
+            needle,
+            matches: Vec::new(),
+            cursor,
+            pending,
+            pending_idx: 0,
+        });
     }
 
-    /// Reduce the top (just-frozen) level's match list to just its empty-prefix
-    /// skip when it's too big to keep whole: `[0, first_match)` has no matches, so
-    /// `matches=[]` with `cursor=first_match` is a valid, cheap state that still
-    /// lets a later resume skip the dead head. A no-op for small lists.
-    fn downgrade_frozen_top(&mut self) {
-        if let Some(top) = self.scan_stack.last_mut() {
-            if top.matches.len() > LEVEL_LIST_CAP {
-                let first = top.matches.first().copied().unwrap_or(top.cursor);
-                top.matches = Vec::new();
-                top.cursor = first;
-            }
-        }
-    }
-
-    /// Scan the active (top) level forward from its cursor toward the end of the
-    /// view, appending matches (in order, so the list stays sorted), until the
-    /// view is exhausted or the deadline passes. Cheap to call repeatedly: it only
-    /// ever advances.
+    /// Advance the active (top) level within `deadline`, in two phases: first
+    /// re-test the parent matches it inherited as `pending` (all below `cursor`),
+    /// then scan fresh records forward from `cursor`. Both append in ascending
+    /// order, so `matches` stays sorted. Only ever advances — cheap to call each
+    /// frame.
     fn resume_search_scan(&mut self, deadline: Instant) {
-        let Some((needle, mut i)) = self.scan_stack.last().map(|l| (l.needle.clone(), l.cursor)) else {
+        let Some(top) = self.scan_stack.last() else {
             return;
         };
-        let matcher = SearchMatcher::new(&needle);
+        if top.needle.is_empty() {
+            return;
+        }
+        let matcher = SearchMatcher::new(&top.needle.clone());
         let view_len = self.view_len();
-        let mut found = Vec::new();
         let mut steps = 0u32;
+
+        // Phase 1: filter the inherited candidates.
+        let mut pending = std::mem::take(&mut self.scan_stack.last_mut().unwrap().pending);
+        let mut idx = self.scan_stack.last().unwrap().pending_idx;
+        let mut survivors = Vec::new();
+        let mut yielded = false;
+        while idx < pending.len() {
+            if steps & 0x3FF == 0 && Instant::now() >= deadline {
+                yielded = true;
+                break;
+            }
+            let p = pending[idx];
+            if self.record_matches_search(p, &matcher) {
+                survivors.push(p);
+            }
+            idx += 1;
+            steps += 1;
+        }
+        {
+            let top = self.scan_stack.last_mut().unwrap();
+            top.matches.extend(survivors);
+            top.pending_idx = idx;
+            top.pending = if idx >= pending.len() { Vec::new() } else { std::mem::take(&mut pending) };
+        }
+        if yielded {
+            return;
+        }
+
+        // Phase 2: scan fresh records past the cursor.
+        let mut i = self.scan_stack.last().unwrap().cursor;
+        let mut found = Vec::new();
         while i < view_len {
-            if steps & 0xFFF == 0 && Instant::now() >= deadline {
+            if steps & 0x3FF == 0 && Instant::now() >= deadline {
                 break;
             }
             if self.record_matches_search(i, &matcher) {
@@ -853,10 +886,9 @@ impl App {
             i += 1;
             steps += 1;
         }
-        if let Some(top) = self.scan_stack.last_mut() {
-            top.matches.extend(found);
-            top.cursor = i;
-        }
+        let top = self.scan_stack.last_mut().unwrap();
+        top.matches.extend(found);
+        top.cursor = i;
     }
 
     fn clear_search_matches(&mut self) {
@@ -1493,6 +1525,20 @@ mod tests {
         app
     }
 
+    /// A scan level with no inherited candidates (matches already exact for its
+    /// cursor) — for hand-building stack states in tests.
+    fn level(needle: &str, matches: Vec<usize>, cursor: usize) -> ScanLevel {
+        ScanLevel { needle: needle.to_string(), matches, cursor, pending: Vec::new(), pending_idx: 0 }
+    }
+
+    /// Drive the background scan (and preview jump) to completion, standing in for
+    /// the run loop's idle ticks, since the interactive path defers scanning.
+    fn settle(app: &mut App) {
+        while app.search_scan_computing() {
+            app.tick_search_scan();
+        }
+    }
+
     const SAMPLE: &[&str] = &[
         r#"{"level":"info","user":"alice","latency_ms":42}"#,
         r#"{"level":"error","user":"bob","latency_ms":510}"#,
@@ -1578,19 +1624,22 @@ mod tests {
         app.selected = 2;
         app.enter_search();
         assert_eq!(app.search_anchor, Some(2));
-        // Type "bob" one char at a time; it should jump to the bob record (1)
-        // even though it's above the anchor, and the count updates live.
+        // Type "bob" one char at a time; after the background settles it should
+        // jump to the bob record (1) even though it's above the anchor.
         for c in "bob".chars() {
             app.input_char(c);
         }
+        settle(&mut app);
         assert_eq!(app.selected, 1, "preview should jump to the bob match");
         assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 1 }));
         // A non-matching character holds at the anchor and reports no matches.
         app.input_char('z');
+        settle(&mut app);
         assert_eq!(app.selected, 2, "no match holds at the anchor");
         assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
         // Backspacing back to a match previews again.
         app.input_backspace();
+        settle(&mut app);
         assert_eq!(app.selected, 1);
         // Cancel returns to the anchor and drops the preview.
         app.cancel_search();
@@ -1613,15 +1662,18 @@ mod tests {
         assert_eq!(app.input, "alice");
         // Add a character that matches nothing: holds at the anchor, count 0.
         app.input_char('x');
+        settle(&mut app);
         assert_eq!(app.selected, 2);
         assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 0, .. })));
         // Backspace restores "alice" (popped back to that level) — matches intact.
         app.input_backspace();
+        settle(&mut app);
         assert_eq!(app.input, "alice");
         assert_eq!(app.scan_matches(), [0, 2]);
         assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 2, .. })));
         // Widen further: "alic" still matches both.
         app.input_backspace();
+        settle(&mut app);
         assert_eq!(app.input, "alic");
         assert_eq!(app.scan_matches(), [0, 2]);
         assert!(app.search_count_complete());
@@ -1651,21 +1703,21 @@ mod tests {
     }
 
     #[test]
-    fn a_frozen_broad_level_keeps_only_its_first_match() {
+    fn a_big_parent_is_dropped_when_a_child_is_pushed() {
         let mut app = app_with(SAMPLE);
         app.scan_gen = app.view_gen;
-        // A big active level for "e", with its first match at position 3.
+        // A big active level "e", with its first match at position 3.
         let mut big = vec![3usize];
         big.extend(10..(10 + LEVEL_LIST_CAP));
-        app.scan_stack.push(ScanLevel {
-            needle: "e".to_string(),
-            matches: big,
-            cursor: 10 + LEVEL_LIST_CAP,
-        });
-        app.downgrade_frozen_top();
-        let top = app.scan_stack.last().unwrap();
-        assert!(top.matches.is_empty(), "the big list is dropped");
-        assert_eq!(top.cursor, 3, "…but the first-match skip is kept");
+        app.scan_stack.push(level("e", big, 10 + LEVEL_LIST_CAP));
+        // Typing "er" pushes a child: too big to inherit, so it resumes past the
+        // parent's first match, and the parent's list is freed to just that skip.
+        app.search_query = "er".to_string();
+        app.reconcile_scan_stack();
+        let parent = &app.scan_stack[app.scan_stack.len() - 2];
+        assert!(parent.matches.is_empty(), "the big parent list is dropped");
+        assert_eq!(parent.cursor, 3, "parent keeps just its first-match skip");
+        assert_eq!(app.scan_cursor(), 3, "child resumes at the parent's first match");
     }
 
     #[test]
@@ -1680,15 +1732,13 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut app = app_with(&refs);
         app.scan_gen = app.view_gen;
-        // A (downgraded) parent "z": empty matches, cursor parked at its first
-        // match, position 5 — so [0,5) is known to hold no "z".
-        app.scan_stack.push(ScanLevel { needle: "z".to_string(), matches: Vec::new(), cursor: 5 });
-        // Typing to "ze" seeds a child from the parent: it resumes at 5, not 0.
+        // A parent "z" whose scan reached the end with its first match at 5.
+        app.scan_stack.push(level("z", (5..12).collect(), 12));
+        // Typing to "ze" inherits "z"'s matches as pending; resuming filters them
+        // (all still match) then scans the tail — the [0,5) dead head is skipped.
         app.search_query = "ze".to_string();
         app.reconcile_scan_stack();
-        assert_eq!(app.scan_cursor(), 5, "the child inherits the parent's skip");
-        assert!(app.scan_matches().is_empty());
-        // Finishing the scan still finds every match (records 5..12).
+        assert_eq!(app.scan_cursor(), 12, "the child inherits the parent's cursor");
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert_eq!(app.scan_matches(), (5..12).collect::<Vec<_>>().as_slice());
         assert!(app.search_count_complete());
@@ -1702,13 +1752,16 @@ mod tests {
         for c in "ali".chars() {
             app.input_char(c);
         }
+        settle(&mut app);
         assert_eq!(app.scan_matches(), [0, 2]);
         // Typing 'c' pushes a child level; "ali" is now a frozen parent on the stack.
         app.input_char('c'); // "alic"
+        settle(&mut app);
         assert_eq!(app.active_needle(), "alic");
         assert!(app.scan_stack.iter().any(|l| l.needle == "ali"));
         // Backspace pops back to "ali" — resumed, not rescanned.
         app.input_backspace();
+        settle(&mut app);
         assert_eq!(app.input, "ali");
         assert_eq!(app.active_needle(), "ali");
         assert_eq!(app.scan_matches(), [0, 2]);
@@ -1750,9 +1803,11 @@ mod tests {
         for c in "ali".chars() {
             app.input_char(c);
         }
+        settle(&mut app);
         assert_eq!(app.scan_matches().len(), 2);
         app.input_backspace(); // "al"
         app.input_backspace(); // "a"
+        settle(&mut app);
         assert_eq!(app.input, "a");
         assert!(app.search_count_complete());
         assert_eq!(app.scan_matches().len(), 3, "widening rescans and finds more");
@@ -1805,19 +1860,19 @@ mod tests {
     }
 
     #[test]
-    fn growing_query_resumes_from_the_parents_cursor() {
+    fn growing_query_inherits_the_parents_matches_as_pending() {
         let mut app = app_with(SAMPLE);
         app.scan_gen = app.view_gen;
         // A partial "al" level: positions [0, 2) scanned, match at 0.
-        app.scan_stack.push(ScanLevel { needle: "al".to_string(), matches: vec![0], cursor: 2 });
-        // Grow to "ali": the child seeds from "al" — filters [0] (still matches)
-        // and keeps the parent's cursor, so the scanned region isn't re-tested.
+        app.scan_stack.push(level("al", vec![0], 2));
+        // Grow to "ali": the child inherits [0] as pending (to re-test) and the
+        // parent's cursor — no records are touched yet, so matches is still empty.
         app.search_query = "ali".to_string();
         app.reconcile_scan_stack();
         assert_eq!(app.active_needle(), "ali");
-        assert_eq!(app.scan_matches(), [0]);
-        assert_eq!(app.scan_cursor(), 2, "cursor is preserved across the growth");
-        // Resuming picks up only the untouched tail [2, 3).
+        assert_eq!(app.scan_cursor(), 2, "cursor inherited from the parent");
+        assert!(app.scan_matches().is_empty(), "filtering is deferred to the background");
+        // Resuming filters the pending [0] (still matches) then scans the tail.
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert_eq!(app.scan_matches(), [0, 2]);
         assert!(app.search_count_complete());
@@ -1835,12 +1890,14 @@ mod tests {
         for c in "alice".chars() {
             app.input_char(c);
         }
+        settle(&mut app);
         assert_eq!(total(&app), 2, "'alice' matches two records");
         // Backspacing widens the query past the previous one, so it can't narrow
         // and must re-scan the whole view — the count grows back.
         for _ in 0.."alic".len() {
             app.input_backspace();
         }
+        settle(&mut app);
         assert_eq!(app.input, "a");
         assert_eq!(total(&app), 3, "'a' matches all three (via latency_ms)");
     }

@@ -154,24 +154,26 @@ position (`/query 3/12 matches`). Search lands on the newest match first (the la
 one at or above the selection — logs read newest-last). Clear a committed search
 with **Esc**, or by deleting the whole query and the `/` prefix.
 
-`n`/`N` work at any scale because scanning is **continuous** rather than
-per-keystroke: a keystroke never blocks, it just advances the scan a little, and
-the scan keeps going on idle frames until it's done (or you change the query).
-The count fills in as it goes — a running `N+ matches` that settles to an exact
+`n`/`N` work at any scale because **typing never scans** — it's always instant,
+even over tens of millions of lines. A keystroke only pushes (or a backspace pops)
+one level of a **stack of prefix levels**, one per character of the query; the
+actual matching happens entirely in the background, a small slice per frame. The
+count fills in as it goes — a running `N+ matches` that settles to an exact
 `k/total matches` once the whole view is scanned (small and mid-size views settle
-instantly; a multi-million-record view keeps climbing while it works). While the
-count is still running, `n`/`N` and the on-type jump find nearby matches by
-scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
-The scan is organized as a **stack of prefix levels** — one per character of the
-query — which keeps the work minimal both ways. Typing a character pushes a level
-that resumes from its parent's cursor and filters the parent's matches (matches
-only shrink as the query grows, so nothing already ruled out is re-tested), helped
-by a per-record **render cache** so only the first pass over a fresh view pays the
-formatting cost. Backspacing simply **pops** back to the parent level, which
-resumes exactly where it left off — no rescanning — and a mid-string edit pops to
-the deepest still-valid prefix. Even a level whose match list grew too big to keep
-is reduced to just where its matches *began*: since a shorter query's first match
-can't come later than a longer one's, its child (and a later pop back to it)
+in a frame or two; a multi-million-record view keeps climbing while it works).
+While the count is still running, `n`/`N` and the on-type jump find nearby matches
+by scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
+
+The stack keeps the background work minimal both ways. Pushing a level for a new
+character hands it its parent's matches as *candidates to re-test* (matches only
+shrink as the query grows, so nothing already ruled out is rescanned) plus the
+parent's cursor to continue from — the background re-tests those candidates, then
+scans onward, helped by a per-record **render cache** so only the first pass over
+a fresh view pays the formatting cost. Backspacing simply **pops** back to the
+parent level, which resumes exactly where it left off — no rescanning — and a
+mid-string edit pops to the deepest still-valid prefix. Even a level whose match
+list is too big to hand down is skipped past where its matches *began*: since a
+shorter query's first match can't come later than a longer one's, its child
 resumes past that known-empty head instead of rescanning it. Above ~100k records
 search matches the raw record instead of the formatted text to stay fast, so the
 WYSIWYG guarantee applies below that; highlighting is always on the visible rows.
