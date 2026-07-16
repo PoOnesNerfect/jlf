@@ -31,7 +31,7 @@ pub const ACTIONS: [(&str, &str); 9] = [
 ];
 
 /// Which input the keypresses are being routed to.
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
     Normal,
     /// Typing a filter expression (`?`) — narrows the view.
@@ -1296,6 +1296,27 @@ mod tests {
         app.cancel_search();
         assert_eq!(app.selected, 2);
         assert!(app.search_query.is_empty(), "cancel keeps no committed search");
+    }
+
+    #[test]
+    fn committed_search_reports_its_count() {
+        // Regression: committing a search must count against the committed query,
+        // not the just-emptied live input. Mirror main.rs's Enter handling:
+        // take the input, leave Search mode, then apply.
+        let mut app = app_with(SAMPLE);
+        app.selected = 2;
+        app.enter_search();
+        for c in "alice".chars() {
+            app.input_char(c);
+        }
+        let text = std::mem::take(&mut app.input);
+        app.mode = Mode::Normal;
+        app.apply_search(text);
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted { current: Some(2), total: 2 }),
+            "committed search should count both alice records"
+        );
     }
 
     #[test]

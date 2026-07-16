@@ -480,13 +480,17 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => app.cycle_suggestions(-1),
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
-            match app.mode {
+            // Leave input mode *before* applying so `search_needle()` reads the
+            // committed query (not the just-emptied `input`) when the apply path
+            // refreshes the cached match count.
+            let mode = app.mode;
+            app.mode = Mode::Normal;
+            match mode {
                 Mode::Filter => app.apply_filter(text),
                 Mode::Search => app.apply_search(text),
                 Mode::Command => app.run_command(&text),
                 Mode::Normal => {}
             }
-            app.mode = Mode::Normal;
         }
         KeyCode::Esc => {
             // Cancel search: drop the incremental preview and return to the

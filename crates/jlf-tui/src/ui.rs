@@ -191,13 +191,36 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let prefix = mode_prefix(&app.mode);
-    let input = format!("{prefix}{}", app.input);
-    f.render_widget(Paragraph::new(Line::from(input)), inner);
+    let mut spans = vec![Span::raw(format!("{prefix}{}", app.input))];
+    // While searching, show the live match count right next to the query so
+    // it's obvious at the point of typing whether it hits.
+    if matches!(app.mode, Mode::Search) && !app.input.is_empty() {
+        if let Some(label) = search_count_label(app) {
+            spans.push(Span::styled(
+                format!("   {label}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+    let cursor_col = prefix.len_utf8() + app.input_cursor;
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
     // Place a real terminal cursor at the edit position so it's clear where
     // typing and deletion will happen.
-    let cursor_x = (inner.x + 1 + app.input_cursor as u16)
+    let cursor_x = (inner.x + cursor_col as u16)
         .min(inner.x + inner.width.saturating_sub(1));
     f.set_cursor_position((cursor_x, inner.y));
+}
+
+/// The live match-count label shown during search (`3 matches`, `no matches`,
+/// or `matches` when the view is too large to count). Shared by the input row
+/// and the bottom bar so they never disagree.
+fn search_count_label(app: &App) -> Option<String> {
+    match app.search_position()? {
+        MatchCount::Counted { total: 0, .. } => Some("no matches".to_string()),
+        MatchCount::Counted { total: 1, .. } => Some("1 match".to_string()),
+        MatchCount::Counted { total, .. } => Some(format!("{total} matches")),
+        MatchCount::Uncounted => Some("matches".to_string()),
+    }
 }
 
 /// The `?`/`/`/`:` prefix character shown before an active input.
@@ -296,15 +319,9 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
     // hint (with the live match count) while searching, else the normal keys.
     match app.mode {
         Mode::Search => {
-            // Live match count as you type, so it's clear whether the query hits.
-            let count = match app.search_position() {
-                Some(MatchCount::Counted { total: 0, .. }) => "no matches".to_string(),
-                Some(MatchCount::Counted { total, .. }) => format!("{total} matches"),
-                Some(MatchCount::Uncounted) => "matches".to_string(),
-                None => "type to search".to_string(),
-            };
+            // The count now sits next to the input; the bar just shows actions.
             spans.push(Span::styled(
-                format!("    {count} · ⏎ jump · Esc cancel"),
+                "    ⏎ jump · Esc cancel".to_string(),
                 Style::default().fg(Color::DarkGray),
             ));
         }
