@@ -169,9 +169,12 @@ and a per-record **render cache**, so only the first pass over a fresh view pays
 the formatting cost. Going the other way, a backspace can't reuse the narrower
 scan (a shorter query matches *more*), but the last several scan states are
 stashed, so stepping back to a query you already typed **restores** its progress
-instantly instead of rescanning. Above ~100k records search matches the raw record
-instead of the formatted text to stay fast, so the WYSIWYG guarantee applies below
-that; highlighting is always on the visible rows.
+instantly instead of rescanning. Even for a query whose match list was too big to
+keep, the stash remembers where its matches *began*: since a shorter query's first
+match can't come later than a longer one's, a restart resumes past that
+known-empty head instead of rescanning it from the top. Above ~100k records search
+matches the raw record instead of the formatted text to stay fast, so the WYSIWYG
+guarantee applies below that; highlighting is always on the visible rows.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

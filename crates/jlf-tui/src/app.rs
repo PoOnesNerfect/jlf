@@ -92,9 +92,10 @@ const SCAN_STEP: Duration = Duration::from_millis(30);
 /// How many recent scan states to keep for instant restore on backspace.
 const PREFIX_CACHE_MAX: usize = 16;
 
-/// Largest match list (in entries) worth stashing for restore. Broad queries with
-/// huge lists are skipped — cloning them costs more than a rescan would save, and
-/// you rarely settle on such a query anyway.
+/// Largest match list (in entries) kept whole in the stash. A bigger list is
+/// reduced to just its empty-prefix skip (first-match position) instead — cloning
+/// a broad query's huge list costs more than it saves, but its skip is still worth
+/// keeping.
 const PREFIX_CACHE_ENTRY_CAP: usize = 50_000;
 
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
@@ -787,31 +788,53 @@ impl App {
             kept.retain(|&p| self.record_matches_search(p, &matcher));
             self.search_matches = kept;
         } else {
+            // Restart — but resume past the furthest known-empty prefix from any
+            // cached substring of this query, rather than rescanning from 0.
             self.search_matches.clear();
-            self.search_scan_cursor = 0;
+            self.search_scan_cursor = self.empty_prefix_skip(&needle);
         }
         self.search_matches_key = key;
     }
 
     /// Stash the current scan state (keyed by its needle + view generation) so a
-    /// later return to that query restores instantly. Skips empty queries and
-    /// lists too large to be worth cloning; keeps the cache to [`PREFIX_CACHE_MAX`]
-    /// entries, most-recent last.
+    /// later return to that query resumes instead of rescanning. Small lists are
+    /// kept whole (instant, complete restore). A list too big to be worth cloning
+    /// is reduced to just its **empty-prefix skip**: `[0, first_match)` has no
+    /// matches, so `matches=[]`, `cursor=first_match` is a valid partial state that
+    /// still lets a later restart resume past the dead head. Keeps the cache to
+    /// [`PREFIX_CACHE_MAX`] entries, most-recent last.
     fn stash_scan_state(&mut self) {
         let (needle, gen) = &self.search_matches_key;
-        if needle.is_empty() || self.search_matches.len() > PREFIX_CACHE_ENTRY_CAP {
+        if needle.is_empty() {
             return;
         }
         let (needle, gen) = (needle.clone(), *gen);
+        let (matches, cursor) = if self.search_matches.len() <= PREFIX_CACHE_ENTRY_CAP {
+            (self.search_matches.clone(), self.search_scan_cursor)
+        } else {
+            let first_match = self.search_matches.first().copied().unwrap_or(self.search_scan_cursor);
+            (Vec::new(), first_match)
+        };
         self.prefix_cache.retain(|p| !(p.needle == needle && p.view_gen == gen));
-        self.prefix_cache.push(PrefixScan {
-            needle,
-            view_gen: gen,
-            matches: self.search_matches.clone(),
-            cursor: self.search_scan_cursor,
-        });
+        self.prefix_cache.push(PrefixScan { needle, view_gen: gen, matches, cursor });
         let overflow = self.prefix_cache.len().saturating_sub(PREFIX_CACHE_MAX);
         self.prefix_cache.drain(..overflow);
+    }
+
+    /// The largest prefix of the view known to hold no matches for `needle`, taken
+    /// from any cached query that's a substring of it. Because matches only shrink
+    /// as a query grows, a substring's empty prefix is empty for `needle` too — so
+    /// a restart can resume from here instead of rescanning the dead head from 0.
+    /// (First-match positions are monotonic in query length, so the largest such
+    /// floor is the tightest safe skip.)
+    fn empty_prefix_skip(&self, needle: &str) -> usize {
+        self.prefix_cache
+            .iter()
+            .filter(|e| e.view_gen == self.view_gen && needle.contains(e.needle.as_str()))
+            .map(|e| e.matches.first().copied().unwrap_or(e.cursor))
+            .max()
+            .unwrap_or(0)
+            .min(self.view_len())
     }
 
     /// Restore a stashed scan for `needle`/`gen` if present (removing it), so the
@@ -1647,6 +1670,54 @@ mod tests {
         // …and resuming just extends over the new tail to include record 3.
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert_eq!(app.search_matches, vec![0, 2, 3]);
+        assert!(app.search_count_complete());
+    }
+
+    #[test]
+    fn a_broad_list_is_stashed_as_just_its_first_match() {
+        let mut app = app_with(SAMPLE);
+        let gen = app.view_gen;
+        app.search_query = "e".to_string();
+        app.search_matches_key = ("e".to_string(), gen);
+        // A list too big to keep whole, with its first match at position 3.
+        let mut big = vec![3usize];
+        big.extend(10..(10 + PREFIX_CACHE_ENTRY_CAP));
+        app.search_matches = big;
+        app.search_scan_cursor = 10 + PREFIX_CACHE_ENTRY_CAP;
+        app.stash_scan_state();
+        let e = app.prefix_cache.iter().find(|p| p.needle == "e").unwrap();
+        assert!(e.matches.is_empty(), "the big list is dropped");
+        assert_eq!(e.cursor, 3, "…but the first-match skip is kept");
+    }
+
+    #[test]
+    fn restart_resumes_past_an_ancestors_empty_prefix() {
+        // 12 records; "z" doesn't appear until record 5.
+        let lines: Vec<String> = (0..12)
+            .map(|i| {
+                let msg = if i >= 5 { "zebra" } else { "ok" };
+                format!(r#"{{"message":"{msg}","i":{i}}}"#)
+            })
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut app = app_with(&refs);
+        let gen = app.view_gen;
+        // A cached ancestor "z" whose first match is at position 5.
+        app.prefix_cache.push(PrefixScan {
+            needle: "z".to_string(),
+            view_gen: gen,
+            matches: (5..12).collect(),
+            cursor: 12,
+        });
+        assert_eq!(app.empty_prefix_skip("ze"), 5, "'ze' inherits 'z''s empty prefix");
+        // Restarting "ze" resumes from 5, not 0 — the dead head is skipped.
+        app.search_query = "ze".to_string();
+        app.reconcile_search_key();
+        assert_eq!(app.search_scan_cursor, 5);
+        assert!(app.search_matches.is_empty());
+        // Finishing the scan still finds every match (records 5..12).
+        app.resume_search_scan(Instant::now() + Duration::from_secs(60));
+        assert_eq!(app.search_matches, (5..12).collect::<Vec<_>>());
         assert!(app.search_count_complete());
     }
 
