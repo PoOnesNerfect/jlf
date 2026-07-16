@@ -293,16 +293,32 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
     // The hint section: completion help while filtering/commanding, a search
-    // hint while searching, else the normal key hints.
-    let hints = match app.mode {
-        Mode::Filter | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
-        Mode::Search => "⏎ jump to match · Esc cancel",
-        Mode::Normal => HINT,
-    };
-    spans.push(Span::styled(
-        format!("    {hints}"),
-        Style::default().fg(Color::DarkGray),
-    ));
+    // hint (with the live match count) while searching, else the normal keys.
+    match app.mode {
+        Mode::Search => {
+            // Live match count as you type, so it's clear whether the query hits.
+            let count = match app.search_position() {
+                Some(MatchCount::Counted { total: 0, .. }) => "no matches".to_string(),
+                Some(MatchCount::Counted { total, .. }) => format!("{total} matches"),
+                Some(MatchCount::Uncounted) => "matches".to_string(),
+                None => "type to search".to_string(),
+            };
+            spans.push(Span::styled(
+                format!("    {count} · ⏎ jump · Esc cancel"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        _ => {
+            let hints = match app.mode {
+                Mode::Filter | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
+                _ => HINT,
+            };
+            spans.push(Span::styled(
+                format!("    {hints}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

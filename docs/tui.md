@@ -139,13 +139,16 @@ Press `/` to search. Search **highlights** matching text without hiding any
 rows — every record stays visible, and the matched text is shown reversed in
 yellow. Matching looks anywhere in the record (any key or value) and is
 **smart-case**: an all-lowercase query matches case-insensitively, while a query
-with any uppercase matches exactly (which is also the faster path). Type to
-highlight incrementally; **Enter** jumps to the newest match (the last one, at or
-above the selection — logs read newest-last, so it lands on the most recent hit),
-and then **`n`** steps **up** (toward older records) and **`N`** steps **down**
-(toward newer), wrapping around. The active query and your position among the
-matches are shown in the status line (`/query 3/12 matches`). Clear it with
-**Esc**, or by deleting the whole query and the `/` prefix.
+with any uppercase matches exactly (which is also the faster path). Search is
+**incremental** — as you type, the selection jumps to the nearest match and the
+bottom bar shows a live count (`3 matches` / `no matches`), so you can tell right
+away whether the query hits. **Enter** commits at that match; **Esc** cancels and
+returns to where you started. After committing, **`n`** steps **up** (toward
+older records) and **`N`** steps **down** (toward newer), wrapping around, and the
+status line shows the active query and position (`/query 3/12 matches`). Search
+lands on the newest match first (the last one at or above the selection — logs
+read newest-last). Clear a committed search with **Esc**, or by deleting the whole
+query and the `/` prefix.
 
 `n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
 is shown only while the view is small enough to scan cheaply (~100k records); on

@@ -489,6 +489,11 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             app.mode = Mode::Normal;
         }
         KeyCode::Esc => {
+            // Cancel search: drop the incremental preview and return to the
+            // anchor (no-op in filter/command mode).
+            if matches!(app.mode, Mode::Search) {
+                app.cancel_search();
+            }
             app.mode = Mode::Normal;
             app.input.clear();
         }
@@ -522,7 +527,10 @@ fn input_backspace_or_exit(app: &mut App) {
 fn exit_search_or_command(app: &mut App) {
     match app.mode {
         Mode::Filter if !app.filter_text.is_empty() => app.apply_filter(String::new()),
+        // Deleting out of search: clear an applied query, else just cancel the
+        // preview back to the anchor.
         Mode::Search if !app.search_query.is_empty() => app.apply_search(String::new()),
+        Mode::Search => app.cancel_search(),
         _ => {}
     }
     app.mode = Mode::Normal;

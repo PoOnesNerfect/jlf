@@ -319,10 +319,11 @@ cover the **whole** stream (memory and file), not just what's in RAM.
 
 **Search** (`/`): highlights matching text anywhere in a record (any key or
 value, smart-case — lowercase matches any case, uppercase is exact) **without
-hiding rows** — every record stays visible and
-the matched text is highlighted. **Enter** jumps to the newest match; **`n`**
-then steps up (older) and **`N`** down (newer), and the status line shows your
-position (`/query 3/12 matches`).
+hiding rows** — every record stays visible and the matched text is highlighted.
+It's **incremental**: the selection jumps to the nearest match as you type (with a
+live count in the bottom bar), **Enter** commits and **Esc** returns to where you
+started. After committing, **`n`** steps up (older) and **`N`** down (newer), and
+the status line shows your position (`/query 3/12 matches`).
 
 **Filter** (`?`): **narrows** to matching records. Tokens shaped like
 `field=value` (operators `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter

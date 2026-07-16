@@ -162,6 +162,10 @@ pub struct App {
     /// lookups rather than a per-frame full scan.
     search_matches: Vec<usize>,
     search_matches_key: (String, usize),
+    /// The selection when `/` search was opened. While typing, each keystroke
+    /// previews the nearest match relative to this anchor (incremental search),
+    /// and Esc restores it. `None` outside search mode.
+    search_anchor: Option<usize>,
     pub status: String,
     /// The rendered summary panel, if one is open.
     pub summary: Option<Summary>,
@@ -252,6 +256,7 @@ impl App {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_matches_key: (String::new(), 0),
+            search_anchor: None,
             status: String::new(),
             summary: None,
             summary_job: None,
@@ -438,19 +443,56 @@ impl App {
         self.refresh_suggestions();
     }
 
-    /// Enter search mode (`/`): seed the input from the active query. Search
-    /// highlights matches and jumps between them without hiding rows.
+    /// Enter search mode (`/`): seed the input from the active query and remember
+    /// the current selection as the incremental-search anchor. Typing previews
+    /// the nearest match from here; Enter commits, Esc returns to the anchor.
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.input = self.search_query.clone();
         self.input_cursor = self.input.chars().count();
+        self.search_anchor = Some(self.selected);
         self.sug_cycle = None;
         self.sug.clear();
+        self.preview_search();
+    }
+
+    /// Incremental preview: with the live input as the needle, jump to the nearest
+    /// match from the anchor (the newest one at or above it, wrapping) so you see
+    /// a match as you type. An empty input returns to the anchor. Doesn't touch
+    /// `search_query`, so Esc can cancel cleanly; highlighting and the count read
+    /// the live input via `search_needle` while search mode is open.
+    fn preview_search(&mut self) {
+        let Some(anchor) = self.search_anchor else {
+            return;
+        };
+        self.refresh_search_matches();
+        if self.input.is_empty() {
+            self.select(anchor);
+            return;
+        }
+        let matcher = SearchMatcher::new(&self.input);
+        if self.record_matches_search(anchor, &matcher) {
+            self.select(anchor);
+        } else if let Some(pos) = self.find_match_in(anchor, false, &matcher) {
+            self.select(pos);
+        } else {
+            self.select(anchor); // no match: hold at the anchor
+        }
+    }
+
+    /// Cancel an in-progress search (Esc): drop the preview, return to the anchor,
+    /// and fall back to whatever query was committed before (via `search_needle`).
+    pub fn cancel_search(&mut self) {
+        if let Some(anchor) = self.search_anchor.take() {
+            self.select(anchor);
+            self.refresh_search_matches();
+        }
     }
 
     /// Commit `query` as the active search and jump to the first match at or
     /// after the current selection. An empty query clears the search.
     pub fn apply_search(&mut self, query: String) {
+        self.search_anchor = None;
         self.search_query = query;
         if self.search_query.is_empty() {
             self.clear_search_matches();
@@ -461,7 +503,7 @@ impl App {
         // Jump to the first match from the end — the newest matching record at or
         // above the selection (logs read newest-last, so you usually open search
         // at the bottom and want the most recent hit). Stay put if the current
-        // record already matches.
+        // record already matches (incremental preview usually put us there).
         let matcher = SearchMatcher::new(&self.search_query);
         if self.record_matches_search(self.selected, &matcher) {
             self.status = "search set".into();
@@ -473,8 +515,9 @@ impl App {
         }
     }
 
-    /// The text currently driving highlighting: the live input while typing a
-    /// search, otherwise the committed query. Empty when neither is active.
+    /// The text currently driving search (highlight, count, preview): the live
+    /// input while typing a `/` search, otherwise the committed query. Empty when
+    /// neither is active.
     pub fn search_needle(&self) -> &str {
         match self.mode {
             Mode::Search => &self.input,
@@ -488,40 +531,48 @@ impl App {
         self.record(pos).is_some_and(|rec| matcher.is_match(&rec))
     }
 
-    /// The next/previous view position matching the search, scanning outward from
-    /// `from` and wrapping around. Incremental (stops at the first hit), so `n`/`N`
-    /// stay cheap and reach every match regardless of the view size.
+    /// The next/previous view position matching the active needle, scanning from
+    /// `from` and wrapping. Incremental (stops at the first hit).
     fn find_match(&self, from: usize, forward: bool) -> Option<usize> {
-        let len = self.view_len();
-        if len == 0 || self.search_query.is_empty() {
+        let needle = self.search_needle();
+        if needle.is_empty() {
             return None;
         }
-        let matcher = SearchMatcher::new(&self.search_query);
-        // Walk all `len` other positions in order, wrapping, so a match anywhere
-        // is found (and `from` itself is the last resort on a full wrap).
+        self.find_match_in(from, forward, &SearchMatcher::new(needle))
+    }
+
+    /// Core of [`Self::find_match`] for a prepared matcher (also used by the
+    /// incremental preview): walk all positions from `from`, wrapping, so a match
+    /// anywhere is found (and `from` itself is the last resort on a full wrap).
+    fn find_match_in(&self, from: usize, forward: bool, matcher: &SearchMatcher) -> Option<usize> {
+        let len = self.view_len();
+        if len == 0 {
+            return None;
+        }
         (1..=len)
             .map(|d| {
                 let off = if forward { d } else { len - d };
                 (from + off) % len
             })
-            .find(|&p| self.record_matches_search(p, &matcher))
+            .find(|&p| self.record_matches_search(p, matcher))
     }
 
     /// Rebuild the cached match list for the count/position indicator, but only
     /// when the view is small enough to scan cheaply ([`COUNT_SCAN_CAP`]). For a
     /// larger view a full scan would page the spilled store from disk (and a
     /// *partial* scan would miscount, e.g. when the matches are all in the tail),
-    /// so the count is simply omitted — `n`/`N` navigation still works. Cached by
-    /// `(query, view_len)` so it runs at most once per search/view change.
+    /// so the count is simply omitted — `n`/`N` navigation still works. Keyed on
+    /// the live needle + view length, so it recomputes only when either changes.
     fn refresh_search_matches(&mut self) {
-        let key = (self.search_query.clone(), self.view_len());
+        let needle = self.search_needle().to_owned();
+        let key = (needle.clone(), self.view_len());
         if self.search_matches_key == key {
             return;
         }
-        self.search_matches = if self.search_query.is_empty() || self.view_len() > COUNT_SCAN_CAP {
+        self.search_matches = if needle.is_empty() || self.view_len() > COUNT_SCAN_CAP {
             Vec::new()
         } else {
-            let matcher = SearchMatcher::new(&self.search_query);
+            let matcher = SearchMatcher::new(&needle);
             (0..self.view_len())
                 .filter(|&p| self.record_matches_search(p, &matcher))
                 .collect()
@@ -551,7 +602,7 @@ impl App {
     /// `Uncounted` means the view was too large to scan cheaply. Reads the cached
     /// list — no scan.
     pub fn search_position(&self) -> Option<MatchCount> {
-        if self.search_query.is_empty() {
+        if self.search_needle().is_empty() {
             return None;
         }
         if self.view_len() > COUNT_SCAN_CAP {
@@ -758,8 +809,11 @@ impl App {
 
     fn after_input_change(&mut self) {
         self.sug_cycle = None;
-        if matches!(self.mode, Mode::Filter | Mode::Command) {
-            self.refresh_suggestions();
+        match self.mode {
+            Mode::Filter | Mode::Command => self.refresh_suggestions(),
+            // Incremental search: jump to a match as you type.
+            Mode::Search => self.preview_search(),
+            Mode::Normal => {}
         }
     }
 
@@ -1215,6 +1269,33 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), SAMPLE[1]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn incremental_search_previews_and_cancels() {
+        // records: 0=alice, 1=bob, 2=alice. Start at the bottom, anchored there.
+        let mut app = app_with(SAMPLE);
+        app.selected = 2;
+        app.enter_search();
+        assert_eq!(app.search_anchor, Some(2));
+        // Type "bob" one char at a time; it should jump to the bob record (1)
+        // even though it's above the anchor, and the count updates live.
+        for c in "bob".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(app.selected, 1, "preview should jump to the bob match");
+        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 1 }));
+        // A non-matching character holds at the anchor and reports no matches.
+        app.input_char('z');
+        assert_eq!(app.selected, 2, "no match holds at the anchor");
+        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
+        // Backspacing back to a match previews again.
+        app.input_backspace();
+        assert_eq!(app.selected, 1);
+        // Cancel returns to the anchor and drops the preview.
+        app.cancel_search();
+        assert_eq!(app.selected, 2);
+        assert!(app.search_query.is_empty(), "cancel keeps no committed search");
     }
 
     #[test]
