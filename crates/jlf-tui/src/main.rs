@@ -395,7 +395,7 @@ fn handle_normal(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char('f') => app.toggle_follow(),
-        KeyCode::Char('c') => app.expanded = !app.expanded,
+        KeyCode::Char('c') => app.toggle_expanded(),
         KeyCode::Char('r') => app.toggle_raw(),
         // `e` opens the current (filtered) view in $EDITOR. It needs to suspend
         // the terminal, which only the run loop can do, so just flag it here.

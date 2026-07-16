@@ -137,23 +137,31 @@ whole stream. It appears only when the records don't all fit on screen.
 
 Press `/` to search. Search **highlights** matching text without hiding any
 rows — every record stays visible, and the matched text is shown reversed in
-yellow. Matching looks anywhere in the record (any key or value) and is
-**smart-case**: an all-lowercase query matches case-insensitively, while a query
-with any uppercase matches exactly (which is also the faster path). Search is
-**incremental** — as you type, the selection jumps to the nearest match and the
-bottom bar shows a live count (`3 matches` / `no matches`), so you can tell right
-away whether the query hits. **Enter** commits at that match; **Esc** cancels and
-returns to where you started. After committing, **`n`** steps **up** (toward
-older records) and **`N`** steps **down** (toward newer), wrapping around, and the
-status line shows the active query and position (`/query 3/12 matches`). Search
-lands on the newest match first (the last one at or above the selection — logs
-read newest-last). Clear a committed search with **Esc**, or by deleting the whole
-query and the `/` prefix.
+yellow. Search matches **what you see**: the formatted, on-screen text, not the
+raw JSON. So a match always highlights and is always reachable — searching a JSON
+key name that the recipe doesn't print (e.g. `span` when it renders only the
+method and URI) finds nothing, while searching a value that's shown does. In raw
+mode (`r`) the raw record *is* what's shown, so search matches the JSON verbatim
+there. Matching is **smart-case**: an all-lowercase query matches
+case-insensitively, while a query with any uppercase matches exactly (which is
+also the faster path). Search is **incremental** — as you type, the selection
+jumps to the nearest match and the bottom bar shows a live count (`3 matches` /
+`no matches`), so you can tell right away whether the query hits. **Enter**
+commits at that match; **Esc** cancels and returns to where you started. After
+committing, **`n`** steps **up** (toward older records) and **`N`** steps **down**
+(toward newer), wrapping around, and the status line shows the active query and
+position (`/query 3/12 matches`). Search lands on the newest match first (the last
+one at or above the selection — logs read newest-last). Clear a committed search
+with **Esc**, or by deleting the whole query and the `/` prefix.
 
 `n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
 is shown only while the view is small enough to scan cheaply (~100k records); on
 a larger view the count is omitted rather than shown partially, but navigation
-still works.
+still works. Counting is incremental in a second sense too: because matches can
+only shrink as you add characters, each keystroke re-tests only the previous
+matches rather than the whole view (a backspace re-scans in full). Rendered text
+is cached per record, so only the first keystroke over a fresh view pays the
+formatting cost.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

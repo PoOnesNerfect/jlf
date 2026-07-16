@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
@@ -77,6 +79,12 @@ const DRAIN_BATCH: usize = 50_000;
 /// omitted rather than computed (or partially — and misleadingly — scanned);
 /// `n`/`N` navigation is incremental and still works at any size.
 const COUNT_SCAN_CAP: usize = 100_000;
+
+/// Cap on cached rendered search text (records). Bounds memory to roughly this
+/// many rendered lines; on overflow the cache is dropped and refills on the next
+/// scan. Comfortably above [`COUNT_SCAN_CAP`] so a single count scan never evicts
+/// itself mid-pass.
+const SEARCH_CACHE_CAP: usize = 200_000;
 
 /// The search match count for the status line.
 #[derive(Debug, PartialEq)]
@@ -202,6 +210,16 @@ pub struct App {
     row_fmt: Formatter,
     /// Multi-line, colored formatter for the expanded list (like piped `jlf`).
     full_fmt: Formatter,
+    /// No-color twins of the two formatters above, used to build the text `/`
+    /// search matches against — so search sees exactly what the list shows (minus
+    /// the ANSI), not the raw JSON with its hidden keys.
+    row_plain: Formatter,
+    full_plain: Formatter,
+    /// Cache of a record's rendered searchable text, keyed by store index. Filled
+    /// lazily as search scans and cleared whenever the display mode changes (so it
+    /// always reflects what's on screen). Keeps typing responsive: only the first
+    /// keystroke over a fresh view pays the render cost.
+    search_cache: RefCell<HashMap<usize, Rc<str>>>,
     /// When true, the list shows each record over multiple lines (header +
     /// pretty data) like piped `jlf`; toggled with `c`.
     pub expanded: bool,
@@ -233,6 +251,10 @@ impl App {
         };
         let row_fmt = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), false, true)?;
         let full_fmt = Formatter::new(&expanded_format("${@output}", &vars(&[])), false, false)?;
+        // No-color twins for search: same layout, no ANSI, so a substring test is
+        // over exactly the visible text.
+        let row_plain = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), true, true)?;
+        let full_plain = Formatter::new(&expanded_format("${@output}", &vars(&[])), true, false)?;
 
         // Start in the mode the config asks for: `compact = true` opens in the
         // one-line view, otherwise the multi-line (expanded) view. `c` toggles it.
@@ -275,6 +297,9 @@ impl App {
             rx,
             row_fmt,
             full_fmt,
+            row_plain,
+            full_plain,
+            search_cache: RefCell::new(HashMap::new()),
             expanded: !compact,
             raw: false,
             scroll_top: std::cell::Cell::new(0),
@@ -525,10 +550,48 @@ impl App {
         }
     }
 
-    /// Whether `pos`'s record matches `matcher` (search text anywhere in the raw
-    /// record — any key or value).
+    /// Whether `pos`'s record matches `matcher`. Matches against the *rendered*
+    /// text — what the list actually shows (see [`Self::search_haystack`]) — so a
+    /// counted match is always one you can see and that highlights.
     fn record_matches_search(&self, pos: usize, matcher: &SearchMatcher) -> bool {
-        self.record(pos).is_some_and(|rec| matcher.is_match(&rec))
+        self.search_haystack(pos).is_some_and(|hay| matcher.is_match(&hay))
+    }
+
+    /// The text `/` search matches against for view position `pos`. WYSIWYG: the
+    /// same text the list shows, minus ANSI. Raw mode matches the record verbatim
+    /// (that *is* what's shown), as does a view too large to render on every
+    /// keystroke — there we trade exactness for staying responsive. Rendered text
+    /// is cached per record so scanning as you type is cheap after the first pass.
+    fn search_haystack(&self, pos: usize) -> Option<Rc<str>> {
+        let idx = self.view_index(pos)?;
+        let raw = self.store.get(idx);
+        if self.raw || self.view_len() > COUNT_SCAN_CAP {
+            return Some(raw);
+        }
+        if let Some(hit) = self.search_cache.borrow().get(&idx) {
+            return Some(hit.clone());
+        }
+        let fmt = if self.expanded { &self.full_plain } else { &self.row_plain };
+        let text: Rc<str> = Rc::from(self.render_with(&raw, fmt));
+        let mut cache = self.search_cache.borrow_mut();
+        // Bound memory: a fresh full scan repopulates cheaply, so just drop the
+        // whole cache rather than tracking per-entry recency.
+        if cache.len() >= SEARCH_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(idx, text.clone());
+        Some(text)
+    }
+
+    /// Invalidate rendered-search state after the displayed text changes
+    /// (raw/expanded toggle, redaction): drop cached text and force the match
+    /// list + count to recompute against the new rendering.
+    fn invalidate_search_render(&mut self) {
+        self.search_cache.borrow_mut().clear();
+        self.search_matches_key = (String::new(), 0);
+        if !self.search_needle().is_empty() {
+            self.refresh_search_matches();
+        }
     }
 
     /// The next/previous view position matching the active needle, scanning from
@@ -563,6 +626,12 @@ impl App {
     /// *partial* scan would miscount, e.g. when the matches are all in the tail),
     /// so the count is simply omitted — `n`/`N` navigation still works. Keyed on
     /// the live needle + view length, so it recomputes only when either changes.
+    ///
+    /// Narrows incrementally: matches can only *shrink* as the query grows, so
+    /// when the previous query is a substring of the new one over the same view
+    /// (the common append-a-char case), every new match was already a previous
+    /// match — we re-test just those instead of the whole view. A backspace or a
+    /// mid-string edit breaks that containment and falls back to a full scan.
     fn refresh_search_matches(&mut self) {
         let needle = self.search_needle().to_owned();
         let key = (needle.clone(), self.view_len());
@@ -573,11 +642,26 @@ impl App {
             Vec::new()
         } else {
             let matcher = SearchMatcher::new(&needle);
-            (0..self.view_len())
+            let candidates = self.search_scan_candidates(&needle);
+            candidates
                 .filter(|&p| self.record_matches_search(p, &matcher))
                 .collect()
         };
         self.search_matches_key = key;
+    }
+
+    /// Positions to test when rebuilding the match list for `needle`: just the
+    /// previous match list when it's a strict superset (the old query is a
+    /// substring of the new one over the same view), otherwise the whole view.
+    fn search_scan_candidates(&mut self, needle: &str) -> Box<dyn Iterator<Item = usize>> {
+        let (prev_needle, prev_len) = &self.search_matches_key;
+        let can_narrow =
+            *prev_len == self.view_len() && !prev_needle.is_empty() && needle.contains(prev_needle.as_str());
+        if can_narrow {
+            Box::new(std::mem::take(&mut self.search_matches).into_iter())
+        } else {
+            Box::new(0..self.view_len())
+        }
     }
 
     fn clear_search_matches(&mut self) {
@@ -920,7 +1004,14 @@ impl App {
 
     pub fn toggle_raw(&mut self) {
         self.raw = !self.raw;
+        self.invalidate_search_render();
         self.status = if self.raw { "raw logs" } else { "formatted logs" }.into();
+    }
+
+    /// Toggle the compact one-line list vs the multi-line expanded view (`c`).
+    pub fn toggle_expanded(&mut self) {
+        self.expanded = !self.expanded;
+        self.invalidate_search_render();
     }
 
     // ----- selected record --------------------------------------------------
@@ -1081,6 +1172,8 @@ impl App {
                 } else {
                     format!("redacting {}", self.redact.join(", "))
                 };
+                // Redaction changes the rendered text, so search must re-match.
+                self.invalidate_search_render();
             }
             "follow" => self.toggle_follow(),
             "csv" | "tsv" | "md" => self.export(verb, &rest),
@@ -1296,6 +1389,54 @@ mod tests {
         app.cancel_search();
         assert_eq!(app.selected, 2);
         assert!(app.search_query.is_empty(), "cancel keeps no committed search");
+    }
+
+    #[test]
+    fn incremental_count_narrows_then_recovers_on_backspace() {
+        let mut app = app_with(SAMPLE);
+        app.enter_search();
+        let total = |a: &App| match a.search_position() {
+            Some(MatchCount::Counted { total, .. }) => total,
+            other => panic!("expected a counted result, got {other:?}"),
+        };
+        // Appending narrows the candidate set each keystroke.
+        for c in "alice".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(total(&app), 2, "'alice' matches two records");
+        // Backspacing widens the query past the previous one, so it can't narrow
+        // and must re-scan the whole view — the count grows back.
+        for _ in 0.."alic".len() {
+            app.input_backspace();
+        }
+        assert_eq!(app.input, "a");
+        assert_eq!(total(&app), 3, "'a' matches all three (via latency_ms)");
+    }
+
+    #[test]
+    fn search_matches_displayed_text_not_hidden_json_keys() {
+        // The default view renders `level` as its value (`info`/`error`), so the
+        // key name "level" never appears on screen — WYSIWYG search must not match
+        // it even though it's in the raw JSON. A visible value ("alice") still does.
+        let mut app = app_with(SAMPLE);
+        app.apply_search("level".to_string());
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted { current: None, total: 0 }),
+            "a hidden JSON key should not count as a match"
+        );
+        app.apply_search("alice".to_string());
+        assert!(
+            matches!(app.search_position(), Some(MatchCount::Counted { total: 2, .. })),
+            "a visible value should match"
+        );
+        // In raw mode the raw line *is* what's shown, so the key matches again.
+        app.toggle_raw();
+        app.apply_search("level".to_string());
+        assert!(
+            matches!(app.search_position(), Some(MatchCount::Counted { total: 3, .. })),
+            "raw mode matches the raw record, keys included"
+        );
     }
 
     #[test]
