@@ -89,6 +89,14 @@ const RENDER_MATCH_CAP: usize = 100_000;
 /// stays responsive on any view size.
 const SCAN_STEP: Duration = Duration::from_millis(30);
 
+/// How many recent scan states to keep for instant restore on backspace.
+const PREFIX_CACHE_MAX: usize = 16;
+
+/// Largest match list (in entries) worth stashing for restore. Broad queries with
+/// huge lists are skipped — cloning them costs more than a rescan would save, and
+/// you rarely settle on such a query anyway.
+const PREFIX_CACHE_ENTRY_CAP: usize = 50_000;
+
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
 /// many rendered lines; on overflow the cache is dropped and refills on the next
 /// scan. Comfortably above [`RENDER_MATCH_CAP`] so a single scan never evicts
@@ -104,6 +112,16 @@ pub enum MatchCount {
     /// The scan is still running (view too large to finish in one budget): at
     /// least `found` matches so far. Shown as `N+ matches` (`? matches` at zero).
     Partial { found: usize },
+}
+
+/// A stashed search-scan state: the matches found so far for `needle` over a view
+/// of `view_len` records, and how far the scan had reached. Restored wholesale
+/// when the query returns to `needle` (e.g. after a backspace).
+struct PrefixScan {
+    needle: String,
+    view_len: usize,
+    matches: Vec<usize>,
+    cursor: usize,
 }
 
 /// Smart-case: a search is case-sensitive when its query contains any uppercase
@@ -186,6 +204,11 @@ pub struct App {
     /// growing resumes from here (filtering what's found, scanning only the
     /// untouched tail) instead of restarting — and so idle frames can finish it.
     search_scan_cursor: usize,
+    /// Small LRU of recent scan states (`needle`+`view_len` → matches + cursor),
+    /// most-recent last. Backspacing to a query you already scanned restores its
+    /// progress instantly instead of rescanning from the top. Bounded in count and
+    /// per-entry size (see [`PREFIX_CACHE_MAX`]/[`PREFIX_CACHE_ENTRY_CAP`]).
+    prefix_cache: Vec<PrefixScan>,
     /// The selection when `/` search was opened. While typing, each keystroke
     /// previews the nearest match relative to this anchor (incremental search),
     /// and Esc restores it. `None` outside search mode.
@@ -295,6 +318,7 @@ impl App {
             search_matches: Vec::new(),
             search_matches_key: (String::new(), 0),
             search_scan_cursor: 0,
+            prefix_cache: Vec::new(),
             search_anchor: None,
             status: String::new(),
             summary: None,
@@ -413,8 +437,9 @@ impl App {
         }
         self.filter_text = text;
         self.rebuild_view();
-        // The view changed, so the cached search matches (view positions) are
-        // stale — recompute them against the new view.
+        // The view changed, so cached search positions (current and stashed) are
+        // stale — drop them and rescan the active query against the new view.
+        self.reset_search_scan();
         if !self.search_query.is_empty() {
             self.refresh_search_matches();
         }
@@ -719,16 +744,24 @@ impl App {
 
     /// Reconcile the match list with the current needle/view before scanning:
     /// - unchanged → keep the cursor and matches (resume where we left off);
+    /// - seen before at this view size (e.g. backspaced to it) → restore its
+    ///   stashed matches + cursor instantly;
     /// - the query *grew* (old is a substring of the new) over the same view →
     ///   every remaining match is still a candidate, so filter the already-found
     ///   matches by the narrower query and keep the cursor (the unscanned tail is
     ///   picked up by the resume);
-    /// - otherwise (backspace, mid-string edit, view changed) → restart at 0.
+    /// - otherwise (mid-string edit, view changed) → restart at 0.
+    ///
+    /// The state we leave is stashed first, so stepping back to it is free.
     fn reconcile_search_key(&mut self) {
         let needle = self.search_needle().to_owned();
         let view_len = self.view_len();
         let key = (needle.clone(), view_len);
         if self.search_matches_key == key {
+            return;
+        }
+        self.stash_scan_state();
+        if self.restore_scan_state(&needle, view_len) {
             return;
         }
         let (prev_needle, prev_len) = &self.search_matches_key;
@@ -743,6 +776,45 @@ impl App {
             self.search_scan_cursor = 0;
         }
         self.search_matches_key = key;
+    }
+
+    /// Stash the current scan state (keyed by its needle + view length) so a later
+    /// return to that query restores instantly. Skips empty queries and lists too
+    /// large to be worth cloning; keeps the cache to [`PREFIX_CACHE_MAX`] entries,
+    /// most-recent last.
+    fn stash_scan_state(&mut self) {
+        let (needle, view_len) = &self.search_matches_key;
+        if needle.is_empty() || self.search_matches.len() > PREFIX_CACHE_ENTRY_CAP {
+            return;
+        }
+        let (needle, view_len) = (needle.clone(), *view_len);
+        self.prefix_cache.retain(|p| !(p.needle == needle && p.view_len == view_len));
+        self.prefix_cache.push(PrefixScan {
+            needle,
+            view_len,
+            matches: self.search_matches.clone(),
+            cursor: self.search_scan_cursor,
+        });
+        let overflow = self.prefix_cache.len().saturating_sub(PREFIX_CACHE_MAX);
+        self.prefix_cache.drain(..overflow);
+    }
+
+    /// Restore a stashed scan for `needle`/`view_len` if present (removing it), so
+    /// the count and navigation pick up where that query left off. Returns whether
+    /// a state was restored.
+    fn restore_scan_state(&mut self, needle: &str, view_len: usize) -> bool {
+        let Some(i) = self
+            .prefix_cache
+            .iter()
+            .position(|p| p.needle == needle && p.view_len == view_len)
+        else {
+            return false;
+        };
+        let hit = self.prefix_cache.remove(i);
+        self.search_matches = hit.matches;
+        self.search_scan_cursor = hit.cursor;
+        self.search_matches_key = (hit.needle, hit.view_len);
+        true
     }
 
     /// Scan forward from the cursor toward the end of the view, appending matches
@@ -781,6 +853,7 @@ impl App {
         self.search_matches.clear();
         self.search_matches_key = (String::new(), 0);
         self.search_scan_cursor = 0;
+        self.prefix_cache.clear();
     }
 
     /// Jump to the next (`n`) or previous (`N`) matching record, wrapping around.
@@ -1509,6 +1582,32 @@ mod tests {
         app.cancel_search();
         assert_eq!(app.selected, 2);
         assert!(app.search_query.is_empty(), "cancel keeps no committed search");
+    }
+
+    #[test]
+    fn backspacing_restores_the_stashed_scan() {
+        // records: 0=alice, 1=bob, 2=alice.
+        let mut app = app_with(SAMPLE);
+        app.enter_search();
+        for c in "ali".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(app.search_matches, vec![0, 2]);
+        // Grow past it, then come back: "ali" should restore from the stash rather
+        // than rescan (and there should be a stash entry to consume).
+        app.input_char('c'); // "alic"
+        assert!(
+            app.prefix_cache.iter().any(|p| p.needle == "ali"),
+            "leaving 'ali' stashes it"
+        );
+        app.input_backspace(); // back to "alic"? no — removes 'c' → "ali"
+        assert_eq!(app.input, "ali");
+        assert_eq!(app.search_matches, vec![0, 2]);
+        assert!(app.search_count_complete());
+        assert!(
+            !app.prefix_cache.iter().any(|p| p.needle == "ali"),
+            "restoring 'ali' consumes its stash"
+        );
     }
 
     #[test]

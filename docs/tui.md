@@ -164,12 +164,14 @@ count is still running, `n`/`N` and the on-type jump find nearby matches by
 scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
 Two things keep the work minimal: because matches can only shrink as you add
 characters, a growing query **resumes** from where it left off — already-found
-matches are filtered by the new character and only the unscanned tail is visited
-(a backspace or mid-string edit restarts) — and a per-record **render cache**, so
-only the first pass over a fresh view pays the formatting cost. Above ~100k
-records search matches the raw record instead of the formatted text to stay fast,
-so the WYSIWYG guarantee applies below that; highlighting is always on the visible
-rows.
+matches are filtered by the new character and only the unscanned tail is visited —
+and a per-record **render cache**, so only the first pass over a fresh view pays
+the formatting cost. Going the other way, a backspace can't reuse the narrower
+scan (a shorter query matches *more*), but the last several scan states are
+stashed, so stepping back to a query you already typed **restores** its progress
+instantly instead of rescanning. Above ~100k records search matches the raw record
+instead of the formatted text to stay fast, so the WYSIWYG guarantee applies below
+that; highlighting is always on the visible rows.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.
