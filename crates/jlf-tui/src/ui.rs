@@ -252,9 +252,11 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
         // when the view is too large to count cheaply.
         let label = match app.search_position() {
             Some(MatchCount::Counted { current: Some(i), total }) => {
-                Some(format!(" {i}/{total} matches"))
+                Some(format!("   {i}/{total} matches"))
             }
-            Some(MatchCount::Counted { current: None, total }) => Some(format!(" {total} matches")),
+            Some(MatchCount::Counted { current: None, total }) => {
+                Some(format!("   {total} matches"))
+            }
             _ => None,
         };
         if let Some(label) = label {
