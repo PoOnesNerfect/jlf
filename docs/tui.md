@@ -162,19 +162,19 @@ The count fills in as it goes — a running `N+ matches` that settles to an exac
 instantly; a multi-million-record view keeps climbing while it works). While the
 count is still running, `n`/`N` and the on-type jump find nearby matches by
 scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
-Two things keep the work minimal: because matches can only shrink as you add
-characters, a growing query **resumes** from where it left off — already-found
-matches are filtered by the new character and only the unscanned tail is visited —
-and a per-record **render cache**, so only the first pass over a fresh view pays
-the formatting cost. Going the other way, a backspace can't reuse the narrower
-scan (a shorter query matches *more*), but the last several scan states are
-stashed, so stepping back to a query you already typed **restores** its progress
-instantly instead of rescanning. Even for a query whose match list was too big to
-keep, the stash remembers where its matches *began*: since a shorter query's first
-match can't come later than a longer one's, a restart resumes past that
-known-empty head instead of rescanning it from the top. Above ~100k records search
-matches the raw record instead of the formatted text to stay fast, so the WYSIWYG
-guarantee applies below that; highlighting is always on the visible rows.
+The scan is organized as a **stack of prefix levels** — one per character of the
+query — which keeps the work minimal both ways. Typing a character pushes a level
+that resumes from its parent's cursor and filters the parent's matches (matches
+only shrink as the query grows, so nothing already ruled out is re-tested), helped
+by a per-record **render cache** so only the first pass over a fresh view pays the
+formatting cost. Backspacing simply **pops** back to the parent level, which
+resumes exactly where it left off — no rescanning — and a mid-string edit pops to
+the deepest still-valid prefix. Even a level whose match list grew too big to keep
+is reduced to just where its matches *began*: since a shorter query's first match
+can't come later than a longer one's, its child (and a later pop back to it)
+resumes past that known-empty head instead of rescanning it. Above ~100k records
+search matches the raw record instead of the formatted text to stay fast, so the
+WYSIWYG guarantee applies below that; highlighting is always on the visible rows.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

@@ -89,14 +89,16 @@ const RENDER_MATCH_CAP: usize = 100_000;
 /// stays responsive on any view size.
 const SCAN_STEP: Duration = Duration::from_millis(30);
 
-/// How many recent scan states to keep for instant restore on backspace.
-const PREFIX_CACHE_MAX: usize = 16;
+/// Largest match list (in entries) a stack level keeps whole. When a frozen
+/// level's list is bigger, it's reduced to just its empty-prefix skip (the
+/// first-match position) — cloning a broad query's huge list costs more than it
+/// saves, but its skip is still worth keeping.
+const LEVEL_LIST_CAP: usize = 50_000;
 
-/// Largest match list (in entries) kept whole in the stash. A bigger list is
-/// reduced to just its empty-prefix skip (first-match position) instead — cloning
-/// a broad query's huge list costs more than it saves, but its skip is still worth
-/// keeping.
-const PREFIX_CACHE_ENTRY_CAP: usize = 50_000;
+/// Cap on the scan stack depth (≈ query length). Bounds memory against a
+/// pathologically long query; the oldest (shortest-prefix) levels are dropped
+/// first, which only loosens the empty-prefix skip slightly.
+const MAX_SCAN_STACK: usize = 128;
 
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
 /// many rendered lines; on overflow the cache is dropped and refills on the next
@@ -115,13 +117,13 @@ pub enum MatchCount {
     Partial { found: usize },
 }
 
-/// A stashed search-scan state: the matches found so far for `needle` over view
-/// generation `view_gen`, and how far the scan had reached. Restored wholesale
-/// when the query returns to `needle` (e.g. after a backspace) while that
-/// generation is still current.
-struct PrefixScan {
+/// One level of the incremental-search scan stack: the matches found so far for
+/// `needle` and how far the scan reached (`matches` is exact for view positions
+/// `[0, cursor)`, sorted). The stack holds the chain of prefixes of the current
+/// query, so a keystroke pushes a level and a backspace pops one — each level
+/// keeping its own progress so a popped-back level resumes where it left off.
+struct ScanLevel {
     needle: String,
-    view_gen: u64,
     matches: Vec<usize>,
     cursor: usize,
 }
@@ -196,27 +198,19 @@ pub struct App {
     pub search_query: String,
     /// Bumped each time the view is rebuilt (a filter change remaps every
     /// position). Streaming new records only *appends*, leaving positions valid,
-    /// so it does **not** bump this — which lets the search scan and its stash
-    /// survive live tailing (the cursor just extends over the new tail) and only
-    /// reset when the view is genuinely remapped.
+    /// so it does **not** bump this — which lets the search scan survive live
+    /// tailing (the cursor just extends over the new tail) and only reset when the
+    /// view is genuinely remapped.
     view_gen: u64,
-    /// Cached view positions matching the active search, sorted ascending, with
-    /// the `(query, view_gen)` they were computed for. Rebuilt when the query or
-    /// the view changes so `n`/`N` and the `k/total` position are cheap lookups
-    /// rather than a per-frame full scan.
-    search_matches: Vec<usize>,
-    search_matches_key: (String, u64),
-    /// How far the current scan has reached: [`Self::search_matches`] is exact for
-    /// view positions `[0, search_scan_cursor)`. The scan is **complete** once
-    /// this reaches `view_len`. Persisted across keystrokes so a query that keeps
-    /// growing resumes from here (filtering what's found, scanning only the
-    /// untouched tail) instead of restarting — and so idle frames can finish it.
-    search_scan_cursor: usize,
-    /// Small LRU of recent scan states (`needle`+`view_gen` → matches + cursor),
-    /// most-recent last. Backspacing to a query you already scanned restores its
-    /// progress instantly instead of rescanning from the top. Bounded in count and
-    /// per-entry size (see [`PREFIX_CACHE_MAX`]/[`PREFIX_CACHE_ENTRY_CAP`]).
-    prefix_cache: Vec<PrefixScan>,
+    /// The incremental-search scan as a stack of prefix levels: `scan_stack[i]` is
+    /// a proper prefix of `scan_stack[i+1]`, and the **top is the active query**.
+    /// Typing pushes a level (seeded from its parent — matches shrink as the query
+    /// grows), backspacing pops one (resuming that level where it left off), and a
+    /// mid-string edit pops to the deepest still-valid prefix. Empty ⇒ no search.
+    scan_stack: Vec<ScanLevel>,
+    /// The [`Self::view_gen`] the `scan_stack` was built for; a mismatch means the
+    /// view was remapped and the stack is discarded.
+    scan_gen: u64,
     /// The selection when `/` search was opened. While typing, each keystroke
     /// previews the nearest match relative to this anchor (incremental search),
     /// and Esc restores it. `None` outside search mode.
@@ -323,10 +317,8 @@ impl App {
             input_cursor: 0,
             filter_text: String::new(),
             search_query: String::new(),
-            search_matches: Vec::new(),
-            search_matches_key: (String::new(), 0),
-            search_scan_cursor: 0,
-            prefix_cache: Vec::new(),
+            scan_stack: Vec::new(),
+            scan_gen: 0,
             view_gen: 0,
             search_anchor: None,
             status: String::new(),
@@ -676,11 +668,11 @@ impl App {
         self.scan_for_match(from, forward, &SearchMatcher::new(needle), Instant::now() + SCAN_STEP)
     }
 
-    /// Nearest match to `from` in the exact match list (sorted view positions),
+    /// Nearest match to `from` in the active level's list (sorted view positions),
     /// wrapping: forward → first match after `from`, backward → last match before
     /// it. O(log n), no record scan.
     fn find_in_list(&self, from: usize, forward: bool) -> Option<usize> {
-        let m = &self.search_matches;
+        let m = self.scan_matches();
         if m.is_empty() {
             return None;
         }
@@ -720,9 +712,25 @@ impl App {
         None
     }
 
-    /// Whether the match list covers the whole view (an exact count is known).
+    /// The active (top) level's matches, or empty when no search is running.
+    fn scan_matches(&self) -> &[usize] {
+        self.scan_stack.last().map_or(&[], |l| l.matches.as_slice())
+    }
+
+    /// How far the active (top) level has scanned (a view position); 0 with none.
+    fn scan_cursor(&self) -> usize {
+        self.scan_stack.last().map_or(0, |l| l.cursor)
+    }
+
+    /// The active (top) level's needle, or `""` when no search is running.
+    fn active_needle(&self) -> &str {
+        self.scan_stack.last().map_or("", |l| l.needle.as_str())
+    }
+
+    /// Whether the active level's scan covers the whole view (exact count known).
+    /// True with no active search (nothing left to scan).
     fn search_count_complete(&self) -> bool {
-        self.search_scan_cursor >= self.view_len()
+        self.scan_stack.is_empty() || self.scan_cursor() >= self.view_len()
     }
 
     /// Whether a scan is still in progress — the run loop polls faster while so,
@@ -744,142 +752,111 @@ impl App {
         }
     }
 
-    /// Point the scan at the current needle/view and take one [`SCAN_STEP`]. This
-    /// is the interactive entry point (called as you type): a query that keeps
-    /// growing **resumes** from the cursor rather than restarting, so no record is
-    /// ever re-tested for a query it already failed. The scan doesn't have to
+    /// Point the scan at the current needle and take one [`SCAN_STEP`]. This is
+    /// the interactive entry point (called as you type): the scan doesn't have to
     /// finish here — idle frames carry it the rest of the way.
     fn refresh_search_matches(&mut self) {
-        self.reconcile_search_key();
+        self.reconcile_scan_stack();
         self.resume_search_scan(Instant::now() + SCAN_STEP);
     }
 
-    /// Reconcile the match list with the current needle/view before scanning:
-    /// - unchanged → keep the cursor and matches (resume where we left off);
-    /// - seen before at this view generation (e.g. backspaced to it) → restore its
-    ///   stashed matches + cursor instantly;
-    /// - the query *grew* (old is a substring of the new) at the same generation →
-    ///   every remaining match is still a candidate, so filter the already-found
-    ///   matches by the narrower query and keep the cursor (the unscanned tail is
-    ///   picked up by the resume);
-    /// - otherwise (mid-string edit, view remapped) → restart at 0.
-    ///
-    /// Keying on the view *generation* (not its length) means streaming new
-    /// records — which only appends — keeps the scan/stash valid; only a rebuild
-    /// (filter change) invalidates them.
-    ///
-    /// The state we leave is stashed first, so stepping back to it is free.
-    fn reconcile_search_key(&mut self) {
-        let needle = self.search_needle().to_owned();
+    /// Align the scan stack with the current needle (and view generation) before
+    /// scanning. The stack holds the prefix chain of the active query:
+    /// - typing a char makes the needle *extend* the top → push a new level seeded
+    ///   from its parent (matches only shrink as the query grows, so filter the
+    ///   parent's matches and resume from the parent's cursor — which already skips
+    ///   whatever empty/scanned prefix the parent covered, monotonically);
+    /// - a backspace or mid-string edit makes the top *not* a prefix of the needle
+    ///   → pop until the top is a prefix, so a popped-back level **resumes exactly
+    ///   where it left off**;
+    /// - a rebuilt view (generation change) discards the stack; streaming append
+    ///   doesn't (positions stay valid, the cursor just extends over the tail).
+    fn reconcile_scan_stack(&mut self) {
         let gen = self.view_gen;
-        let key = (needle.clone(), gen);
-        if self.search_matches_key == key {
-            return;
+        if self.scan_gen != gen {
+            self.scan_stack.clear();
+            self.scan_gen = gen;
         }
-        self.stash_scan_state();
-        if self.restore_scan_state(&needle, gen) {
-            return;
-        }
-        let (prev_needle, prev_gen) = &self.search_matches_key;
-        let grew = *prev_gen == gen && !prev_needle.is_empty() && needle.contains(prev_needle.as_str());
-        if grew {
-            let matcher = SearchMatcher::new(&needle);
-            let mut kept = std::mem::take(&mut self.search_matches);
-            kept.retain(|&p| self.record_matches_search(p, &matcher));
-            self.search_matches = kept;
-        } else {
-            // Restart — but resume past the furthest known-empty prefix from any
-            // cached substring of this query, rather than rescanning from 0.
-            self.search_matches.clear();
-            self.search_scan_cursor = self.empty_prefix_skip(&needle);
-        }
-        self.search_matches_key = key;
-    }
-
-    /// Stash the current scan state (keyed by its needle + view generation) so a
-    /// later return to that query resumes instead of rescanning. Small lists are
-    /// kept whole (instant, complete restore). A list too big to be worth cloning
-    /// is reduced to just its **empty-prefix skip**: `[0, first_match)` has no
-    /// matches, so `matches=[]`, `cursor=first_match` is a valid partial state that
-    /// still lets a later restart resume past the dead head. Keeps the cache to
-    /// [`PREFIX_CACHE_MAX`] entries, most-recent last.
-    fn stash_scan_state(&mut self) {
-        let (needle, gen) = &self.search_matches_key;
+        let needle = self.search_needle().to_owned();
         if needle.is_empty() {
+            self.scan_stack.clear();
             return;
         }
-        let (needle, gen) = (needle.clone(), *gen);
-        let (matches, cursor) = if self.search_matches.len() <= PREFIX_CACHE_ENTRY_CAP {
-            (self.search_matches.clone(), self.search_scan_cursor)
-        } else {
-            let first_match = self.search_matches.first().copied().unwrap_or(self.search_scan_cursor);
-            (Vec::new(), first_match)
+        // Drop levels that aren't prefixes of the new needle (backspace or a
+        // mid-string edit); what remains is the deepest cached prefix of it.
+        while self.scan_stack.last().is_some_and(|l| !needle.starts_with(l.needle.as_str())) {
+            self.scan_stack.pop();
+        }
+        if self.active_needle() == needle {
+            return; // already active — resume carries it forward
+        }
+        // Seed a new level from its parent (the deepest kept prefix): the parent's
+        // matches filtered by the added characters, and its cursor — so the shared,
+        // already-scanned/empty head is never re-tested.
+        let (matches, cursor) = match self.scan_stack.last() {
+            Some(parent) => {
+                let cursor = parent.cursor;
+                let matcher = SearchMatcher::new(&needle);
+                let matches = parent
+                    .matches
+                    .iter()
+                    .copied()
+                    .filter(|&p| self.record_matches_search(p, &matcher))
+                    .collect();
+                (matches, cursor)
+            }
+            None => (Vec::new(), 0),
         };
-        self.prefix_cache.retain(|p| !(p.needle == needle && p.view_gen == gen));
-        self.prefix_cache.push(PrefixScan { needle, view_gen: gen, matches, cursor });
-        let overflow = self.prefix_cache.len().saturating_sub(PREFIX_CACHE_MAX);
-        self.prefix_cache.drain(..overflow);
+        // The parent is now frozen; if its list is too big, keep only its
+        // empty-prefix skip (first match) to bound memory.
+        self.downgrade_frozen_top();
+        if self.scan_stack.len() + 1 > MAX_SCAN_STACK {
+            let overflow = self.scan_stack.len() + 1 - MAX_SCAN_STACK;
+            self.scan_stack.drain(..overflow);
+        }
+        self.scan_stack.push(ScanLevel { needle, matches, cursor });
     }
 
-    /// The largest prefix of the view known to hold no matches for `needle`, taken
-    /// from any cached query that's a substring of it. Because matches only shrink
-    /// as a query grows, a substring's empty prefix is empty for `needle` too — so
-    /// a restart can resume from here instead of rescanning the dead head from 0.
-    /// (First-match positions are monotonic in query length, so the largest such
-    /// floor is the tightest safe skip.)
-    fn empty_prefix_skip(&self, needle: &str) -> usize {
-        self.prefix_cache
-            .iter()
-            .filter(|e| e.view_gen == self.view_gen && needle.contains(e.needle.as_str()))
-            .map(|e| e.matches.first().copied().unwrap_or(e.cursor))
-            .max()
-            .unwrap_or(0)
-            .min(self.view_len())
+    /// Reduce the top (just-frozen) level's match list to just its empty-prefix
+    /// skip when it's too big to keep whole: `[0, first_match)` has no matches, so
+    /// `matches=[]` with `cursor=first_match` is a valid, cheap state that still
+    /// lets a later resume skip the dead head. A no-op for small lists.
+    fn downgrade_frozen_top(&mut self) {
+        if let Some(top) = self.scan_stack.last_mut() {
+            if top.matches.len() > LEVEL_LIST_CAP {
+                let first = top.matches.first().copied().unwrap_or(top.cursor);
+                top.matches = Vec::new();
+                top.cursor = first;
+            }
+        }
     }
 
-    /// Restore a stashed scan for `needle`/`gen` if present (removing it), so the
-    /// count and navigation pick up where that query left off. Returns whether a
-    /// state was restored.
-    fn restore_scan_state(&mut self, needle: &str, gen: u64) -> bool {
-        let Some(i) = self
-            .prefix_cache
-            .iter()
-            .position(|p| p.needle == needle && p.view_gen == gen)
-        else {
-            return false;
-        };
-        let hit = self.prefix_cache.remove(i);
-        self.search_matches = hit.matches;
-        self.search_scan_cursor = hit.cursor;
-        self.search_matches_key = (hit.needle, hit.view_gen);
-        true
-    }
-
-    /// Scan forward from the cursor toward the end of the view, appending matches
-    /// (in order, so the list stays sorted), until the view is exhausted or the
-    /// deadline passes. Cheap to call repeatedly: it only ever advances.
+    /// Scan the active (top) level forward from its cursor toward the end of the
+    /// view, appending matches (in order, so the list stays sorted), until the
+    /// view is exhausted or the deadline passes. Cheap to call repeatedly: it only
+    /// ever advances.
     fn resume_search_scan(&mut self, deadline: Instant) {
-        let needle = self.search_needle();
-        if needle.is_empty() {
-            self.search_matches.clear();
-            self.search_scan_cursor = self.view_len();
+        let Some((needle, mut i)) = self.scan_stack.last().map(|l| (l.needle.clone(), l.cursor)) else {
             return;
-        }
-        let matcher = SearchMatcher::new(needle);
+        };
+        let matcher = SearchMatcher::new(&needle);
         let view_len = self.view_len();
-        let mut i = self.search_scan_cursor;
+        let mut found = Vec::new();
         let mut steps = 0u32;
         while i < view_len {
             if steps & 0xFFF == 0 && Instant::now() >= deadline {
                 break;
             }
             if self.record_matches_search(i, &matcher) {
-                self.search_matches.push(i);
+                found.push(i);
             }
             i += 1;
             steps += 1;
         }
-        self.search_scan_cursor = i;
+        if let Some(top) = self.scan_stack.last_mut() {
+            top.matches.extend(found);
+            top.cursor = i;
+        }
     }
 
     fn clear_search_matches(&mut self) {
@@ -888,10 +865,8 @@ impl App {
 
     /// Drop all scan state so the next active needle starts a fresh scan.
     fn reset_search_scan(&mut self) {
-        self.search_matches.clear();
-        self.search_matches_key = (String::new(), 0);
-        self.search_scan_cursor = 0;
-        self.prefix_cache.clear();
+        self.scan_stack.clear();
+        self.scan_gen = self.view_gen;
     }
 
     /// Jump to the next (`n`) or previous (`N`) matching record, wrapping around.
@@ -920,13 +895,14 @@ impl App {
         if self.search_needle().is_empty() {
             return None;
         }
+        let matches = self.scan_matches();
         if !self.search_count_complete() {
-            return Some(MatchCount::Partial { found: self.search_matches.len() });
+            return Some(MatchCount::Partial { found: matches.len() });
         }
-        let current = self.search_matches.binary_search(&self.selected).ok().map(|i| i + 1);
+        let current = matches.binary_search(&self.selected).ok().map(|i| i + 1);
         Some(MatchCount::Counted {
             current,
-            total: self.search_matches.len(),
+            total: matches.len(),
         })
     }
 
@@ -1639,20 +1615,20 @@ mod tests {
         app.input_char('x');
         assert_eq!(app.selected, 2);
         assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 0, .. })));
-        // Backspace restores "alice" (from the stash) — count and matches intact.
+        // Backspace restores "alice" (popped back to that level) — matches intact.
         app.input_backspace();
         assert_eq!(app.input, "alice");
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.scan_matches(), [0, 2]);
         assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 2, .. })));
         // Widen further: "alic" still matches both.
         app.input_backspace();
         assert_eq!(app.input, "alic");
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.scan_matches(), [0, 2]);
         assert!(app.search_count_complete());
     }
 
     #[test]
-    fn streaming_new_records_keeps_the_scan_and_stash() {
+    fn streaming_new_records_keeps_the_scan() {
         let (tx, rx) = channel();
         for l in SAMPLE {
             tx.send((*l).to_string()).unwrap();
@@ -1660,38 +1636,40 @@ mod tests {
         let mut app = App::new(rx).unwrap();
         app.drain_input();
         app.apply_search("alice".to_string());
-        let key_before = app.search_matches_key.clone();
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.scan_matches(), [0, 2]);
+        let depth_before = app.scan_stack.len();
         // A new record streams in (append only — positions stay valid).
         tx.send(r#"{"level":"info","user":"alice","latency_ms":7}"#.to_string()).unwrap();
         app.drain_input();
-        // The scan key is unchanged (no rebuild), so nothing was thrown away…
-        assert_eq!(app.search_matches_key, key_before);
+        // Append doesn't bump the generation, so the stack survives untouched…
+        assert_eq!(app.scan_stack.len(), depth_before);
+        assert_eq!(app.active_needle(), "alice");
         // …and resuming just extends over the new tail to include record 3.
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
-        assert_eq!(app.search_matches, vec![0, 2, 3]);
+        assert_eq!(app.scan_matches(), [0, 2, 3]);
         assert!(app.search_count_complete());
     }
 
     #[test]
-    fn a_broad_list_is_stashed_as_just_its_first_match() {
+    fn a_frozen_broad_level_keeps_only_its_first_match() {
         let mut app = app_with(SAMPLE);
-        let gen = app.view_gen;
-        app.search_query = "e".to_string();
-        app.search_matches_key = ("e".to_string(), gen);
-        // A list too big to keep whole, with its first match at position 3.
+        app.scan_gen = app.view_gen;
+        // A big active level for "e", with its first match at position 3.
         let mut big = vec![3usize];
-        big.extend(10..(10 + PREFIX_CACHE_ENTRY_CAP));
-        app.search_matches = big;
-        app.search_scan_cursor = 10 + PREFIX_CACHE_ENTRY_CAP;
-        app.stash_scan_state();
-        let e = app.prefix_cache.iter().find(|p| p.needle == "e").unwrap();
-        assert!(e.matches.is_empty(), "the big list is dropped");
-        assert_eq!(e.cursor, 3, "…but the first-match skip is kept");
+        big.extend(10..(10 + LEVEL_LIST_CAP));
+        app.scan_stack.push(ScanLevel {
+            needle: "e".to_string(),
+            matches: big,
+            cursor: 10 + LEVEL_LIST_CAP,
+        });
+        app.downgrade_frozen_top();
+        let top = app.scan_stack.last().unwrap();
+        assert!(top.matches.is_empty(), "the big list is dropped");
+        assert_eq!(top.cursor, 3, "…but the first-match skip is kept");
     }
 
     #[test]
-    fn restart_resumes_past_an_ancestors_empty_prefix() {
+    fn a_child_level_resumes_past_its_parents_empty_prefix() {
         // 12 records; "z" doesn't appear until record 5.
         let lines: Vec<String> = (0..12)
             .map(|i| {
@@ -1701,50 +1679,40 @@ mod tests {
             .collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut app = app_with(&refs);
-        let gen = app.view_gen;
-        // A cached ancestor "z" whose first match is at position 5.
-        app.prefix_cache.push(PrefixScan {
-            needle: "z".to_string(),
-            view_gen: gen,
-            matches: (5..12).collect(),
-            cursor: 12,
-        });
-        assert_eq!(app.empty_prefix_skip("ze"), 5, "'ze' inherits 'z''s empty prefix");
-        // Restarting "ze" resumes from 5, not 0 — the dead head is skipped.
+        app.scan_gen = app.view_gen;
+        // A (downgraded) parent "z": empty matches, cursor parked at its first
+        // match, position 5 — so [0,5) is known to hold no "z".
+        app.scan_stack.push(ScanLevel { needle: "z".to_string(), matches: Vec::new(), cursor: 5 });
+        // Typing to "ze" seeds a child from the parent: it resumes at 5, not 0.
         app.search_query = "ze".to_string();
-        app.reconcile_search_key();
-        assert_eq!(app.search_scan_cursor, 5);
-        assert!(app.search_matches.is_empty());
+        app.reconcile_scan_stack();
+        assert_eq!(app.scan_cursor(), 5, "the child inherits the parent's skip");
+        assert!(app.scan_matches().is_empty());
         // Finishing the scan still finds every match (records 5..12).
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
-        assert_eq!(app.search_matches, (5..12).collect::<Vec<_>>());
+        assert_eq!(app.scan_matches(), (5..12).collect::<Vec<_>>().as_slice());
         assert!(app.search_count_complete());
     }
 
     #[test]
-    fn backspacing_restores_the_stashed_scan() {
+    fn backspacing_pops_back_to_the_parent_level() {
         // records: 0=alice, 1=bob, 2=alice.
         let mut app = app_with(SAMPLE);
         app.enter_search();
         for c in "ali".chars() {
             app.input_char(c);
         }
-        assert_eq!(app.search_matches, vec![0, 2]);
-        // Grow past it, then come back: "ali" should restore from the stash rather
-        // than rescan (and there should be a stash entry to consume).
+        assert_eq!(app.scan_matches(), [0, 2]);
+        // Typing 'c' pushes a child level; "ali" is now a frozen parent on the stack.
         app.input_char('c'); // "alic"
-        assert!(
-            app.prefix_cache.iter().any(|p| p.needle == "ali"),
-            "leaving 'ali' stashes it"
-        );
-        app.input_backspace(); // back to "alic"? no — removes 'c' → "ali"
+        assert_eq!(app.active_needle(), "alic");
+        assert!(app.scan_stack.iter().any(|l| l.needle == "ali"));
+        // Backspace pops back to "ali" — resumed, not rescanned.
+        app.input_backspace();
         assert_eq!(app.input, "ali");
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.active_needle(), "ali");
+        assert_eq!(app.scan_matches(), [0, 2]);
         assert!(app.search_count_complete());
-        assert!(
-            !app.prefix_cache.iter().any(|p| p.needle == "ali"),
-            "restoring 'ali' consumes its stash"
-        );
     }
 
     #[test]
@@ -1782,12 +1750,12 @@ mod tests {
         for c in "ali".chars() {
             app.input_char(c);
         }
-        assert_eq!(app.search_matches.len(), 2);
+        assert_eq!(app.scan_matches().len(), 2);
         app.input_backspace(); // "al"
         app.input_backspace(); // "a"
         assert_eq!(app.input, "a");
         assert!(app.search_count_complete());
-        assert_eq!(app.search_matches.len(), 3, "widening rescans and finds more");
+        assert_eq!(app.scan_matches().len(), 3, "widening rescans and finds more");
     }
 
     #[test]
@@ -1809,14 +1777,14 @@ mod tests {
             app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         }
         assert!(app.search_count_complete());
-        assert_eq!(app.search_matches.len(), 10, "exactly the ten 'panic' records");
+        assert_eq!(app.scan_matches().len(), 10, "exactly the ten 'panic' records");
     }
 
     #[test]
     fn partial_scan_reports_running_count_and_still_navigates() {
         let mut app = app_with(SAMPLE); // 0=alice, 1=bob, 2=alice
         app.search_query = "alice".to_string();
-        app.reconcile_search_key();
+        app.reconcile_scan_stack();
         // A budget that's already spent stops the scan immediately (nothing
         // scanned yet) — the state a huge view is in mid-scan.
         app.resume_search_scan(Instant::now());
@@ -1829,7 +1797,7 @@ mod tests {
         // Resuming to completion turns the running count into an exact one.
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert!(app.search_count_complete());
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.scan_matches(), [0, 2]);
         assert!(matches!(
             app.search_position(),
             Some(MatchCount::Counted { total: 2, .. })
@@ -1837,24 +1805,21 @@ mod tests {
     }
 
     #[test]
-    fn growing_query_resumes_the_scan_instead_of_restarting() {
+    fn growing_query_resumes_from_the_parents_cursor() {
         let mut app = app_with(SAMPLE);
-        let gen = app.view_gen;
-        // Hand-build a partial scan of "al": positions [0, 2) scanned, match at 0.
-        app.search_query = "al".to_string();
-        app.search_matches_key = ("al".to_string(), gen);
-        app.search_matches = vec![0];
-        app.search_scan_cursor = 2;
-        // Grow to "ali": the already-found prefix is filtered (0 still matches)
-        // and the cursor is kept — the scanned region is not re-tested.
+        app.scan_gen = app.view_gen;
+        // A partial "al" level: positions [0, 2) scanned, match at 0.
+        app.scan_stack.push(ScanLevel { needle: "al".to_string(), matches: vec![0], cursor: 2 });
+        // Grow to "ali": the child seeds from "al" — filters [0] (still matches)
+        // and keeps the parent's cursor, so the scanned region isn't re-tested.
         app.search_query = "ali".to_string();
-        app.reconcile_search_key();
-        assert_eq!(app.search_matches, vec![0]);
-        assert_eq!(app.search_scan_cursor, 2, "cursor is preserved across the growth");
-        assert_eq!(app.search_matches_key, ("ali".to_string(), gen));
+        app.reconcile_scan_stack();
+        assert_eq!(app.active_needle(), "ali");
+        assert_eq!(app.scan_matches(), [0]);
+        assert_eq!(app.scan_cursor(), 2, "cursor is preserved across the growth");
         // Resuming picks up only the untouched tail [2, 3).
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
-        assert_eq!(app.search_matches, vec![0, 2]);
+        assert_eq!(app.scan_matches(), [0, 2]);
         assert!(app.search_count_complete());
     }
 
