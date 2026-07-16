@@ -154,18 +154,22 @@ position (`/query 3/12 matches`). Search lands on the newest match first (the la
 one at or above the selection — logs read newest-last). Clear a committed search
 with **Esc**, or by deleting the whole query and the `/` prefix.
 
-`n`/`N` work at any scale. Every interactive scan (the count and each jump) is
-bounded by a wall-clock budget (~120 ms) so a keystroke never freezes the view.
-If a scan finishes in time you get an exact `k/total matches` — this covers up to
-a few million records, since matching the raw record is cheap. If it can't finish,
-it gives up and shows `? matches`; navigation then falls back to a bounded scan
-(it finds nearby matches but may not reach a distant one). Two things keep scans
-short: incremental **narrowing** — because matches can only shrink as you add
-characters, each keystroke re-tests only the previous matches, not the whole view
-(a backspace re-scans in full) — and a per-record **render cache**, so only the
-first keystroke over a fresh view pays the formatting cost. Above ~100k records
-search matches the raw record instead of the formatted text to stay fast, so the
-WYSIWYG guarantee applies below that; highlighting is always on the visible rows.
+`n`/`N` work at any scale because scanning is **continuous** rather than
+per-keystroke: a keystroke never blocks, it just advances the scan a little, and
+the scan keeps going on idle frames until it's done (or you change the query).
+The count fills in as it goes — a running `N+ matches` that settles to an exact
+`k/total matches` once the whole view is scanned (small and mid-size views settle
+instantly; a multi-million-record view keeps climbing while it works). While the
+count is still running, `n`/`N` and the on-type jump find nearby matches by
+scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
+Two things keep the work minimal: because matches can only shrink as you add
+characters, a growing query **resumes** from where it left off — already-found
+matches are filtered by the new character and only the unscanned tail is visited
+(a backspace or mid-string edit restarts) — and a per-record **render cache**, so
+only the first pass over a fresh view pays the formatting cost. Above ~100k
+records search matches the raw record instead of the formatted text to stay fast,
+so the WYSIWYG guarantee applies below that; highlighting is always on the visible
+rows.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

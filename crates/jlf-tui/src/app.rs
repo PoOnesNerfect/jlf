@@ -75,18 +75,19 @@ const SUMMARY_BATCH: usize = 50_000;
 /// ~10ms even with disk spilling.
 const DRAIN_BATCH: usize = 50_000;
 
-/// Above this many records a full-view match test renders too slowly to run on
-/// every keystroke, so search falls back to matching the raw record (fast, but
-/// not WYSIWYG) instead of the formatted text. Below it, search matches exactly
-/// what's on screen. Governs the render-vs-raw choice only — how *much* gets
-/// scanned is bounded by [`SCAN_BUDGET`], not this.
+/// Above this many records a full-view match test renders too slowly to keep up,
+/// so search falls back to matching the raw record (fast, but not WYSIWYG)
+/// instead of the formatted text. Below it, search matches exactly what's on
+/// screen. Governs the render-vs-raw choice only — how *much* gets scanned per
+/// step is [`SCAN_STEP`], not this.
 const RENDER_MATCH_CAP: usize = 100_000;
 
-/// Wall-clock ceiling on a single interactive search scan (count or jump). A
-/// scan that can't finish in this long gives up rather than freezing the key
-/// loop: the count shows `? matches` and a jump falls back to what's already
-/// known. Kept well under a "feels instant" ~200ms so a keystroke never stalls.
-const SCAN_BUDGET: Duration = Duration::from_millis(120);
+/// Time slice for one search-scan step, whether triggered by a keystroke or an
+/// idle frame. Scanning is continuous: each step advances the cursor a little, so
+/// a keystroke never blocks and the count keeps filling in between and after
+/// keystrokes (shown as a running `N+ matches`). Small enough that the key loop
+/// stays responsive on any view size.
+const SCAN_STEP: Duration = Duration::from_millis(30);
 
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
 /// many rendered lines; on overflow the cache is dropped and refills on the next
@@ -100,9 +101,9 @@ pub enum MatchCount {
     /// Scanned exactly: the current 1-based match index (when the selection is on
     /// a match) and the total number of matches.
     Counted { current: Option<usize>, total: usize },
-    /// The scan gave up (view too large to finish within [`SCAN_BUDGET`]), so the
-    /// total is unknown — shown as `? matches`.
-    Uncounted,
+    /// The scan is still running (view too large to finish in one budget): at
+    /// least `found` matches so far. Shown as `N+ matches` (`? matches` at zero).
+    Partial { found: usize },
 }
 
 /// Smart-case: a search is case-sensitive when its query contains any uppercase
@@ -179,10 +180,12 @@ pub struct App {
     /// lookups rather than a per-frame full scan.
     search_matches: Vec<usize>,
     search_matches_key: (String, usize),
-    /// Whether [`Self::search_matches`] is the *exact* list. False when the last
-    /// scan gave up on [`SCAN_BUDGET`], so the count is unknown (`? matches`) and
-    /// navigation can't trust the list.
-    search_count_complete: bool,
+    /// How far the current scan has reached: [`Self::search_matches`] is exact for
+    /// view positions `[0, search_scan_cursor)`. The scan is **complete** once
+    /// this reaches `view_len`. Persisted across keystrokes so a query that keeps
+    /// growing resumes from here (filtering what's found, scanning only the
+    /// untouched tail) instead of restarting — and so idle frames can finish it.
+    search_scan_cursor: usize,
     /// The selection when `/` search was opened. While typing, each keystroke
     /// previews the nearest match relative to this anchor (incremental search),
     /// and Esc restores it. `None` outside search mode.
@@ -291,7 +294,7 @@ impl App {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_matches_key: (String::new(), 0),
-            search_count_complete: true,
+            search_scan_cursor: 0,
             search_anchor: None,
             status: String::new(),
             summary: None,
@@ -495,16 +498,28 @@ impl App {
         self.preview_search();
     }
 
-    /// Incremental preview: with the live input as the needle, jump to the nearest
-    /// match from the anchor (the newest one at or above it, wrapping) so you see
-    /// a match as you type. An empty input returns to the anchor. Doesn't touch
-    /// `search_query`, so Esc can cancel cleanly; highlighting and the count read
-    /// the live input via `search_needle` while search mode is open.
+    /// Incremental preview: with the live input as the needle, advance the scan a
+    /// step and land on the nearest match. An empty input returns to the anchor.
+    /// Doesn't touch `search_query`, so Esc can cancel cleanly; highlighting and
+    /// the count read the live input via `search_needle` while search mode is open.
     fn preview_search(&mut self) {
+        if self.search_anchor.is_none() {
+            return;
+        }
+        self.refresh_search_matches();
+        self.apply_preview_jump();
+    }
+
+    /// Land the selection on the incremental-search target given what's scanned so
+    /// far: the anchor if the input is empty or the record there already matches;
+    /// the nearest match once the scan is complete; otherwise hold at the anchor
+    /// while the scan is still running (idle frames re-run this, so the jump lands
+    /// as soon as the scan finishes). Enter still does a one-off search to jump
+    /// mid-scan on a huge view.
+    fn apply_preview_jump(&mut self) {
         let Some(anchor) = self.search_anchor else {
             return;
         };
-        self.refresh_search_matches();
         if self.input.is_empty() {
             self.select(anchor);
             return;
@@ -512,12 +527,9 @@ impl App {
         let matcher = SearchMatcher::new(&self.input);
         if self.record_matches_search(anchor, &matcher) {
             self.select(anchor);
-        } else if self.search_count_complete {
-            // We have the exact list — jump to the nearest match instantly.
+        } else if self.search_count_complete() {
             self.select(self.find_in_list(anchor, false).unwrap_or(anchor));
         } else {
-            // View too large to scan within budget; don't pay another full scan
-            // on every keystroke — hold here (Enter still runs a one-off search).
             self.select(anchor);
         }
     }
@@ -601,28 +613,28 @@ impl App {
     }
 
     /// Invalidate rendered-search state after the displayed text changes
-    /// (raw/expanded toggle, redaction): drop cached text and force the match
-    /// list + count to recompute against the new rendering.
+    /// (raw/expanded toggle, redaction): drop cached text and the match list, then
+    /// rescan from scratch against the new rendering.
     fn invalidate_search_render(&mut self) {
         self.search_cache.borrow_mut().clear();
-        self.search_matches_key = (String::new(), 0);
+        self.reset_search_scan();
         if !self.search_needle().is_empty() {
             self.refresh_search_matches();
         }
     }
 
     /// The next/previous view position matching the active needle from `from`,
-    /// wrapping. Uses the exact match list when we have it (instant), otherwise a
-    /// time-bounded scan that may give up on a very large view.
+    /// wrapping. Uses the exact match list when the scan is complete (instant),
+    /// otherwise a time-bounded scan over the records themselves.
     fn find_match(&self, from: usize, forward: bool) -> Option<usize> {
         let needle = self.search_needle();
         if needle.is_empty() {
             return None;
         }
-        if self.search_count_complete {
+        if self.search_count_complete() {
             return self.find_in_list(from, forward);
         }
-        self.scan_for_match(from, forward, &SearchMatcher::new(needle), Instant::now() + SCAN_BUDGET)
+        self.scan_for_match(from, forward, &SearchMatcher::new(needle), Instant::now() + SCAN_STEP)
     }
 
     /// Nearest match to `from` in the exact match list (sorted view positions),
@@ -643,9 +655,8 @@ impl App {
     }
 
     /// Walk every position from `from`, wrapping, returning the first match — or
-    /// `None` if none exists *or* the [`SCAN_BUDGET`] deadline passes first (a
-    /// give-up, indistinguishable here from "no match", which is fine: both leave
-    /// the selection where it is).
+    /// `None` if none exists *or* the deadline passes first (a give-up, treated
+    /// like "no match": the selection stays put).
     fn scan_for_match(
         &self,
         from: usize,
@@ -670,72 +681,104 @@ impl App {
         None
     }
 
-    /// Rebuild the exact match list for the count/position indicator, bounded by
-    /// [`SCAN_BUDGET`]: if the scan can't finish in time it gives up, the list is
-    /// dropped, and the count shows `? matches` (see [`Self::search_count_complete`]).
-    /// Keyed on the live needle + view length, so it recomputes only when either
-    /// changes.
-    ///
-    /// Narrows incrementally: matches can only *shrink* as the query grows, so
-    /// when the previous (completed) list was for a query that's a substring of
-    /// the new one over the same view, every new match was already in it — we
-    /// re-test just those instead of the whole view. A backspace, a mid-string
-    /// edit, or a previous give-up breaks that and falls back to a full scan.
+    /// Whether the match list covers the whole view (an exact count is known).
+    fn search_count_complete(&self) -> bool {
+        self.search_scan_cursor >= self.view_len()
+    }
+
+    /// Whether a scan is still in progress — the run loop polls faster while so,
+    /// and finishes it on idle frames via [`Self::tick_search_scan`].
+    pub fn search_scan_computing(&self) -> bool {
+        !self.search_needle().is_empty() && !self.search_count_complete()
+    }
+
+    /// Advance a running scan by one step on an idle frame, so the count keeps
+    /// filling in (`N+ matches` → exact) after you stop typing, and re-land the
+    /// incremental preview once the scan completes.
+    pub fn tick_search_scan(&mut self) {
+        if !self.search_scan_computing() {
+            return;
+        }
+        self.resume_search_scan(Instant::now() + SCAN_STEP);
+        if matches!(self.mode, Mode::Search) {
+            self.apply_preview_jump();
+        }
+    }
+
+    /// Point the scan at the current needle/view and take one [`SCAN_STEP`]. This
+    /// is the interactive entry point (called as you type): a query that keeps
+    /// growing **resumes** from the cursor rather than restarting, so no record is
+    /// ever re-tested for a query it already failed. The scan doesn't have to
+    /// finish here — idle frames carry it the rest of the way.
     fn refresh_search_matches(&mut self) {
+        self.reconcile_search_key();
+        self.resume_search_scan(Instant::now() + SCAN_STEP);
+    }
+
+    /// Reconcile the match list with the current needle/view before scanning:
+    /// - unchanged → keep the cursor and matches (resume where we left off);
+    /// - the query *grew* (old is a substring of the new) over the same view →
+    ///   every remaining match is still a candidate, so filter the already-found
+    ///   matches by the narrower query and keep the cursor (the unscanned tail is
+    ///   picked up by the resume);
+    /// - otherwise (backspace, mid-string edit, view changed) → restart at 0.
+    fn reconcile_search_key(&mut self) {
         let needle = self.search_needle().to_owned();
-        let key = (needle.clone(), self.view_len());
+        let view_len = self.view_len();
+        let key = (needle.clone(), view_len);
         if self.search_matches_key == key {
             return;
         }
-        if needle.is_empty() {
+        let (prev_needle, prev_len) = &self.search_matches_key;
+        let grew = *prev_len == view_len && !prev_needle.is_empty() && needle.contains(prev_needle.as_str());
+        if grew {
+            let matcher = SearchMatcher::new(&needle);
+            let mut kept = std::mem::take(&mut self.search_matches);
+            kept.retain(|&p| self.record_matches_search(p, &matcher));
+            self.search_matches = kept;
+        } else {
             self.search_matches.clear();
-            self.search_count_complete = true;
-            self.search_matches_key = key;
-            return;
+            self.search_scan_cursor = 0;
         }
-        let matcher = SearchMatcher::new(&needle);
-        let candidates = self.search_scan_candidates(&needle);
-        let deadline = Instant::now() + SCAN_BUDGET;
-        let mut matches = Vec::new();
-        let mut complete = true;
-        for (i, p) in candidates.enumerate() {
-            if i & 0xFFF == 0 && Instant::now() >= deadline {
-                complete = false;
-                break;
-            }
-            if self.record_matches_search(p, &matcher) {
-                matches.push(p);
-            }
-        }
-        // On give-up the partial list would misreport the total, so drop it; the
-        // records it rendered are still cached, so the next keystroke's scan is
-        // faster and may complete.
-        self.search_matches = if complete { matches } else { Vec::new() };
-        self.search_count_complete = complete;
         self.search_matches_key = key;
     }
 
-    /// Positions to test when rebuilding the match list for `needle`: just the
-    /// previous match list when it's a proven superset (the last scan completed,
-    /// its query is a substring of the new one, same view), otherwise the whole
-    /// view.
-    fn search_scan_candidates(&mut self, needle: &str) -> Box<dyn Iterator<Item = usize>> {
-        let (prev_needle, prev_len) = &self.search_matches_key;
-        let can_narrow = self.search_count_complete
-            && *prev_len == self.view_len()
-            && !prev_needle.is_empty()
-            && needle.contains(prev_needle.as_str());
-        if can_narrow {
-            Box::new(std::mem::take(&mut self.search_matches).into_iter())
-        } else {
-            Box::new(0..self.view_len())
+    /// Scan forward from the cursor toward the end of the view, appending matches
+    /// (in order, so the list stays sorted), until the view is exhausted or the
+    /// deadline passes. Cheap to call repeatedly: it only ever advances.
+    fn resume_search_scan(&mut self, deadline: Instant) {
+        let needle = self.search_needle();
+        if needle.is_empty() {
+            self.search_matches.clear();
+            self.search_scan_cursor = self.view_len();
+            return;
         }
+        let matcher = SearchMatcher::new(needle);
+        let view_len = self.view_len();
+        let mut i = self.search_scan_cursor;
+        let mut steps = 0u32;
+        while i < view_len {
+            if steps & 0xFFF == 0 && Instant::now() >= deadline {
+                break;
+            }
+            if self.record_matches_search(i, &matcher) {
+                self.search_matches.push(i);
+            }
+            i += 1;
+            steps += 1;
+        }
+        self.search_scan_cursor = i;
     }
 
     fn clear_search_matches(&mut self) {
+        self.reset_search_scan();
+    }
+
+    /// Drop all scan state so the next active needle starts a fresh scan.
+    fn reset_search_scan(&mut self) {
         self.search_matches.clear();
         self.search_matches_key = (String::new(), 0);
-        self.search_count_complete = true;
+        self.search_scan_cursor = 0;
     }
 
     /// Jump to the next (`n`) or previous (`N`) matching record, wrapping around.
@@ -746,20 +789,26 @@ impl App {
         }
         match self.find_match(self.selected, forward) {
             Some(pos) => self.select(pos),
-            None => self.status = "no matches".into(),
+            None => {
+                self.status = if self.search_count_complete() {
+                    "no matches".into()
+                } else {
+                    "scanning…".into()
+                }
+            }
         }
     }
 
     /// The match count for the status line, or `None` when there's no active
     /// search. `Counted` carries `(current 1-based index if on a match, total)`;
-    /// `Uncounted` means the last scan gave up (view too large for [`SCAN_BUDGET`]).
-    /// Reads the cached list — no scan.
+    /// `Partial` means the scan is still running (`N+ matches`). Reads the cached
+    /// list — no scan.
     pub fn search_position(&self) -> Option<MatchCount> {
         if self.search_needle().is_empty() {
             return None;
         }
-        if !self.search_count_complete {
-            return Some(MatchCount::Uncounted);
+        if !self.search_count_complete() {
+            return Some(MatchCount::Partial { found: self.search_matches.len() });
         }
         let current = self.search_matches.binary_search(&self.selected).ok().map(|i| i + 1);
         Some(MatchCount::Counted {
@@ -1461,24 +1510,70 @@ mod tests {
     }
 
     #[test]
-    fn giving_up_on_a_huge_scan_reports_question_mark_and_still_navigates() {
-        let mut app = app_with(SAMPLE);
-        app.apply_search("alice".to_string());
-        // A tiny view counts exactly.
-        assert!(app.search_count_complete);
+    fn typing_settles_to_the_correct_count_on_a_larger_view() {
+        // 10k in-memory records; every 1000th message contains "panic" → 10.
+        let lines: Vec<String> = (0..10_000)
+            .map(|i| {
+                let msg = if i % 1000 == 500 { "panic here" } else { "all good" };
+                format!(r#"{{"level":"info","message":"{msg}","i":{i}}}"#)
+            })
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut app = app_with(&refs);
+        app.enter_search();
+        // Type the query; after each keystroke finish the scan the way idle frames
+        // would, so we assert the settled count rather than a mid-scan partial.
+        for c in "panic".chars() {
+            app.input_char(c);
+            app.resume_search_scan(Instant::now() + Duration::from_secs(60));
+        }
+        assert!(app.search_count_complete());
+        assert_eq!(app.search_matches.len(), 10, "exactly the ten 'panic' records");
+    }
+
+    #[test]
+    fn partial_scan_reports_running_count_and_still_navigates() {
+        let mut app = app_with(SAMPLE); // 0=alice, 1=bob, 2=alice
+        app.search_query = "alice".to_string();
+        app.reconcile_search_key();
+        // A budget that's already spent stops the scan immediately (nothing
+        // scanned yet) — the state a huge view is in mid-scan.
+        app.resume_search_scan(Instant::now());
+        assert!(!app.search_count_complete());
+        assert_eq!(app.search_position(), Some(MatchCount::Partial { found: 0 }));
+        // n/N still find matches by scanning the records directly.
+        app.selected = 1;
+        app.search_jump(true); // forward from 1 → record 2
+        assert_eq!(app.selected, 2);
+        // Resuming to completion turns the running count into an exact one.
+        app.resume_search_scan(Instant::now() + Duration::from_secs(60));
+        assert!(app.search_count_complete());
+        assert_eq!(app.search_matches, vec![0, 2]);
         assert!(matches!(
             app.search_position(),
             Some(MatchCount::Counted { total: 2, .. })
         ));
-        // Simulate a scan that gave up (as on a multi-million-record view): the
-        // count is unknown (`? matches`), but n/N still find matches by scanning.
-        app.search_count_complete = false;
-        assert_eq!(app.search_position(), Some(MatchCount::Uncounted));
-        app.selected = 0;
-        app.search_jump(true); // forward from record 0 → the next alice (record 2)
-        assert_eq!(app.selected, 2);
-        app.search_jump(true); // wraps back to record 0
-        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn growing_query_resumes_the_scan_instead_of_restarting() {
+        let mut app = app_with(SAMPLE);
+        // Hand-build a partial scan of "al": positions [0, 2) scanned, match at 0.
+        app.search_query = "al".to_string();
+        app.search_matches_key = ("al".to_string(), 3);
+        app.search_matches = vec![0];
+        app.search_scan_cursor = 2;
+        // Grow to "ali": the already-found prefix is filtered (0 still matches)
+        // and the cursor is kept — the scanned region is not re-tested.
+        app.search_query = "ali".to_string();
+        app.reconcile_search_key();
+        assert_eq!(app.search_matches, vec![0]);
+        assert_eq!(app.search_scan_cursor, 2, "cursor is preserved across the growth");
+        assert_eq!(app.search_matches_key, ("ali".to_string(), 3));
+        // Resuming picks up only the untouched tail [2, 3).
+        app.resume_search_scan(Instant::now() + Duration::from_secs(60));
+        assert_eq!(app.search_matches, vec![0, 2]);
+        assert!(app.search_count_complete());
     }
 
     #[test]

@@ -181,6 +181,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
         // Advance a running summary (folds a batch of records per frame, and
         // picks up newly-arrived ones) before drawing.
         app.tick_summary();
+        // Advance a running search scan too, so a big-view count keeps filling in
+        // (`N+ matches` → exact) after you stop typing.
+        app.tick_search_scan();
         // Expire a transient status after STATUS_TTL; reset the clock whenever
         // the message changes.
         if app.status != last_status {
@@ -204,7 +207,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
         // poll briefly so it finishes fast without busy-spinning. Otherwise idle.
         let timeout = if more_input {
             Duration::from_millis(0)
-        } else if app.summary_computing() {
+        } else if app.summary_computing() || app.search_scan_computing() {
             Duration::from_millis(5)
         } else {
             Duration::from_millis(100)
