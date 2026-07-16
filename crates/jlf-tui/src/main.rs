@@ -496,13 +496,15 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             }
         }
         KeyCode::Esc => {
-            // Cancel search: drop the incremental preview and return to the
-            // anchor (no-op in filter/command mode).
-            if matches!(app.mode, Mode::Search) {
-                app.cancel_search();
-            }
+            // Cancel: leave input mode first (so the search path re-reads the
+            // committed query, not the abandoned live input), then return to the
+            // anchor. No-op for filter/command beyond leaving the field.
+            let was_search = matches!(app.mode, Mode::Search);
             app.mode = Mode::Normal;
             app.input.clear();
+            if was_search {
+                app.cancel_search();
+            }
         }
         KeyCode::Left => app.input_left(),
         KeyCode::Right => app.input_right(),

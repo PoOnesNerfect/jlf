@@ -534,8 +534,10 @@ impl App {
         }
     }
 
-    /// Cancel an in-progress search (Esc): drop the preview, return to the anchor,
-    /// and fall back to whatever query was committed before (via `search_needle`).
+    /// Cancel an in-progress search (Esc): return to the anchor and re-establish
+    /// the scan for whatever query was committed before the edit. Callers leave
+    /// Search mode (clear `input`, set `Normal`) first, so `refresh_search_matches`
+    /// reads the committed `search_query` — not the abandoned live input.
     pub fn cancel_search(&mut self) {
         if let Some(anchor) = self.search_anchor.take() {
             self.select(anchor);
@@ -1507,6 +1509,49 @@ mod tests {
         app.cancel_search();
         assert_eq!(app.selected, 2);
         assert!(app.search_query.is_empty(), "cancel keeps no committed search");
+    }
+
+    #[test]
+    fn esc_cancel_restores_the_committed_search() {
+        // records: 0=alice, 1=bob, 2=alice.
+        let mut app = app_with(SAMPLE);
+        app.apply_search("alice".to_string()); // commit: matches [0, 2], selection on 0
+        let committed_sel = app.selected;
+        // Re-open search and edit into something that doesn't match.
+        app.enter_search();
+        for c in "Xyz".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
+        // Cancel the way main.rs does: leave the field first, then cancel.
+        app.mode = Mode::Normal;
+        app.input.clear();
+        app.cancel_search();
+        // Selection is back where the committed search left it, and the count
+        // reflects the committed query again — not the abandoned "aliceXyz".
+        assert_eq!(app.selected, committed_sel);
+        assert_eq!(app.search_query, "alice");
+        assert!(matches!(
+            app.search_position(),
+            Some(MatchCount::Counted { total: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn deleting_chars_widens_the_match_set() {
+        // records: 0=alice, 1=bob, 2=alice. "ali" → 2 matches; delete to "a" → 3
+        // (every record's rendered `latency_ms` contains an 'a').
+        let mut app = app_with(SAMPLE);
+        app.enter_search();
+        for c in "ali".chars() {
+            app.input_char(c);
+        }
+        assert_eq!(app.search_matches.len(), 2);
+        app.input_backspace(); // "al"
+        app.input_backspace(); // "a"
+        assert_eq!(app.input, "a");
+        assert!(app.search_count_complete());
+        assert_eq!(app.search_matches.len(), 3, "widening rescans and finds more");
     }
 
     #[test]
