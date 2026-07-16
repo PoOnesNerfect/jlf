@@ -154,14 +154,18 @@ position (`/query 3/12 matches`). Search lands on the newest match first (the la
 one at or above the selection — logs read newest-last). Clear a committed search
 with **Esc**, or by deleting the whole query and the `/` prefix.
 
-`n`/`N` work at any scale (the jump is an incremental scan). The `k/total` count
-is shown only while the view is small enough to scan cheaply (~100k records); on
-a larger view the count is omitted rather than shown partially, but navigation
-still works. Counting is incremental in a second sense too: because matches can
-only shrink as you add characters, each keystroke re-tests only the previous
-matches rather than the whole view (a backspace re-scans in full). Rendered text
-is cached per record, so only the first keystroke over a fresh view pays the
-formatting cost.
+`n`/`N` work at any scale. Every interactive scan (the count and each jump) is
+bounded by a wall-clock budget (~120 ms) so a keystroke never freezes the view.
+If a scan finishes in time you get an exact `k/total matches` — this covers up to
+a few million records, since matching the raw record is cheap. If it can't finish,
+it gives up and shows `? matches`; navigation then falls back to a bounded scan
+(it finds nearby matches but may not reach a distant one). Two things keep scans
+short: incremental **narrowing** — because matches can only shrink as you add
+characters, each keystroke re-tests only the previous matches, not the whole view
+(a backspace re-scans in full) — and a per-record **render cache**, so only the
+first keystroke over a fresh view pays the formatting cost. Above ~100k records
+search matches the raw record instead of the formatted text to stay fast, so the
+WYSIWYG guarantee applies below that; highlighting is always on the visible rows.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

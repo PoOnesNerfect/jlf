@@ -219,7 +219,7 @@ fn search_count_label(app: &App) -> Option<String> {
         MatchCount::Counted { total: 0, .. } => Some("no matches".to_string()),
         MatchCount::Counted { total: 1, .. } => Some("1 match".to_string()),
         MatchCount::Counted { total, .. } => Some(format!("{total} matches")),
-        MatchCount::Uncounted => Some("matches".to_string()),
+        MatchCount::Uncounted => Some("? matches".to_string()),
     }
 }
 
@@ -257,6 +257,7 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
             Some(MatchCount::Counted { current: None, total }) => {
                 Some(format!("   {total} matches"))
             }
+            Some(MatchCount::Uncounted) => Some("   ? matches".to_string()),
             _ => None,
         };
         if let Some(label) = label {
