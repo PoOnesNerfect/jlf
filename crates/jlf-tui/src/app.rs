@@ -89,6 +89,13 @@ const RENDER_MATCH_CAP: usize = 100_000;
 /// (the count just fills in over a few more frames).
 const SCAN_STEP: Duration = Duration::from_millis(8);
 
+/// Budget for the incremental preview's backward probe: on each keystroke/tick it
+/// scans a little way back from the anchor to land the selection straight on the
+/// nearest match, instead of waiting for (or chasing) the global scan's frontier.
+/// Small enough not to stall a keystroke; a match farther than this is reached by
+/// the background scan converging.
+const PREVIEW_PROBE: Duration = Duration::from_millis(3);
+
 /// Largest parent match list (in entries) a new level will copy to filter in the
 /// background. Above this, the child instead just resumes past the parent's
 /// empty-prefix (first-match) and re-scans — copying a broad query's huge list
@@ -548,9 +555,11 @@ impl App {
     /// Land the selection on the incremental-search target given what's scanned so
     /// far: the anchor if the input is empty or the record there already matches;
     /// the nearest match once the scan is complete; otherwise hold at the anchor
-    /// while the scan is still running (idle frames re-run this, so the jump lands
-    /// as soon as the scan finishes). Enter still does a one-off search to jump
-    /// mid-scan on a huge view.
+    /// Land the selection on the incremental-search target: the anchor if the
+    /// input is empty or the record there already matches; otherwise the nearest
+    /// match **found so far** (at or above the anchor, wrapping). Re-run on each
+    /// background tick, so the moment a match turns up mid-scan the selection jumps
+    /// to it and then refines toward the anchor as the scan reaches closer matches.
     fn apply_preview_jump(&mut self) {
         let Some(anchor) = self.search_anchor else {
             return;
@@ -562,10 +571,12 @@ impl App {
         let matcher = SearchMatcher::new(&self.input);
         if self.record_matches_search(anchor, &matcher) {
             self.select(anchor);
-        } else if self.search_count_complete() {
-            self.select(self.find_in_list(anchor, false).unwrap_or(anchor));
         } else {
-            self.select(anchor);
+            // Jump straight to the nearest match at/above the anchor via a short
+            // backward probe; if none is close, fall back to the global scan's
+            // nearest-found so far (which converges as it runs).
+            let near = self.scan_for_match(anchor, false, &matcher, Instant::now() + PREVIEW_PROBE);
+            self.select(near.or_else(|| self.find_in_list(anchor, false)).unwrap_or(anchor));
         }
     }
 

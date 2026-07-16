@@ -161,8 +161,10 @@ actual matching happens entirely in the background, a small slice per frame. The
 count fills in as it goes — a running `N+ matches` that settles to an exact
 `k/total matches` once the whole view is scanned (small and mid-size views settle
 in a frame or two; a multi-million-record view keeps climbing while it works).
-While the count is still running, `n`/`N` and the on-type jump find nearby matches
-by scanning a bounded slice, and **Enter** always jumps to a match even mid-scan.
+While the count is still running, the on-type jump lands on the nearest match to
+where you are right away (a short probe outward from your position), so you never
+wait for the whole scan; `n`/`N` likewise find nearby matches by scanning a
+bounded slice, and **Enter** always jumps to a match even mid-scan.
 
 The stack keeps the background work minimal both ways. Pushing a level for a new
 character hands it its parent's matches as *candidates to re-test* (matches only
