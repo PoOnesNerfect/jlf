@@ -292,6 +292,38 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
 /// The highlight color for search matches (in the list and the status line).
 const SEARCH_HL: Color = Color::Yellow;
 
+fn record_count_title(total: usize) -> String {
+    if total == 1 {
+        " 1 record ".to_string()
+    } else {
+        format!(" {total} records ")
+    }
+}
+
+fn cursor_line_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    }
+}
+
+fn cursor_gutter_style(focused: bool) -> Style {
+    let style = Style::default().fg(if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    });
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
 /// The always-visible key hint shown on the prompt line in Normal mode.
 const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · e editor · a actions · h help · q quit";
 
@@ -351,7 +383,7 @@ fn scroll_margin(inner_h: usize) -> usize {
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::bordered().title(" records ");
+    let block = Block::bordered().title(record_count_title(app.total()));
     let inner_h = area.height.saturating_sub(2) as usize;
     let total = app.view_len();
     let width = area.width as usize;
@@ -398,12 +430,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(app.selected - top));
 
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(cursor_line_style(app.focused));
     f.render_stateful_widget(list, area, &mut state);
     draw_scrollbar(f, app, area, total);
 }
@@ -465,7 +494,7 @@ fn draw_list_expanded(
     use std::collections::HashMap;
 
     let inner_w = area.width.saturating_sub(2) as usize;
-    let bar = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let bar = cursor_gutter_style(app.focused);
     let needle = app.search_needle();
 
     use std::rc::Rc;
@@ -914,8 +943,27 @@ mod tests {
     fn renders_chrome_and_a_record() {
         let text = buffer_text(&[r#"{"level":"info","msg":"hello world"}"#]);
         assert!(text.contains("jlf-tui"), "missing header:\n{text}");
-        assert!(text.contains("records"), "missing list title:\n{text}");
+        assert!(text.contains("1 record"), "missing list title:\n{text}");
         assert!(text.contains("hello world"), "missing record:\n{text}");
+    }
+
+    #[test]
+    fn cursor_line_grays_out_when_terminal_is_unfocused() {
+        assert_eq!(
+            cursor_line_style(true),
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            cursor_line_style(false),
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        );
+        assert_eq!(
+            cursor_gutter_style(false),
+            Style::default().fg(Color::DarkGray)
+        );
     }
 
     #[test]

@@ -11,7 +11,12 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 
 use jlf_core::Filter;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::{
+    event::{
+        self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
+    execute,
+};
 use ratatui::DefaultTerminal;
 
 use app::{App, Mode};
@@ -70,12 +75,19 @@ fn main() -> color_eyre::Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app);
+    let focus_result = execute!(std::io::stdout(), EnableFocusChange);
+    let result = match focus_result {
+        Ok(()) => run(&mut terminal, &mut app),
+        Err(err) => Err(err.into()),
+    };
+    let disable_focus_result = execute!(std::io::stdout(), DisableFocusChange);
     ratatui::restore();
     if from_pipe {
         stop_pipeline_producer();
     }
-    result
+    result?;
+    disable_focus_result?;
+    Ok(())
 }
 
 /// When our input was a live pipe, terminate the upstream producer on exit so
@@ -213,10 +225,13 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
             Duration::from_millis(100)
         };
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key(app, key.code, key.modifiers);
                 }
+                Event::FocusGained => app.focused = true,
+                Event::FocusLost => app.focused = false,
+                _ => {}
             }
         }
         if std::mem::take(&mut app.pending_editor) {

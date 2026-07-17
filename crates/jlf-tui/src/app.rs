@@ -190,6 +190,10 @@ pub struct App {
     pub selected: usize,
     /// Auto-scroll to the newest matching record as data streams in.
     pub follow: bool,
+    /// Whether the terminal currently reports focus. The selected row uses this
+    /// to distinguish "active cursor" from "last cursor position while another
+    /// window owns keyboard focus".
+    pub focused: bool,
 
     pub mode: Mode,
     pub input: String,
@@ -316,6 +320,7 @@ impl App {
             redact: Vec::new(),
             selected: 0,
             follow: true,
+            focused: true,
             mode: Mode::Normal,
             input: String::new(),
             input_cursor: 0,
