@@ -2,13 +2,16 @@
 //! config, so a filter/redaction assembled interactively can be reused from the
 //! CLI as `jlf @name`.
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 /// Append a recipe built from the current `filter` text and `redact` globs to
 /// the nearest workspace config (`jlf.toml`/`.jlf.toml`, created if absent).
 /// Returns the file written and whether a recipe of that name already existed.
-pub fn save_recipe(name: &str, filter: &str, redact: &[String]) -> std::io::Result<(PathBuf, bool)> {
+pub fn save_recipe(
+    name: &str,
+    filter: &str,
+    redact: &[String],
+) -> std::io::Result<(PathBuf, bool)> {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let mut block = format!("[recipe.{name}]\n");
     if !filter.trim().is_empty() {

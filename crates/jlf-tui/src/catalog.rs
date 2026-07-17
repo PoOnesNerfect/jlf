@@ -105,7 +105,11 @@ pub fn suggest(input: &str, cat: &Catalog) -> (usize, Vec<String>) {
 /// Completions for a `:` command `input`. The first word completes against the
 /// known command `verbs`; later words complete field paths (arguments), split
 /// on whitespace or commas so `csv level,st` completes the `st` column.
-pub fn command_suggest(input: &str, cat: &Catalog, verbs: &[&str]) -> (usize, Vec<String>) {
+pub fn command_suggest(
+    input: &str,
+    cat: &Catalog,
+    verbs: &[&str],
+) -> (usize, Vec<String>) {
     let start = input
         .rfind(|c: char| c.is_whitespace() || c == ',')
         .map(|i| i + 1)
@@ -183,8 +187,13 @@ mod tests {
     #[test]
     fn collects_nested_and_array_paths() {
         let c = cat();
-        for p in ["level", "fields.status", "fields.message", "spans.0.method"] {
-            assert!(c.paths.contains(&p.to_string()), "missing {p}: {:?}", c.paths);
+        for p in ["level", "fields.status", "fields.message", "spans.0.method"]
+        {
+            assert!(
+                c.paths.contains(&p.to_string()),
+                "missing {p}: {:?}",
+                c.paths
+            );
         }
     }
 

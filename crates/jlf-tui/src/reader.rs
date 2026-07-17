@@ -1,6 +1,8 @@
-use std::io::BufRead;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Duration;
+use std::{
+    io::BufRead,
+    sync::mpsc::{channel, Receiver, Sender},
+    time::Duration,
+};
 
 /// Where the TUI reads records from.
 pub enum Source {
@@ -53,7 +55,9 @@ fn read_loop(mut buf: impl BufRead, tx: &Sender<String>, follow: bool) {
             }
             Ok(_) => {
                 let trimmed = line.trim_end_matches(['\n', '\r']);
-                if !trimmed.trim().is_empty() && tx.send(trimmed.to_owned()).is_err() {
+                if !trimmed.trim().is_empty()
+                    && tx.send(trimmed.to_owned()).is_err()
+                {
                     break; // UI dropped the receiver: stop reading.
                 }
             }

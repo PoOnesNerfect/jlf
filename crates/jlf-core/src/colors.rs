@@ -78,7 +78,9 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "light blue" => DynColors::Css(CssColors::LightBlue),
         "light coral" => DynColors::Css(CssColors::LightCoral),
         "light cyan" => DynColors::Css(CssColors::LightCyan),
-        "light golden rod yellow" => DynColors::Css(CssColors::LightGoldenRodYellow),
+        "light golden rod yellow" => {
+            DynColors::Css(CssColors::LightGoldenRodYellow)
+        }
         "light gray" => DynColors::Css(CssColors::LightGray),
         "light grey" => DynColors::Css(CssColors::LightGrey),
         "light green" => DynColors::Css(CssColors::LightGreen),
@@ -171,7 +173,9 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "user bright green" => DynColors::Xterm(XtermColors::UserBrightGreen),
         "user bright yellow" => DynColors::Xterm(XtermColors::UserBrightYellow),
         "user bright blue" => DynColors::Xterm(XtermColors::UserBrightBlue),
-        "user bright magenta" => DynColors::Xterm(XtermColors::UserBrightMagenta),
+        "user bright magenta" => {
+            DynColors::Xterm(XtermColors::UserBrightMagenta)
+        }
         "user bright cyan" => DynColors::Xterm(XtermColors::UserBrightCyan),
         "user bright white" => DynColors::Xterm(XtermColors::UserBrightWhite),
         "stratos blue" => DynColors::Xterm(XtermColors::StratosBlue),
@@ -187,15 +191,21 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "deep cerulean" => DynColors::Xterm(XtermColors::DeepCerulean),
         "lochmara blue" => DynColors::Xterm(XtermColors::LochmaraBlue),
         "azure radiance" => DynColors::Xterm(XtermColors::AzureRadiance),
-        "light japanese laurel" => DynColors::Xterm(XtermColors::LightJapaneseLaurel),
+        "light japanese laurel" => {
+            DynColors::Xterm(XtermColors::LightJapaneseLaurel)
+        }
         "jade" => DynColors::Xterm(XtermColors::Jade),
         "persian green" => DynColors::Xterm(XtermColors::PersianGreen),
         "bondi blue" => DynColors::Xterm(XtermColors::BondiBlue),
         "cerulean" => DynColors::Xterm(XtermColors::Cerulean),
-        "light azure radiance" => DynColors::Xterm(XtermColors::LightAzureRadiance),
+        "light azure radiance" => {
+            DynColors::Xterm(XtermColors::LightAzureRadiance)
+        }
         "malachite" => DynColors::Xterm(XtermColors::Malachite),
         "caribbean green" => DynColors::Xterm(XtermColors::CaribbeanGreen),
-        "light caribbean green" => DynColors::Xterm(XtermColors::LightCaribbeanGreen),
+        "light caribbean green" => {
+            DynColors::Xterm(XtermColors::LightCaribbeanGreen)
+        }
         "robin egg blue" => DynColors::Xterm(XtermColors::RobinEggBlue),
         "dark spring green" => DynColors::Xterm(XtermColors::DarkSpringGreen),
         "light spring green" => DynColors::Xterm(XtermColors::LightSpringGreen),
@@ -211,7 +221,9 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "scorpion olive" => DynColors::Xterm(XtermColors::ScorpionOlive),
         "lilac" => DynColors::Xterm(XtermColors::Lilac),
         "scampi indigo" => DynColors::Xterm(XtermColors::ScampiIndigo),
-        "dark cornflower blue" => DynColors::Xterm(XtermColors::DarkCornflowerBlue),
+        "dark cornflower blue" => {
+            DynColors::Xterm(XtermColors::DarkCornflowerBlue)
+        }
         "dark limeade" => DynColors::Xterm(XtermColors::DarkLimeade),
         "glade green" => DynColors::Xterm(XtermColors::GladeGreen),
         "juniper green" => DynColors::Xterm(XtermColors::JuniperGreen),
@@ -225,19 +237,31 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "viking" => DynColors::Xterm(XtermColors::Viking),
         "malibu blue" => DynColors::Xterm(XtermColors::MalibuBlue),
         "bright green" => DynColors::Xterm(XtermColors::BrightGreen),
-        "dark screamin green" => DynColors::Xterm(XtermColors::DarkScreaminGreen),
+        "dark screamin green" => {
+            DynColors::Xterm(XtermColors::DarkScreaminGreen)
+        }
         "screamin green" => DynColors::Xterm(XtermColors::ScreaminGreen),
         "dark aquamarine" => DynColors::Xterm(XtermColors::DarkAquamarine),
         "light aquamarine" => DynColors::Xterm(XtermColors::LightAquamarine),
-        "dark fresh eggplant" => DynColors::Xterm(XtermColors::DarkFreshEggplant),
-        "light fresh eggplant" => DynColors::Xterm(XtermColors::LightFreshEggplant),
+        "dark fresh eggplant" => {
+            DynColors::Xterm(XtermColors::DarkFreshEggplant)
+        }
+        "light fresh eggplant" => {
+            DynColors::Xterm(XtermColors::LightFreshEggplant)
+        }
         "electric violet" => DynColors::Xterm(XtermColors::ElectricViolet),
-        "light electric violet" => DynColors::Xterm(XtermColors::LightElectricViolet),
+        "light electric violet" => {
+            DynColors::Xterm(XtermColors::LightElectricViolet)
+        }
         "copper rose" => DynColors::Xterm(XtermColors::CopperRose),
-        "strikemaster purple" => DynColors::Xterm(XtermColors::StrikemasterPurple),
+        "strikemaster purple" => {
+            DynColors::Xterm(XtermColors::StrikemasterPurple)
+        }
         "deluge purple" => DynColors::Xterm(XtermColors::DelugePurple),
         "dark medium purple" => DynColors::Xterm(XtermColors::DarkMediumPurple),
-        "dark heliotrope purple" => DynColors::Xterm(XtermColors::DarkHeliotropePurple),
+        "dark heliotrope purple" => {
+            DynColors::Xterm(XtermColors::DarkHeliotropePurple)
+        }
         "clay creek olive" => DynColors::Xterm(XtermColors::ClayCreekOlive),
         "wild blue yonder" => DynColors::Xterm(XtermColors::WildBlueYonder),
         "chetwode blue" => DynColors::Xterm(XtermColors::ChetwodeBlue),
@@ -254,17 +278,25 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "bermuda" => DynColors::Xterm(XtermColors::Bermuda),
         "dark anakiwa blue" => DynColors::Xterm(XtermColors::DarkAnakiwaBlue),
         "chartreuse green" => DynColors::Xterm(XtermColors::ChartreuseGreen),
-        "light screamin green" => DynColors::Xterm(XtermColors::LightScreaminGreen),
+        "light screamin green" => {
+            DynColors::Xterm(XtermColors::LightScreaminGreen)
+        }
         "dark mint green" => DynColors::Xterm(XtermColors::DarkMintGreen),
         "mint green" => DynColors::Xterm(XtermColors::MintGreen),
-        "lighter aquamarine" => DynColors::Xterm(XtermColors::LighterAquamarine),
+        "lighter aquamarine" => {
+            DynColors::Xterm(XtermColors::LighterAquamarine)
+        }
         "anakiwa blue" => DynColors::Xterm(XtermColors::AnakiwaBlue),
         "bright red" => DynColors::Xterm(XtermColors::BrightRed),
         "dark flirt" => DynColors::Xterm(XtermColors::DarkFlirt),
         "flirt" => DynColors::Xterm(XtermColors::Flirt),
         "light flirt" => DynColors::Xterm(XtermColors::LightFlirt),
-        "bright electric violet" => DynColors::Xterm(XtermColors::BrightElectricViolet),
-        "roseof sharon orange" => DynColors::Xterm(XtermColors::RoseofSharonOrange),
+        "bright electric violet" => {
+            DynColors::Xterm(XtermColors::BrightElectricViolet)
+        }
+        "roseof sharon orange" => {
+            DynColors::Xterm(XtermColors::RoseofSharonOrange)
+        }
         "matrix pink" => DynColors::Xterm(XtermColors::MatrixPink),
         "tapestry pink" => DynColors::Xterm(XtermColors::TapestryPink),
         "fuchsia pink" => DynColors::Xterm(XtermColors::FuchsiaPink),
@@ -289,17 +321,25 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "light mint green" => DynColors::Xterm(XtermColors::LightMintGreen),
         "celadon" => DynColors::Xterm(XtermColors::Celadon),
         "aero blue" => DynColors::Xterm(XtermColors::AeroBlue),
-        "french pass light blue" => DynColors::Xterm(XtermColors::FrenchPassLightBlue),
+        "french pass light blue" => {
+            DynColors::Xterm(XtermColors::FrenchPassLightBlue)
+        }
         "guardsman red" => DynColors::Xterm(XtermColors::GuardsmanRed),
         "razzmatazz cerise" => DynColors::Xterm(XtermColors::RazzmatazzCerise),
         "hollywood cerise" => DynColors::Xterm(XtermColors::HollywoodCerise),
-        "dark purple pizzazz" => DynColors::Xterm(XtermColors::DarkPurplePizzazz),
-        "brighter electric violet" => DynColors::Xterm(XtermColors::BrighterElectricViolet),
+        "dark purple pizzazz" => {
+            DynColors::Xterm(XtermColors::DarkPurplePizzazz)
+        }
+        "brighter electric violet" => {
+            DynColors::Xterm(XtermColors::BrighterElectricViolet)
+        }
         "tenn orange" => DynColors::Xterm(XtermColors::TennOrange),
         "roman orange" => DynColors::Xterm(XtermColors::RomanOrange),
         "cranberry pink" => DynColors::Xterm(XtermColors::CranberryPink),
         "hopbush pink" => DynColors::Xterm(XtermColors::HopbushPink),
-        "lighter heliotrope" => DynColors::Xterm(XtermColors::LighterHeliotrope),
+        "lighter heliotrope" => {
+            DynColors::Xterm(XtermColors::LighterHeliotrope)
+        }
         "mango tango" => DynColors::Xterm(XtermColors::MangoTango),
         "copperfield" => DynColors::Xterm(XtermColors::Copperfield),
         "sea pink" => DynColors::Xterm(XtermColors::SeaPink),
@@ -326,10 +366,14 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "oyster bay" => DynColors::Xterm(XtermColors::OysterBay),
         "dark rose" => DynColors::Xterm(XtermColors::DarkRose),
         "rose" => DynColors::Xterm(XtermColors::Rose),
-        "light hollywood cerise" => DynColors::Xterm(XtermColors::LightHollywoodCerise),
+        "light hollywood cerise" => {
+            DynColors::Xterm(XtermColors::LightHollywoodCerise)
+        }
         "purple pizzazz" => DynColors::Xterm(XtermColors::PurplePizzazz),
         "blaze orange" => DynColors::Xterm(XtermColors::BlazeOrange),
-        "bittersweet orange" => DynColors::Xterm(XtermColors::BittersweetOrange),
+        "bittersweet orange" => {
+            DynColors::Xterm(XtermColors::BittersweetOrange)
+        }
         "wild watermelon" => DynColors::Xterm(XtermColors::WildWatermelon),
         "dark hot pink" => DynColors::Xterm(XtermColors::DarkHotPink),
         "pink flamingo" => DynColors::Xterm(XtermColors::PinkFlamingo),
@@ -367,8 +411,12 @@ pub fn parse_color(input: &str) -> Result<DynColors, ParseColorError> {
         "boulder" => DynColors::Xterm(XtermColors::Boulder),
         "dusty gray" => DynColors::Xterm(XtermColors::DustyGray),
         "nobel gray" => DynColors::Xterm(XtermColors::NobelGray),
-        "dark silver chalice" => DynColors::Xterm(XtermColors::DarkSilverChalice),
-        "light silver chalice" => DynColors::Xterm(XtermColors::LightSilverChalice),
+        "dark silver chalice" => {
+            DynColors::Xterm(XtermColors::DarkSilverChalice)
+        }
+        "light silver chalice" => {
+            DynColors::Xterm(XtermColors::LightSilverChalice)
+        }
         "dark silver" => DynColors::Xterm(XtermColors::DarkSilver),
         "dark alto" => DynColors::Xterm(XtermColors::DarkAlto),
         "alto" => DynColors::Xterm(XtermColors::Alto),

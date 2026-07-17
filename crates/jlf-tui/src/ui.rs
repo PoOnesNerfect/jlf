@@ -1,12 +1,14 @@
 use ansi_to_tui::IntoText;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+use ratatui::{
+    layout::{Constraint, Flex, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
+    Frame,
 };
-use ratatui::Frame;
 
 use crate::app::{App, MatchCount, Mode};
 
@@ -14,7 +16,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Fixed layout: the list (+ optional detail), then a framed input box, then
     // the single bottom bar. The box is always present (so nothing shifts) and
     // holds the `/` filter or `:` command input with its candidates; when idle
-    // it's an empty, titled frame so the space reads as a deliberate input area.
+    // it's an empty, titled frame so the space reads as a deliberate input
+    // area.
     let areas = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(3),
@@ -26,8 +29,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     let bar = areas[2];
 
     if app.show_detail {
-        let [list_area, detail_area] =
-            Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(main);
+        let [list_area, detail_area] = Layout::horizontal([
+            Constraint::Percentage(58),
+            Constraint::Percentage(42),
+        ])
+        .areas(main);
         draw_list(f, app, list_area);
         draw_detail(f, app, detail_area);
     } else {
@@ -47,7 +53,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_actions(f: &mut Frame, app: &App, area: Rect) {
     use crate::app::ACTIONS;
-    let width = ACTIONS.iter().map(|(l, _)| l.len()).max().unwrap_or(20) as u16 + 8;
+    let width =
+        ACTIONS.iter().map(|(l, _)| l.len()).max().unwrap_or(20) as u16 + 8;
     let height = ACTIONS.len() as u16 + 2;
     let popup = center(area, width, height);
     let items: Vec<ListItem> = ACTIONS
@@ -89,7 +96,8 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "  Esc       close popup / clear search / clear filter    ^L  redraw",
         "",
         "Search  (press /)  — highlights matches, keeps every row",
-        "  matches text anywhere in a record (key or value); n/N step up / down",
+        "  matches text anywhere in a record (key or value); n/N step up / \
+         down",
         "",
         "Filter  (press ?)  — narrows to matching rows",
         "  field=value   op: = != > >= < <= ~ !~   (e.g. level=error)",
@@ -111,7 +119,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
             if !r.is_empty() && !r.starts_with(' ') {
                 Line::from(Span::styled(
                     *r,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ))
             } else {
                 Line::from(*r)
@@ -137,13 +147,15 @@ fn draw_help(f: &mut Frame, area: Rect) {
 /// it. Idle it's an empty titled frame, so the reserved space reads as a
 /// deliberate input area rather than blank rows.
 fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
-    let active = matches!(app.mode, Mode::Filter | Mode::Search | Mode::Command);
+    let active =
+        matches!(app.mode, Mode::Filter | Mode::Search | Mode::Command);
     let border = if active { Color::Cyan } else { Color::DarkGray };
 
     // The top border row: the candidates while cycling, else a label.
     let title = if app.suggestions_visible() {
         let (cands, sel) = app.suggestions();
-        let mut spans = vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
+        let mut spans =
+            vec![Span::styled(" ⇥ ", Style::default().fg(Color::DarkGray))];
         for (i, c) in cands.iter().enumerate() {
             let style = if Some(i) == sel {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
@@ -156,13 +168,24 @@ fn draw_input_section(f: &mut Frame, app: &App, area: Rect) {
         Line::from(spans)
     } else {
         match app.mode {
-            Mode::Search => Line::from(Span::styled(" search ", Style::default().fg(border))),
-            Mode::Filter => Line::from(Span::styled(" filter ", Style::default().fg(border))),
-            Mode::Command => Line::from(Span::styled(" command ", Style::default().fg(border))),
-            // Show the keys as distinct, bracketed tokens so it's clear each is a
-            // key to press, not part of the sentence.
+            Mode::Search => Line::from(Span::styled(
+                " search ",
+                Style::default().fg(border),
+            )),
+            Mode::Filter => Line::from(Span::styled(
+                " filter ",
+                Style::default().fg(border),
+            )),
+            Mode::Command => Line::from(Span::styled(
+                " command ",
+                Style::default().fg(border),
+            )),
+            // Show the keys as distinct, bracketed tokens so it's clear each is
+            // a key to press, not part of the sentence.
             Mode::Normal => {
-                let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                let key = Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD);
                 let dim = Style::default().fg(Color::DarkGray);
                 let sep = || Span::styled("  ·  [", dim);
                 Line::from(vec![
@@ -235,12 +258,15 @@ fn mode_prefix(mode: &Mode) -> char {
 }
 
 /// The idle input row: the view's status line. The active search (`/…`) comes
-/// first, so it stays where you typed it in the input rather than jumping across
-/// the row; then the active filter (`?…`) or "No filter", then the record count.
-/// This is the single place both are shown, so the bottom bar doesn't repeat them.
+/// first, so it stays where you typed it in the input rather than jumping
+/// across the row; then the active filter (`?…`) or "No filter", then the
+/// record count. This is the single place both are shown, so the bottom bar
+/// doesn't repeat them.
 fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
-    let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let key = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let mut spans = vec![Span::raw(" ")];
     if !app.search_query.is_empty() {
         spans.push(Span::styled("/", key));
@@ -252,14 +278,19 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
         // visible. Just the total when the selection isn't on a match; nothing
         // when the view is too large to count cheaply.
         let label = match app.search_position() {
-            Some(MatchCount::Counted { current: Some(i), total }) => {
-                Some(format!("   {i}/{total} matches"))
-            }
+            Some(MatchCount::Counted {
+                current: Some(i),
+                total,
+            }) => Some(format!("   {i}/{total} matches")),
             Some(MatchCount::Counted { current: None, total }) => {
                 Some(format!("   {total} matches"))
             }
-            Some(MatchCount::Partial { found: 0 }) => Some("   ? matches".to_string()),
-            Some(MatchCount::Partial { found }) => Some(format!("   {found}+ matches")),
+            Some(MatchCount::Partial { found: 0 }) => {
+                Some("   ? matches".to_string())
+            }
+            Some(MatchCount::Partial { found }) => {
+                Some(format!("   {found}+ matches"))
+            }
             _ => None,
         };
         if let Some(label) = label {
@@ -271,7 +302,10 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
         spans.push(Span::styled("No filter", dim));
     } else {
         spans.push(Span::styled("?", key));
-        spans.push(Span::styled(app.filter_text.clone(), Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            app.filter_text.clone(),
+            Style::default().fg(Color::Cyan),
+        ));
     }
     spans.push(Span::styled(
         format!("   ·   {}/{} records", app.view_len(), app.total()),
@@ -333,16 +367,19 @@ fn app_badge_style(focused: bool) -> Style {
 }
 
 /// The always-visible key hint shown on the prompt line in Normal mode.
-const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · e editor · a actions · h help · q quit";
+const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · e \
+                    editor · a actions · h help · q quit";
 
 /// The bottom bar: the app badge, follow state, and a transient message, then
 /// the key-hint section (completion help while typing a `/` filter or `:`
 /// command, else the normal keys). The active filter and record count live in
-/// the input box above (see [`draw_input_section`]), so they aren't repeated here.
+/// the input box above (see [`draw_input_section`]), so they aren't repeated
+/// here.
 fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![Span::styled(" jlf-tui ", app_badge_style(app.focused))];
-    // Follow state: a green dot while auto-scrolling to the newest record, a red
-    // bar when paused.
+    let mut spans =
+        vec![Span::styled(" jlf-tui ", app_badge_style(app.focused))];
+    // Follow state: a green dot while auto-scrolling to the newest record, a
+    // red bar when paused.
     if app.follow {
         spans.push(Span::styled("  ● ", Style::default().fg(Color::Green)));
         spans.push(Span::raw("follow"));
@@ -369,7 +406,9 @@ fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         _ => {
             let hints = match app.mode {
-                Mode::Filter | Mode::Command => "Tab/↑↓ cycle · ⏎ apply · Esc cancel",
+                Mode::Filter | Mode::Command => {
+                    "Tab/↑↓ cycle · ⏎ apply · Esc cancel"
+                }
                 _ => HINT,
             };
             spans.push(Span::styled(
@@ -418,8 +457,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     app.scroll_top.set(top);
     let end = (top + inner_h).min(total);
     app.page.set(end - top);
-    // Prefetch a screenful beyond each edge so scrolling into the spilled middle
-    // stays smooth.
+    // Prefetch a screenful beyond each edge so scrolling into the spilled
+    // middle stays smooth.
     app.prefetch(top.saturating_sub(1));
     app.prefetch(end);
 
@@ -470,7 +509,8 @@ fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
     // half at the top, upper half at the bottom — so it meets the corner edge
     // instead of covering it with a full block hanging past the frame.
     let x = area.right().saturating_sub(1);
-    for (y, cap) in [(area.top(), "▄"), (area.bottom().saturating_sub(1), "▀")] {
+    for (y, cap) in [(area.top(), "▄"), (area.bottom().saturating_sub(1), "▀")]
+    {
         if let Some(cell) = f.buffer_mut().cell_mut((x, y)) {
             if cell.symbol() == "█" {
                 cell.set_symbol(cap);
@@ -480,13 +520,14 @@ fn draw_scrollbar(f: &mut Frame, app: &App, area: Rect, total: usize) {
 }
 
 /// Expanded list (toggled with `c`): each record spans multiple lines — header
-/// plus pretty data with a blank line between records, exactly like piped `jlf`.
-/// Records have variable heights, so this composes them into a flat line buffer
-/// and clips at line granularity like a pager. The viewport top is a record
-/// index scrolled with the same margin as compact mode, so the cursor moves
-/// freely and only scrolls near the edges; at the buffer's end the content fills
-/// from the bottom. The selected record keeps its own colors, marked by a left
-/// bar (a full-block highlight would bury the syntax coloring).
+/// plus pretty data with a blank line between records, exactly like piped
+/// `jlf`. Records have variable heights, so this composes them into a flat line
+/// buffer and clips at line granularity like a pager. The viewport top is a
+/// record index scrolled with the same margin as compact mode, so the cursor
+/// moves freely and only scrolls near the edges; at the buffer's end the
+/// content fills from the bottom. The selected record keeps its own colors,
+/// marked by a left bar (a full-block highlight would bury the syntax
+/// coloring).
 fn draw_list_expanded(
     f: &mut Frame,
     app: &App,
@@ -495,8 +536,7 @@ fn draw_list_expanded(
     inner_h: usize,
     total: usize,
 ) {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::{cell::RefCell, collections::HashMap};
 
     let inner_w = area.width.saturating_sub(2) as usize;
     let bar = cursor_gutter_style(app.focused);
@@ -507,11 +547,12 @@ fn draw_list_expanded(
     // blank separator; see the memoizing `block` closure below.
     type Block = Rc<(Vec<Line<'static>>, bool)>;
 
-    // A record's guttered, width-clipped content lines, plus whether its template
-    // asked for a trailing blank separator (it ends in a newline). Memoized
-    // behind `Rc` so the scroll math's repeated length checks don't deep-clone.
-    // The separator is tracked here but emitted only *between* records, never
-    // after the last visible one, so the bottom row is never a stray blank.
+    // A record's guttered, width-clipped content lines, plus whether its
+    // template asked for a trailing blank separator (it ends in a newline).
+    // Memoized behind `Rc` so the scroll math's repeated length checks
+    // don't deep-clone. The separator is tracked here but emitted only
+    // *between* records, never after the last visible one, so the bottom
+    // row is never a stray blank.
     let cache: RefCell<HashMap<usize, Block>> = RefCell::new(HashMap::new());
     let block = |i: usize| -> Block {
         if let Some(v) = cache.borrow().get(&i) {
@@ -528,7 +569,9 @@ fn draw_list_expanded(
             .map(|raw| {
                 let content = highlight_line(ansi_line(raw.to_owned()), needle);
                 let mut spans = vec![gutter()];
-                spans.extend(truncate_line(content, inner_w.saturating_sub(2)).spans);
+                spans.extend(
+                    truncate_line(content, inner_w.saturating_sub(2)).spans,
+                );
                 Line::from(spans)
             })
             .collect();
@@ -545,9 +588,10 @@ fn draw_list_expanded(
     let margin = scroll_margin(inner_h);
     let sel_h = height(app.selected);
 
-    // The topmost record when scrolled fully to the bottom, so content fills from
-    // the bottom and the newest record can sit at the very bottom edge (no forced
-    // margin below it) rather than leaving a gap at the end of the buffer.
+    // The topmost record when scrolled fully to the bottom, so content fills
+    // from the bottom and the newest record can sit at the very bottom edge
+    // (no forced margin below it) rather than leaving a gap at the end of
+    // the buffer.
     let mut rows = 0usize;
     let mut max_top = total - 1;
     for i in (0..total).rev() {
@@ -568,24 +612,26 @@ fn draw_list_expanded(
     // Clamp the starting `top` to at most `inner_h` records back from the
     // selection: since every record is ≥1 row, no record earlier than that can
     // be on screen, and this bounds the `above()` height sums to a viewport's
-    // worth of records. Without it, the first frame after a jump-to-bottom (or a
-    // `G` from the top) sums heights from 0 to the selection — rendering the
-    // whole buffer just to measure it (seconds on a large stream).
+    // worth of records. Without it, the first frame after a jump-to-bottom (or
+    // a `G` from the top) sums heights from 0 to the selection — rendering
+    // the whole buffer just to measure it (seconds on a large stream).
     let floor = app.selected.saturating_sub(inner_h);
     let mut top = app.scroll_top.get().clamp(floor, app.selected);
-    // 1) Keep the selected block's bottom on screen (scroll down if it overflows;
-    //    a block taller than the viewport shows from its own top).
+    // 1) Keep the selected block's bottom on screen (scroll down if it
+    //    overflows; a block taller than the viewport shows from its own top).
     while top < app.selected && above(top) + sel_h > inner_h {
         top += 1;
     }
-    // 2) Top margin: if the cursor is within `margin` rows of the top, scroll up.
+    // 2) Top margin: if the cursor is within `margin` rows of the top, scroll
+    //    up.
     while top > 0 && above(top) < margin {
         top -= 1;
     }
-    // 3) Bottom margin: scroll down to keep `margin` below the cursor — but only
-    //    while there's more content below to reveal (`top < max_top`). At the
-    //    buffer end this is a no-op, so the newest record rests at the bottom and
-    //    moving up walks the cursor through the viewport before it scrolls.
+    // 3) Bottom margin: scroll down to keep `margin` below the cursor — but
+    //    only while there's more content below to reveal (`top < max_top`). At
+    //    the buffer end this is a no-op, so the newest record rests at the
+    //    bottom and moving up walks the cursor through the viewport before it
+    //    scrolls.
     while top < max_top && above(top) + sel_h + margin > inner_h {
         top += 1;
     }
@@ -602,8 +648,8 @@ fn draw_list_expanded(
         }
         out
     };
-    // Whether every record from `from` to the end fits within the viewport (kept
-    // cheap by bailing out as soon as it overflows).
+    // Whether every record from `from` to the end fits within the viewport
+    // (kept cheap by bailing out as soon as it overflows).
     let window_fits = |from: usize| -> bool {
         let mut r = 0usize;
         for i in from..total {
@@ -618,16 +664,17 @@ fn draw_list_expanded(
         true
     };
 
-    // The topmost record actually rendered — persisted so next frame's scrolloff
-    // math matches what's on screen (otherwise the fill/anchor and the sticky top
-    // diverge and the cursor gets pinned).
+    // The topmost record actually rendered — persisted so next frame's
+    // scrolloff math matches what's on screen (otherwise the fill/anchor
+    // and the sticky top diverge and the cursor gets pinned).
     let render_top;
     let mut lines = if window_fits(top) {
-        // Near the buffer end the content underfills the viewport. `start` is the
-        // first record whose window (start..end) still fits; that's the first
-        // fully-visible record, so persist it as the top (keeping the scrolloff
-        // math consistent with the screen — otherwise the persisted top sits a
-        // record above what's shown and the next keypress scrolls spuriously).
+        // Near the buffer end the content underfills the viewport. `start` is
+        // the first record whose window (start..end) still fits; that's
+        // the first fully-visible record, so persist it as the top
+        // (keeping the scrolloff math consistent with the screen —
+        // otherwise the persisted top sits a record above what's shown
+        // and the next keypress scrolls spuriously).
         let mut start = top;
         while start > 0 && window_fits(start - 1) {
             start -= 1;
@@ -742,18 +789,20 @@ fn ansi_line(s: String) -> Line<'static> {
     ansi_text(s).lines.into_iter().next().unwrap_or_default()
 }
 
-/// Highlight occurrences of `needle` in a styled line by splitting spans at match
-/// boundaries and overlaying the search style on the matched characters (keeping
-/// their surrounding colors). Smart-case: matches case-insensitively when the
-/// needle is all lowercase, case-sensitively when it has any uppercase — the same
-/// rule search navigation uses, so highlights and `n`/`N` agree. Case-folding
-/// keeps a 1:1 char count so match positions line up with the original spans.
+/// Highlight occurrences of `needle` in a styled line by splitting spans at
+/// match boundaries and overlaying the search style on the matched characters
+/// (keeping their surrounding colors). Smart-case: matches case-insensitively
+/// when the needle is all lowercase, case-sensitively when it has any uppercase
+/// — the same rule search navigation uses, so highlights and `n`/`N` agree.
+/// Case-folding keeps a 1:1 char count so match positions line up with the
+/// original spans.
 fn highlight_line(line: Line<'static>, needle: &str) -> Line<'static> {
     if needle.is_empty() {
         return line;
     }
     let case_sensitive = crate::app::search_case_sensitive(needle);
-    let fold = |c: char| if case_sensitive { c } else { c.to_ascii_lowercase() };
+    let fold =
+        |c: char| if case_sensitive { c } else { c.to_ascii_lowercase() };
     let needle: Vec<char> = needle.chars().map(fold).collect();
     let lower: Vec<char> = line
         .spans
@@ -789,7 +838,8 @@ fn highlight_line(line: Line<'static>, needle: &str) -> Line<'static> {
         let mut seg_matched = false;
         for c in span.content.chars() {
             if !seg.is_empty() && matched[pos] != seg_matched {
-                let style = if seg_matched { span.style.patch(hl) } else { span.style };
+                let style =
+                    if seg_matched { span.style.patch(hl) } else { span.style };
                 out.push(Span::styled(std::mem::take(&mut seg), style));
             }
             seg_matched = matched[pos];
@@ -797,7 +847,8 @@ fn highlight_line(line: Line<'static>, needle: &str) -> Line<'static> {
             pos += 1;
         }
         if !seg.is_empty() {
-            let style = if seg_matched { span.style.patch(hl) } else { span.style };
+            let style =
+                if seg_matched { span.style.patch(hl) } else { span.style };
             out.push(Span::styled(seg, style));
         }
     }
@@ -827,8 +878,8 @@ fn truncate_line(line: Line<'static>, max: usize) -> Line<'static> {
 }
 
 fn draw_summary(f: &mut Frame, summary: &crate::summary::Summary, area: Rect) {
-    // Size to the content but keep a comfortable minimum so the panel reads as a
-    // deliberate result rather than a tiny box lost in the middle.
+    // Size to the content but keep a comfortable minimum so the panel reads as
+    // a deliberate result rather than a tiny box lost in the middle.
     let content_w = summary
         .rows
         .iter()
@@ -836,8 +887,10 @@ fn draw_summary(f: &mut Frame, summary: &crate::summary::Summary, area: Rect) {
         .max()
         .unwrap_or(0)
         .max(summary.title.len());
-    let width = (content_w + 6).clamp(40, area.width.saturating_sub(4) as usize);
-    let height = (summary.rows.len() + 4).clamp(7, area.height.saturating_sub(2) as usize);
+    let width =
+        (content_w + 6).clamp(40, area.width.saturating_sub(4) as usize);
+    let height = (summary.rows.len() + 4)
+        .clamp(7, area.height.saturating_sub(2) as usize);
     let popup = center(area, width as u16, height as u16);
 
     // A blank line above the rows gives the numbers room to breathe.
@@ -847,7 +900,9 @@ fn draw_summary(f: &mut Frame, summary: &crate::summary::Summary, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Line::from(Span::styled(
             format!(" {} ", summary.title),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )))
         .title_bottom(" esc to close ");
     f.render_widget(Clear, popup);
@@ -871,19 +926,22 @@ fn center(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::channel;
+
+    use ratatui::{backend::TestBackend, Terminal};
+
     use super::*;
     use crate::app::App;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    use std::sync::mpsc::channel;
 
     #[test]
     fn highlight_splits_spans_on_matches() {
         // "abcABCxyz" searching "abc" (case-insensitive) matches the first two
-        // runs; being adjacent they merge into one highlighted span, then "xyz".
+        // runs; being adjacent they merge into one highlighted span, then
+        // "xyz".
         let line = Line::from(vec![Span::raw("abcABCxyz")]);
         let out = highlight_line(line, "abc");
-        let texts: Vec<String> = out.spans.iter().map(|s| s.content.to_string()).collect();
+        let texts: Vec<String> =
+            out.spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(texts, vec!["abcABC", "xyz"]);
         let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
         assert_eq!(out.spans[0].style, hl);
@@ -896,7 +954,8 @@ mod tests {
         // "ABC" is highlighted, not the lowercase "abc".
         let line = Line::from(vec![Span::raw("abcABCxyz")]);
         let out = highlight_line(line, "ABC");
-        let texts: Vec<String> = out.spans.iter().map(|s| s.content.to_string()).collect();
+        let texts: Vec<String> =
+            out.spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(texts, vec!["abc", "ABC", "xyz"]);
         let hl = Style::default().fg(Color::Black).bg(SEARCH_HL);
         assert_eq!(out.spans[0].style, Style::default());
@@ -914,9 +973,7 @@ mod tests {
         assert_eq!(highlight_line(line, "").spans.len(), 1);
     }
 
-    fn buffer_text(lines: &[&str]) -> String {
-        render_app(lines, |_| {})
-    }
+    fn buffer_text(lines: &[&str]) -> String { render_app(lines, |_| {}) }
 
     /// Build an app from `lines`, apply `setup` (e.g. toggle detail/expanded),
     /// render one frame, and return the flattened terminal buffer as text.
@@ -978,7 +1035,8 @@ mod tests {
     #[test]
     fn detail_pane_pretty_prints_selected() {
         // Detail is opt-in (Enter), so open it before rendering.
-        let text = render_app(&[r#"{"a":{"b":1}}"#], |app| app.show_detail = true);
+        let text =
+            render_app(&[r#"{"a":{"b":1}}"#], |app| app.show_detail = true);
         assert!(text.contains("detail"), "missing detail title:\n{text}");
         // pretty JSON puts the nested key on its own indented line
         assert!(text.contains("\"b\""), "detail not pretty:\n{text}");
@@ -1005,10 +1063,16 @@ mod tests {
         // the rendered content so it can never reach the terminal. (Use a real
         // CR byte, not a JSON `\r` escape, which the parser keeps as literal
         // text.)
-        let json = "{\"level\":\"info\",\"fields\":{\"message\":\"before\rafter\"}}";
+        let json =
+            "{\"level\":\"info\",\"fields\":{\"message\":\"before\rafter\"}}";
         let text = buffer_text(&[json]);
-        assert!(text.contains("beforeafter"), "CR not stripped from content:\n{text}");
-        assert!(!text.contains('\r'), "raw CR leaked into the frame:\n{text}");
+        assert!(
+            text.contains("beforeafter"),
+            "CR not stripped from content:\n{text}"
+        );
+        assert!(
+            !text.contains('\r'),
+            "raw CR leaked into the frame:\n{text}"
+        );
     }
-
 }

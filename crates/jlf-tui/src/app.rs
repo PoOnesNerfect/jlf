@@ -1,21 +1,25 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::rc::Rc;
-use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt::Write as _,
+    rc::Rc,
+    sync::mpsc::Receiver,
+    time::{Duration, Instant},
+};
 
 use jlf_core::{expanded_format, Filter, Formatter, Json};
 
-use crate::catalog::{self, Catalog};
-use crate::field::{path, resolve, scalar};
-use crate::store::Store;
-use crate::summary::{Agg, Summary};
+use crate::{
+    catalog::{self, Catalog},
+    field::{path, resolve, scalar},
+    store::Store,
+    summary::{Agg, Summary},
+};
 
 /// The `:` commands, offered as autocomplete when the command line is open.
 pub const COMMANDS: [&str; 12] = [
-    "count", "stats", "top", "uniq", "redact", "csv", "tsv", "md", "follow", "save", "help",
-    "quit",
+    "count", "stats", "top", "uniq", "redact", "csv", "tsv", "md", "follow",
+    "save", "help", "quit",
 ];
 
 /// Entries in the Actions panel (opened with `a`): a label and the command it
@@ -57,40 +61,42 @@ struct Cycle {
     idx: usize,
 }
 
-/// Chars that separate words for word-wise cursor motion and Ctrl-W. Matches how
-/// filters/command args tokenize (whitespace plus `,`/`.`/operator chars), so a
-/// word jump lands on field/value boundaries like `fields.status` or `a>5,b`.
+/// Chars that separate words for word-wise cursor motion and Ctrl-W. Matches
+/// how filters/command args tokenize (whitespace plus `,`/`.`/operator chars),
+/// so a word jump lands on field/value boundaries like `fields.status` or
+/// `a>5,b`.
 fn is_word_break(c: char) -> bool {
-    c.is_whitespace() || matches!(c, ',' | '.' | '=' | '~' | '>' | '<' | '!' | ':' | '|')
+    c.is_whitespace()
+        || matches!(c, ',' | '.' | '=' | '~' | '>' | '<' | '!' | ':' | '|')
 }
 
 /// How many records to fold per `tick_summary` call, so a summary over a huge
 /// store progresses across frames instead of freezing the UI.
 const SUMMARY_BATCH: usize = 50_000;
 
-/// How many newly-arrived records to ingest per frame. Bounds the per-frame work
-/// during a burst (opening a huge file) so the UI keeps painting — the record
-/// count climbs visibly as a natural progress indicator — instead of blocking one
-/// frame until the whole stream is read. ~50k keeps a frame's ingest well under
-/// ~10ms even with disk spilling.
+/// How many newly-arrived records to ingest per frame. Bounds the per-frame
+/// work during a burst (opening a huge file) so the UI keeps painting — the
+/// record count climbs visibly as a natural progress indicator — instead of
+/// blocking one frame until the whole stream is read. ~50k keeps a frame's
+/// ingest well under ~10ms even with disk spilling.
 const DRAIN_BATCH: usize = 50_000;
 
-/// Time slice for one background search-scan step. Typing never scans on the key
-/// path — a keystroke only pushes/pops a stack level (instant); this budget bounds
-/// how long the *background* spends scanning per frame. Kept small so, on the
-/// single-threaded event loop, a slice never delays the next keystroke noticeably
-/// (the count just fills in over a few more frames).
+/// Time slice for one background search-scan step. Typing never scans on the
+/// key path — a keystroke only pushes/pops a stack level (instant); this budget
+/// bounds how long the *background* spends scanning per frame. Kept small so,
+/// on the single-threaded event loop, a slice never delays the next keystroke
+/// noticeably (the count just fills in over a few more frames).
 const SCAN_STEP: Duration = Duration::from_millis(8);
 
-/// Budget for the incremental preview's backward probe: on each keystroke/tick it
-/// scans a little way back from the anchor to land the selection straight on the
-/// nearest match, instead of waiting for (or chasing) the global scan's frontier.
-/// Small enough not to stall a keystroke; a match farther than this is reached by
-/// the background scan converging.
+/// Budget for the incremental preview's backward probe: on each keystroke/tick
+/// it scans a little way back from the anchor to land the selection straight on
+/// the nearest match, instead of waiting for (or chasing) the global scan's
+/// frontier. Small enough not to stall a keystroke; a match farther than this
+/// is reached by the background scan converging.
 const PREVIEW_PROBE: Duration = Duration::from_millis(3);
 
-/// Largest parent match list (in entries) a new level will copy to filter in the
-/// background. Above this, the child instead just resumes past the parent's
+/// Largest parent match list (in entries) a new level will copy to filter in
+/// the background. Above this, the child instead just resumes past the parent's
 /// empty-prefix (first-match) and re-scans — copying a broad query's huge list
 /// costs more than it saves.
 const LEVEL_LIST_CAP: usize = 50_000;
@@ -101,27 +107,31 @@ const LEVEL_LIST_CAP: usize = 50_000;
 const MAX_SCAN_STACK: usize = 128;
 
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
-/// many rendered lines; on overflow the cache is dropped and refills on the next
-/// scan. Sized so the working set for revisits (the preview probe, `n`/`N`,
-/// backspace re-scans) stays resident.
+/// many rendered lines; on overflow the cache is dropped and refills on the
+/// next scan. Sized so the working set for revisits (the preview probe,
+/// `n`/`N`, backspace re-scans) stays resident.
 const SEARCH_CACHE_CAP: usize = 200_000;
 
 /// The search match count for the status line.
 #[derive(Debug, PartialEq)]
 pub enum MatchCount {
-    /// Scanned exactly: the current 1-based match index (when the selection is on
-    /// a match) and the total number of matches.
-    Counted { current: Option<usize>, total: usize },
+    /// Scanned exactly: the current 1-based match index (when the selection is
+    /// on a match) and the total number of matches.
+    Counted {
+        current: Option<usize>,
+        total: usize,
+    },
     /// The scan is still running (view too large to finish in one budget): at
-    /// least `found` matches so far. Shown as `N+ matches` (`? matches` at zero).
+    /// least `found` matches so far. Shown as `N+ matches` (`? matches` at
+    /// zero).
     Partial { found: usize },
 }
 
 /// One level of the incremental-search scan stack, for one prefix of the query.
 /// `matches` holds the hits found so far (sorted); `cursor` is how far records
-/// have been scanned. When a level is pushed for a new character it inherits its
-/// parent's matches as `pending` — candidates still to be re-tested against the
-/// longer needle — which the background filters (from `pending_idx`) before
+/// have been scanned. When a level is pushed for a new character it inherits
+/// its parent's matches as `pending` — candidates still to be re-tested against
+/// the longer needle — which the background filters (from `pending_idx`) before
 /// scanning fresh records past `cursor`. Deferring that filtering is what keeps
 /// typing instant: pushing a level touches no records.
 struct ScanLevel {
@@ -142,7 +152,8 @@ pub(crate) fn search_case_sensitive(query: &str) -> bool {
 /// A prepared substring matcher for a search query, built once per scan and
 /// reused across records. Smart-case: an all-lowercase query matches case-
 /// insensitively (lowercasing each record); a query with any uppercase matches
-/// exactly via a SIMD [`memmem::Finder`], which is both faster and more precise.
+/// exactly via a SIMD [`memmem::Finder`], which is both faster and more
+/// precise.
 enum SearchMatcher {
     Sensitive(memchr::memmem::Finder<'static>),
     Insensitive(String),
@@ -160,13 +171,16 @@ impl SearchMatcher {
     fn is_match(&self, hay: &str) -> bool {
         match self {
             Self::Sensitive(finder) => finder.find(hay.as_bytes()).is_some(),
-            Self::Insensitive(lower) => hay.to_lowercase().contains(lower.as_str()),
+            Self::Insensitive(lower) => {
+                hay.to_lowercase().contains(lower.as_str())
+            }
         }
     }
 }
 
-/// A running summary: the aggregator plus how far through the view it has folded
-/// (a view position). New records past `cursor` are picked up on later ticks.
+/// A running summary: the aggregator plus how far through the view it has
+/// folded (a view position). New records past `cursor` are picked up on later
+/// ticks.
 struct SummaryJob {
     agg: Agg,
     cursor: usize,
@@ -177,12 +191,13 @@ pub struct App {
     /// memory, the middle spills to a temp file and is paged back on demand.
     store: Store,
     /// Logical record indices passing the current filter, or `None` when
-    /// unfiltered — then the view is the identity `0..len`, kept implicit so the
-    /// common (no-filter) case costs no per-record memory.
+    /// unfiltered — then the view is the identity `0..len`, kept implicit so
+    /// the common (no-filter) case costs no per-record memory.
     view: Option<Vec<usize>>,
     filters: Vec<Filter>,
-    /// Bare (operator-less) words typed into `/`: a record matches when its raw
-    /// text contains all of them (case-insensitive) — a plain "search anywhere".
+    /// Bare (operator-less) words typed into `/`: a record matches when its
+    /// raw text contains all of them (case-insensitive) — a plain "search
+    /// anywhere".
     search_terms: Vec<String>,
     redact: Vec<String>,
 
@@ -190,44 +205,46 @@ pub struct App {
     pub selected: usize,
     /// Auto-scroll to the newest matching record as data streams in.
     pub follow: bool,
-    /// Whether the terminal currently reports focus. The selected row uses this
-    /// to distinguish "active cursor" from "last cursor position while another
-    /// window owns keyboard focus".
+    /// Whether the terminal currently reports focus. The selected row uses
+    /// this to distinguish "active cursor" from "last cursor position
+    /// while another window owns keyboard focus".
     pub focused: bool,
 
     pub mode: Mode,
     pub input: String,
-    /// Cursor position within `input`, as a char index (0..=chars). Editing and
-    /// motion (arrows, word jumps, Home/End) all act relative to it.
+    /// Cursor position within `input`, as a char index (0..=chars). Editing
+    /// and motion (arrows, word jumps, Home/End) all act relative to it.
     pub input_cursor: usize,
     pub filter_text: String,
-    /// The active search query (`/`): matched text is highlighted in the list and
-    /// `n`/`N` jump between matching records. Empty means no search.
+    /// The active search query (`/`): matched text is highlighted in the list
+    /// and `n`/`N` jump between matching records. Empty means no search.
     pub search_query: String,
     /// Bumped each time the view is rebuilt (a filter change remaps every
-    /// position). Streaming new records only *appends*, leaving positions valid,
-    /// so it does **not** bump this — which lets the search scan survive live
-    /// tailing (the cursor just extends over the new tail) and only reset when the
-    /// view is genuinely remapped.
+    /// position). Streaming new records only *appends*, leaving positions
+    /// valid, so it does **not** bump this — which lets the search scan
+    /// survive live tailing (the cursor just extends over the new tail)
+    /// and only reset when the view is genuinely remapped.
     view_gen: u64,
-    /// The incremental-search scan as a stack of prefix levels: `scan_stack[i]` is
-    /// a proper prefix of `scan_stack[i+1]`, and the **top is the active query**.
-    /// Typing pushes a level (seeded from its parent — matches shrink as the query
-    /// grows), backspacing pops one (resuming that level where it left off), and a
-    /// mid-string edit pops to the deepest still-valid prefix. Empty ⇒ no search.
+    /// The incremental-search scan as a stack of prefix levels:
+    /// `scan_stack[i]` is a proper prefix of `scan_stack[i+1]`, and the
+    /// **top is the active query**. Typing pushes a level (seeded from its
+    /// parent — matches shrink as the query grows), backspacing pops one
+    /// (resuming that level where it left off), and a mid-string edit pops
+    /// to the deepest still-valid prefix. Empty ⇒ no search.
     scan_stack: Vec<ScanLevel>,
-    /// The [`Self::view_gen`] the `scan_stack` was built for; a mismatch means the
-    /// view was remapped and the stack is discarded.
+    /// The [`Self::view_gen`] the `scan_stack` was built for; a mismatch means
+    /// the view was remapped and the stack is discarded.
     scan_gen: u64,
     /// The selection when `/` search was opened. While typing, each keystroke
-    /// previews the nearest match relative to this anchor (incremental search),
-    /// and Esc restores it. `None` outside search mode.
+    /// previews the nearest match relative to this anchor (incremental
+    /// search), and Esc restores it. `None` outside search mode.
     search_anchor: Option<usize>,
     pub status: String,
     /// The rendered summary panel, if one is open.
     pub summary: Option<Summary>,
-    /// The running aggregator behind `summary`: it folds the view incrementally
-    /// (across frames for a huge store) and keeps updating as new records arrive.
+    /// The running aggregator behind `summary`: it folds the view
+    /// incrementally (across frames for a huge store) and keeps updating
+    /// as new records arrive.
     summary_job: Option<SummaryJob>,
     /// Whether the keys/commands help overlay is showing.
     pub help: bool,
@@ -238,9 +255,9 @@ pub struct App {
     pub show_detail: bool,
     pub detail_scroll: u16,
     pub quit: bool,
-    /// Set to force a full repaint next frame (Ctrl-L) — recovers the display if
-    /// something outside our control (e.g. a producer logging to the terminal's
-    /// stderr) has corrupted it.
+    /// Set to force a full repaint next frame (Ctrl-L) — recovers the display
+    /// if something outside our control (e.g. a producer logging to the
+    /// terminal's stderr) has corrupted it.
     pub force_redraw: bool,
     /// Set when `e` is pressed; the run loop opens the current view in $EDITOR
     /// (it owns the terminal it must suspend) and clears the flag.
@@ -260,28 +277,31 @@ pub struct App {
     /// Multi-line, colored formatter for the expanded list (like piped `jlf`).
     full_fmt: Formatter,
     /// No-color twins of the two formatters above, used to build the text `/`
-    /// search matches against — so search sees exactly what the list shows (minus
-    /// the ANSI), not the raw JSON with its hidden keys.
+    /// search matches against — so search sees exactly what the list shows
+    /// (minus the ANSI), not the raw JSON with its hidden keys.
     row_plain: Formatter,
     full_plain: Formatter,
-    /// Cache of a record's rendered searchable text, keyed by store index. Filled
-    /// lazily as search scans and cleared whenever the display mode changes (so it
-    /// always reflects what's on screen). Keeps typing responsive: only the first
-    /// keystroke over a fresh view pays the render cost.
+    /// Cache of a record's rendered searchable text, keyed by store index.
+    /// Filled lazily as search scans and cleared whenever the display mode
+    /// changes (so it always reflects what's on screen). Keeps typing
+    /// responsive: only the first keystroke over a fresh view pays the
+    /// render cost.
     search_cache: RefCell<HashMap<usize, Rc<str>>>,
     /// When true, the list shows each record over multiple lines (header +
     /// pretty data) like piped `jlf`; toggled with `c`.
     pub expanded: bool,
-    /// When true, the list shows the raw record (the JSON as it arrived) instead
-    /// of the recipe-formatted output; toggled with `r`. Combines with `expanded`:
-    /// compact shows the raw one-liner, expanded shows pretty-printed JSON.
+    /// When true, the list shows the raw record (the JSON as it arrived)
+    /// instead of the recipe-formatted output; toggled with `r`. Combines
+    /// with `expanded`: compact shows the raw one-liner, expanded shows
+    /// pretty-printed JSON.
     pub raw: bool,
     /// Index of the first visible record. Persisted across frames so the
-    /// viewport scrolls with a margin (see the list renderer) instead of pinning
-    /// the cursor to an edge. Updated at draw time, where the height is known.
+    /// viewport scrolls with a margin (see the list renderer) instead of
+    /// pinning the cursor to an edge. Updated at draw time, where the
+    /// height is known.
     pub scroll_top: std::cell::Cell<usize>,
-    /// Number of records visible in the last frame, so `d`/`u`/`D`/`U` can page
-    /// by the real viewport size. Set at draw time.
+    /// Number of records visible in the last frame, so `d`/`u`/`D`/`U` can
+    /// page by the real viewport size. Set at draw time.
     pub page: std::cell::Cell<usize>,
 }
 
@@ -298,15 +318,32 @@ impl App {
             }
             Err(_) => jlf_core::default_variables(),
         };
-        let row_fmt = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), false, true)?;
-        let full_fmt = Formatter::new(&expanded_format("${@output}", &vars(&[])), false, false)?;
-        // No-color twins for search: same layout, no ANSI, so a substring test is
-        // over exactly the visible text.
-        let row_plain = Formatter::new(&expanded_format("${@output}", &vars(&["compact"])), true, true)?;
-        let full_plain = Formatter::new(&expanded_format("${@output}", &vars(&[])), true, false)?;
+        let row_fmt = Formatter::new(
+            &expanded_format("${@output}", &vars(&["compact"])),
+            false,
+            true,
+        )?;
+        let full_fmt = Formatter::new(
+            &expanded_format("${@output}", &vars(&[])),
+            false,
+            false,
+        )?;
+        // No-color twins for search: same layout, no ANSI, so a substring test
+        // is over exactly the visible text.
+        let row_plain = Formatter::new(
+            &expanded_format("${@output}", &vars(&["compact"])),
+            true,
+            true,
+        )?;
+        let full_plain = Formatter::new(
+            &expanded_format("${@output}", &vars(&[])),
+            true,
+            false,
+        )?;
 
         // Start in the mode the config asks for: `compact = true` opens in the
-        // one-line view, otherwise the multi-line (expanded) view. `c` toggles it.
+        // one-line view, otherwise the multi-line (expanded) view. `c` toggles
+        // it.
         let compact = jlf_core::get_config()
             .ok()
             .and_then(|c| c.config.compact)
@@ -360,11 +397,12 @@ impl App {
 
     /// Drain any lines the reader thread produced since the last tick. Returns
     /// true if at least one new record arrived (so the caller can redraw).
-    /// Ingest newly-arrived records, at most [`DRAIN_BATCH`] per call so a burst
-    /// (e.g. opening a million-line file) fills the view progressively across
-    /// frames instead of blocking one frame for the whole stream. Returns
-    /// `(changed, more_pending)`: `more_pending` is true when the batch cap was
-    /// hit and the caller should loop again promptly rather than idle.
+    /// Ingest newly-arrived records, at most [`DRAIN_BATCH`] per call so a
+    /// burst (e.g. opening a million-line file) fills the view
+    /// progressively across frames instead of blocking one frame for the
+    /// whole stream. Returns `(changed, more_pending)`: `more_pending` is
+    /// true when the batch cap was hit and the caller should loop again
+    /// promptly rather than idle.
     pub fn drain_input(&mut self) -> (bool, bool) {
         let mut changed = false;
         let mut count = 0;
@@ -391,8 +429,8 @@ impl App {
         (changed, count == DRAIN_BATCH)
     }
 
-    /// Whether `line` passes the active structured filters and plain-text search
-    /// terms. Empty criteria pass everything.
+    /// Whether `line` passes the active structured filters and plain-text
+    /// search terms. Empty criteria pass everything.
     fn passes(&self, line: &str) -> bool {
         if !self.matches_search(line) {
             return false;
@@ -450,20 +488,22 @@ impl App {
         }
         self.filter_text = text;
         self.rebuild_view();
-        // The view changed, so cached search positions (current and stashed) are
-        // stale — drop them and rescan the active query against the new view.
+        // The view changed, so cached search positions (current and stashed)
+        // are stale — drop them and rescan the active query against the
+        // new view.
         self.reset_search_scan();
         if !self.search_query.is_empty() {
             self.refresh_search_matches();
         }
-        // A change in the view invalidates a running summary — recompute it from
-        // scratch over the new view.
+        // A change in the view invalidates a running summary — recompute it
+        // from scratch over the new view.
         if let Some(job) = &mut self.summary_job {
             job.agg.reset();
             job.cursor = 0;
         }
         self.tick_summary();
-        self.status = if self.filters.is_empty() && self.search_terms.is_empty() {
+        self.status = if self.filters.is_empty() && self.search_terms.is_empty()
+        {
             "filter cleared".into()
         } else {
             format!("{} match", self.view_len())
@@ -473,9 +513,7 @@ impl App {
     // ----- record access ----------------------------------------------------
 
     /// Total records held (across memory and the spill file).
-    pub fn total(&self) -> usize {
-        self.store.len()
-    }
+    pub fn total(&self) -> usize { self.store.len() }
 
     /// Number of records in the current view.
     pub fn view_len(&self) -> usize {
@@ -506,7 +544,9 @@ impl App {
     /// The most recent `n` records, oldest-first (for autocomplete catalogs).
     fn recent(&self, n: usize) -> Vec<Rc<str>> {
         let len = self.store.len();
-        (len.saturating_sub(n)..len).map(|i| self.store.get(i)).collect()
+        (len.saturating_sub(n)..len)
+            .map(|i| self.store.get(i))
+            .collect()
     }
 
     // ----- search autocomplete ---------------------------------------------
@@ -523,9 +563,10 @@ impl App {
         self.refresh_suggestions();
     }
 
-    /// Enter search mode (`/`): seed the input from the active query and remember
-    /// the current selection as the incremental-search anchor. Typing previews
-    /// the nearest match from here; Enter commits, Esc returns to the anchor.
+    /// Enter search mode (`/`): seed the input from the active query and
+    /// remember the current selection as the incremental-search anchor.
+    /// Typing previews the nearest match from here; Enter commits, Esc
+    /// returns to the anchor.
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.input = self.search_query.clone();
@@ -536,12 +577,13 @@ impl App {
         self.preview_search();
     }
 
-    /// Incremental preview, run on every keystroke: realign the scan stack to the
-    /// live input (push/pop a level — **no record scanning**, so typing is always
-    /// instant) and land the selection on the nearest match known so far. The
-    /// background scan fills in the rest over the next frames. Doesn't touch
-    /// `search_query`, so Esc can cancel cleanly; highlighting and the count read
-    /// the live input via `search_needle` while search mode is open.
+    /// Incremental preview, run on every keystroke: realign the scan stack to
+    /// the live input (push/pop a level — **no record scanning**, so typing
+    /// is always instant) and land the selection on the nearest match known
+    /// so far. The background scan fills in the rest over the next frames.
+    /// Doesn't touch `search_query`, so Esc can cancel cleanly;
+    /// highlighting and the count read the live input via `search_needle`
+    /// while search mode is open.
     fn preview_search(&mut self) {
         if self.search_anchor.is_none() {
             return;
@@ -550,14 +592,15 @@ impl App {
         self.apply_preview_jump();
     }
 
-    /// Land the selection on the incremental-search target given what's scanned so
-    /// far: the anchor if the input is empty or the record there already matches;
-    /// the nearest match once the scan is complete; otherwise hold at the anchor
-    /// Land the selection on the incremental-search target: the anchor if the
-    /// input is empty or the record there already matches; otherwise the nearest
-    /// match **found so far** (at or above the anchor, wrapping). Re-run on each
-    /// background tick, so the moment a match turns up mid-scan the selection jumps
-    /// to it and then refines toward the anchor as the scan reaches closer matches.
+    /// Land the selection on the incremental-search target given what's scanned
+    /// so far: the anchor if the input is empty or the record there already
+    /// matches; the nearest match once the scan is complete; otherwise hold
+    /// at the anchor Land the selection on the incremental-search target:
+    /// the anchor if the input is empty or the record there already
+    /// matches; otherwise the nearest match **found so far** (at or above
+    /// the anchor, wrapping). Re-run on each background tick, so the moment
+    /// a match turns up mid-scan the selection jumps to it and then refines
+    /// toward the anchor as the scan reaches closer matches.
     fn apply_preview_jump(&mut self) {
         let Some(anchor) = self.search_anchor else {
             return;
@@ -570,18 +613,28 @@ impl App {
         if self.record_matches_search(anchor, &matcher) {
             self.select(anchor);
         } else {
-            // Jump straight to the nearest match at/above the anchor via a short
-            // backward probe; if none is close, fall back to the global scan's
-            // nearest-found so far (which converges as it runs).
-            let near = self.scan_for_match(anchor, false, &matcher, Instant::now() + PREVIEW_PROBE);
-            self.select(near.or_else(|| self.find_in_list(anchor, false)).unwrap_or(anchor));
+            // Jump straight to the nearest match at/above the anchor via a
+            // short backward probe; if none is close, fall back to
+            // the global scan's nearest-found so far (which
+            // converges as it runs).
+            let near = self.scan_for_match(
+                anchor,
+                false,
+                &matcher,
+                Instant::now() + PREVIEW_PROBE,
+            );
+            self.select(
+                near.or_else(|| self.find_in_list(anchor, false))
+                    .unwrap_or(anchor),
+            );
         }
     }
 
-    /// Cancel an in-progress search (Esc): return to the anchor and re-establish
-    /// the scan for whatever query was committed before the edit. Callers leave
-    /// Search mode (clear `input`, set `Normal`) first, so `refresh_search_matches`
-    /// reads the committed `search_query` — not the abandoned live input.
+    /// Cancel an in-progress search (Esc): return to the anchor and
+    /// re-establish the scan for whatever query was committed before the
+    /// edit. Callers leave Search mode (clear `input`, set `Normal`) first,
+    /// so `refresh_search_matches` reads the committed `search_query` — not
+    /// the abandoned live input.
     pub fn cancel_search(&mut self) {
         if let Some(anchor) = self.search_anchor.take() {
             self.select(anchor);
@@ -600,10 +653,11 @@ impl App {
             return;
         }
         self.refresh_search_matches();
-        // Jump to the first match from the end — the newest matching record at or
-        // above the selection (logs read newest-last, so you usually open search
-        // at the bottom and want the most recent hit). Stay put if the current
-        // record already matches (incremental preview usually put us there).
+        // Jump to the first match from the end — the newest matching record at
+        // or above the selection (logs read newest-last, so you usually
+        // open search at the bottom and want the most recent hit). Stay
+        // put if the current record already matches (incremental
+        // preview usually put us there).
         let matcher = SearchMatcher::new(&self.search_query);
         if self.record_matches_search(self.selected, &matcher) {
             self.status = "search set".into();
@@ -616,8 +670,8 @@ impl App {
     }
 
     /// The text currently driving search (highlight, count, preview): the live
-    /// input while typing a `/` search, otherwise the committed query. Empty when
-    /// neither is active.
+    /// input while typing a `/` search, otherwise the committed query. Empty
+    /// when neither is active.
     pub fn search_needle(&self) -> &str {
         match self.mode {
             Mode::Search => &self.input,
@@ -626,18 +680,24 @@ impl App {
     }
 
     /// Whether `pos`'s record matches `matcher`. Matches against the *rendered*
-    /// text — what the list actually shows (see [`Self::search_haystack`]) — so a
-    /// counted match is always one you can see and that highlights.
-    fn record_matches_search(&self, pos: usize, matcher: &SearchMatcher) -> bool {
-        self.search_haystack(pos).is_some_and(|hay| matcher.is_match(&hay))
+    /// text — what the list actually shows (see [`Self::search_haystack`]) — so
+    /// a counted match is always one you can see and that highlights.
+    fn record_matches_search(
+        &self,
+        pos: usize,
+        matcher: &SearchMatcher,
+    ) -> bool {
+        self.search_haystack(pos)
+            .is_some_and(|hay| matcher.is_match(&hay))
     }
 
-    /// The text `/` search matches against for view position `pos`: the rendered
-    /// text the list actually shows (minus ANSI), so a match is always something
-    /// you can see — searching `time` won't hit a `timestamp` *key* that only its
-    /// value is shown for. Raw mode matches the record verbatim (that *is* what's
-    /// shown there). Rendered text is cached per record, so revisits (the preview
-    /// probe, `n`/`N`, backspace) are cheap after the first pass.
+    /// The text `/` search matches against for view position `pos`: the
+    /// rendered text the list actually shows (minus ANSI), so a match is
+    /// always something you can see — searching `time` won't hit a
+    /// `timestamp` *key* that only its value is shown for. Raw mode matches
+    /// the record verbatim (that *is* what's shown there). Rendered text is
+    /// cached per record, so revisits (the preview probe, `n`/`N`,
+    /// backspace) are cheap after the first pass.
     fn search_haystack(&self, pos: usize) -> Option<Rc<str>> {
         let idx = self.view_index(pos)?;
         let raw = self.store.get(idx);
@@ -647,7 +707,11 @@ impl App {
         if let Some(hit) = self.search_cache.borrow().get(&idx) {
             return Some(hit.clone());
         }
-        let fmt = if self.expanded { &self.full_plain } else { &self.row_plain };
+        let fmt = if self.expanded {
+            &self.full_plain
+        } else {
+            &self.row_plain
+        };
         let text: Rc<str> = Rc::from(self.render_with(&raw, fmt));
         let mut cache = self.search_cache.borrow_mut();
         // Bound memory: a fresh full scan repopulates cheaply, so just drop the
@@ -660,8 +724,8 @@ impl App {
     }
 
     /// Invalidate rendered-search state after the displayed text changes
-    /// (raw/expanded toggle, redaction): drop cached text and the match list, then
-    /// rescan from scratch against the new rendering.
+    /// (raw/expanded toggle, redaction): drop cached text and the match list,
+    /// then rescan from scratch against the new rendering.
     fn invalidate_search_render(&mut self) {
         self.search_cache.borrow_mut().clear();
         self.reset_search_scan();
@@ -681,12 +745,17 @@ impl App {
         if self.search_count_complete() {
             return self.find_in_list(from, forward);
         }
-        self.scan_for_match(from, forward, &SearchMatcher::new(needle), Instant::now() + SCAN_STEP)
+        self.scan_for_match(
+            from,
+            forward,
+            &SearchMatcher::new(needle),
+            Instant::now() + SCAN_STEP,
+        )
     }
 
-    /// Nearest match to `from` in the active level's list (sorted view positions),
-    /// wrapping: forward → first match after `from`, backward → last match before
-    /// it. O(log n), no record scan.
+    /// Nearest match to `from` in the active level's list (sorted view
+    /// positions), wrapping: forward → first match after `from`, backward →
+    /// last match before it. O(log n), no record scan.
     fn find_in_list(&self, from: usize, forward: bool) -> Option<usize> {
         let m = self.scan_matches();
         if m.is_empty() {
@@ -694,16 +763,24 @@ impl App {
         }
         Some(if forward {
             let i = m.partition_point(|&p| p <= from);
-            if i < m.len() { m[i] } else { m[0] }
+            if i < m.len() {
+                m[i]
+            } else {
+                m[0]
+            }
         } else {
             let i = m.partition_point(|&p| p < from);
-            if i > 0 { m[i - 1] } else { m[m.len() - 1] }
+            if i > 0 {
+                m[i - 1]
+            } else {
+                m[m.len() - 1]
+            }
         })
     }
 
-    /// Walk every position from `from`, wrapping, returning the first match — or
-    /// `None` if none exists *or* the deadline passes first (a give-up, treated
-    /// like "no match": the selection stays put).
+    /// Walk every position from `from`, wrapping, returning the first match —
+    /// or `None` if none exists *or* the deadline passes first (a give-up,
+    /// treated like "no match": the selection stays put).
     fn scan_for_match(
         &self,
         from: usize,
@@ -733,7 +810,8 @@ impl App {
         self.scan_stack.last().map_or(&[], |l| l.matches.as_slice())
     }
 
-    /// How far the active (top) level has scanned (a view position); 0 with none.
+    /// How far the active (top) level has scanned (a view position); 0 with
+    /// none.
     #[cfg(test)]
     fn scan_cursor(&self) -> usize {
         self.scan_stack.last().map_or(0, |l| l.cursor)
@@ -744,24 +822,24 @@ impl App {
         self.scan_stack.last().map_or("", |l| l.needle.as_str())
     }
 
-    /// Whether the active level's scan covers the whole view (exact count known):
-    /// its inherited candidates are all re-tested and records are scanned to the
-    /// end. True with no active search.
+    /// Whether the active level's scan covers the whole view (exact count
+    /// known): its inherited candidates are all re-tested and records are
+    /// scanned to the end. True with no active search.
     fn search_count_complete(&self) -> bool {
-        self.scan_stack
-            .last()
-            .is_none_or(|l| l.pending_idx >= l.pending.len() && l.cursor >= self.view_len())
+        self.scan_stack.last().is_none_or(|l| {
+            l.pending_idx >= l.pending.len() && l.cursor >= self.view_len()
+        })
     }
 
-    /// Whether a scan is still in progress — the run loop polls faster while so,
-    /// and finishes it on idle frames via [`Self::tick_search_scan`].
+    /// Whether a scan is still in progress — the run loop polls faster while
+    /// so, and finishes it on idle frames via [`Self::tick_search_scan`].
     pub fn search_scan_computing(&self) -> bool {
         !self.search_needle().is_empty() && !self.search_count_complete()
     }
 
-    /// Advance a running scan by one background step, so the count keeps filling in
-    /// (`N+ matches` → exact) between and after keystrokes, and re-land the
-    /// incremental preview once the scan completes.
+    /// Advance a running scan by one background step, so the count keeps
+    /// filling in (`N+ matches` → exact) between and after keystrokes, and
+    /// re-land the incremental preview once the scan completes.
     pub fn tick_search_scan(&mut self) {
         if !self.search_scan_computing() {
             return;
@@ -772,24 +850,27 @@ impl App {
         }
     }
 
-    /// Align the stack with the current needle and take one background step. Used
-    /// by commit/cancel (a single action, not the per-keystroke path — that only
-    /// reconciles, so typing never scans).
+    /// Align the stack with the current needle and take one background step.
+    /// Used by commit/cancel (a single action, not the per-keystroke path —
+    /// that only reconciles, so typing never scans).
     fn refresh_search_matches(&mut self) {
         self.reconcile_scan_stack();
         self.resume_search_scan(Instant::now() + SCAN_STEP);
     }
 
-    /// Align the scan stack with the current needle (and view generation). Runs on
-    /// every keystroke and touches **no records**, so typing is always instant:
+    /// Align the scan stack with the current needle (and view generation). Runs
+    /// on every keystroke and touches **no records**, so typing is always
+    /// instant:
     /// - typing a char extends the top → push a new level that *inherits its
-    ///   parent's matches as `pending`* (to be re-tested against the longer needle
-    ///   by the background) and resumes record-scanning from the parent's cursor;
+    ///   parent's matches as `pending`* (to be re-tested against the longer
+    ///   needle by the background) and resumes record-scanning from the
+    ///   parent's cursor;
     /// - a backspace or mid-string edit makes the top no longer a prefix of the
-    ///   needle → pop until it is, so a popped-back level **resumes where it left
-    ///   off**;
-    /// - a rebuilt view (generation change) discards the stack; streaming append
-    ///   doesn't (positions stay valid, the cursor just extends over the tail).
+    ///   needle → pop until it is, so a popped-back level **resumes where it
+    ///   left off**;
+    /// - a rebuilt view (generation change) discards the stack; streaming
+    ///   append doesn't (positions stay valid, the cursor just extends over the
+    ///   tail).
     fn reconcile_scan_stack(&mut self) {
         let gen = self.view_gen;
         if self.scan_gen != gen {
@@ -803,23 +884,29 @@ impl App {
         }
         // Drop levels that aren't prefixes of the new needle (backspace or a
         // mid-string edit); what remains is the deepest cached prefix of it.
-        while self.scan_stack.last().is_some_and(|l| !needle.starts_with(l.needle.as_str())) {
+        while self
+            .scan_stack
+            .last()
+            .is_some_and(|l| !needle.starts_with(l.needle.as_str()))
+        {
             self.scan_stack.pop();
         }
         if self.active_needle() == needle {
             return; // already active — resume carries it forward
         }
-        // Seed the child from its parent without touching records. Its candidates
-        // in `[0, parent.cursor)` are the parent's confirmed matches **plus** any
-        // candidates the parent itself hasn't filtered yet — a child match implies
-        // an ancestor match, so re-testing those directly against the longer needle
-        // is valid, and skipping them would lose matches. A small candidate set is
+        // Seed the child from its parent without touching records. Its
+        // candidates in `[0, parent.cursor)` are the parent's confirmed
+        // matches **plus** any candidates the parent itself hasn't
+        // filtered yet — a child match implies an ancestor match, so
+        // re-testing those directly against the longer needle is valid,
+        // and skipping them would lose matches. A small candidate set is
         // copied as `pending` for the background to filter (resuming the record
         // scan from the parent's cursor); a big one is skipped past its first
         // candidate and re-scanned instead of copied.
         let candidates = self.scan_stack.last().map(|p| {
             let start = p.pending_idx.min(p.pending.len());
-            let mut c = Vec::with_capacity(p.matches.len() + p.pending.len() - start);
+            let mut c =
+                Vec::with_capacity(p.matches.len() + p.pending.len() - start);
             c.extend_from_slice(&p.matches);
             c.extend_from_slice(&p.pending[start..]);
             c
@@ -830,9 +917,10 @@ impl App {
                 (self.scan_stack.last().unwrap().cursor, cand)
             }
             Some(cand) => {
-                // Too many to copy: resume past the first candidate (nothing before
-                // it can match) and re-scan. The parent's lists are then only needed
-                // for a pop back to it (which re-scans), so free them now.
+                // Too many to copy: resume past the first candidate (nothing
+                // before it can match) and re-scan. The
+                // parent's lists are then only needed for a pop
+                // back to it (which re-scans), so free them now.
                 let skip = cand
                     .first()
                     .copied()
@@ -859,10 +947,10 @@ impl App {
     }
 
     /// Advance the active (top) level within `deadline`, in two phases: first
-    /// re-test the parent matches it inherited as `pending` (all below `cursor`),
-    /// then scan fresh records forward from `cursor`. Both append in ascending
-    /// order, so `matches` stays sorted. Only ever advances — cheap to call each
-    /// frame.
+    /// re-test the parent matches it inherited as `pending` (all below
+    /// `cursor`), then scan fresh records forward from `cursor`. Both
+    /// append in ascending order, so `matches` stays sorted. Only ever
+    /// advances — cheap to call each frame.
     fn resume_search_scan(&mut self, deadline: Instant) {
         let Some(top) = self.scan_stack.last() else {
             return;
@@ -875,7 +963,8 @@ impl App {
         let mut steps = 0u32;
 
         // Phase 1: filter the inherited candidates.
-        let mut pending = std::mem::take(&mut self.scan_stack.last_mut().unwrap().pending);
+        let mut pending =
+            std::mem::take(&mut self.scan_stack.last_mut().unwrap().pending);
         let mut idx = self.scan_stack.last().unwrap().pending_idx;
         let mut survivors = Vec::new();
         let mut yielded = false;
@@ -895,8 +984,9 @@ impl App {
             let top = self.scan_stack.last_mut().unwrap();
             top.matches.extend(survivors);
             if idx >= pending.len() {
-                // Done filtering: drop the candidates and reset the index so the
-                // empty `pending` and `pending_idx` stay consistent.
+                // Done filtering: drop the candidates and reset the index so
+                // the empty `pending` and `pending_idx` stay
+                // consistent.
                 top.pending = Vec::new();
                 top.pending_idx = 0;
             } else {
@@ -926,9 +1016,7 @@ impl App {
         top.cursor = i;
     }
 
-    fn clear_search_matches(&mut self) {
-        self.reset_search_scan();
-    }
+    fn clear_search_matches(&mut self) { self.reset_search_scan(); }
 
     /// Drop all scan state so the next active needle starts a fresh scan.
     fn reset_search_scan(&mut self) {
@@ -936,7 +1024,8 @@ impl App {
         self.scan_gen = self.view_gen;
     }
 
-    /// Jump to the next (`n`) or previous (`N`) matching record, wrapping around.
+    /// Jump to the next (`n`) or previous (`N`) matching record, wrapping
+    /// around.
     pub fn search_jump(&mut self, forward: bool) {
         if self.search_query.is_empty() {
             self.status = "no active search".into();
@@ -955,9 +1044,9 @@ impl App {
     }
 
     /// The match count for the status line, or `None` when there's no active
-    /// search. `Counted` carries `(current 1-based index if on a match, total)`;
-    /// `Partial` means the scan is still running (`N+ matches`). Reads the cached
-    /// list — no scan.
+    /// search. `Counted` carries `(current 1-based index if on a match,
+    /// total)`; `Partial` means the scan is still running (`N+ matches`).
+    /// Reads the cached list — no scan.
     pub fn search_position(&self) -> Option<MatchCount> {
         if self.search_needle().is_empty() {
             return None;
@@ -984,14 +1073,13 @@ impl App {
         self.detail_scroll = 0;
     }
 
-    /// Enter command mode: start empty and immediately offer the command list so
-    /// the available commands are discoverable.
-    pub fn enter_command(&mut self) {
-        self.enter_command_with("");
-    }
+    /// Enter command mode: start empty and immediately offer the command list
+    /// so the available commands are discoverable.
+    pub fn enter_command(&mut self) { self.enter_command_with(""); }
 
-    /// Enter command mode pre-filled with `prefix` (used by the Actions panel so
-    /// e.g. picking "Stats" drops you into `:stats ` with field autocomplete).
+    /// Enter command mode pre-filled with `prefix` (used by the Actions panel
+    /// so e.g. picking "Stats" drops you into `:stats ` with field
+    /// autocomplete).
     fn enter_command_with(&mut self, prefix: &str) {
         self.mode = Mode::Command;
         self.input = prefix.to_owned();
@@ -1011,7 +1099,8 @@ impl App {
 
     pub fn action_move(&mut self, delta: isize) {
         let n = ACTIONS.len() as isize;
-        self.action_sel = (((self.action_sel as isize + delta) % n + n) % n) as usize;
+        self.action_sel =
+            (((self.action_sel as isize + delta) % n + n) % n) as usize;
     }
 
     /// Run the highlighted action: immediate ones (plain `count`) execute now;
@@ -1028,7 +1117,9 @@ impl App {
 
     fn refresh_suggestions(&mut self) {
         let (start, cands) = match self.mode {
-            Mode::Command => catalog::command_suggest(&self.input, &self.catalog, &COMMANDS),
+            Mode::Command => {
+                catalog::command_suggest(&self.input, &self.catalog, &COMMANDS)
+            }
             _ => catalog::suggest(&self.input, &self.catalog),
         };
         self.sug_start = start;
@@ -1093,9 +1184,7 @@ impl App {
     // ----- input cursor motion ---------------------------------------------
 
     /// Number of chars in the input.
-    fn input_len(&self) -> usize {
-        self.input.chars().count()
-    }
+    fn input_len(&self) -> usize { self.input.chars().count() }
 
     /// Byte offset of char index `n` (clamped to the input length).
     fn byte_at(&self, n: usize) -> usize {
@@ -1106,9 +1195,10 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
-    /// The char index one word to the left of `from` (skips trailing separators,
-    /// then the word run). Words break on whitespace and `,`/`.`/operator chars,
-    /// matching how filters and command args are tokenized.
+    /// The char index one word to the left of `from` (skips trailing
+    /// separators, then the word run). Words break on whitespace and
+    /// `,`/`.`/operator chars, matching how filters and command args are
+    /// tokenized.
     fn word_left(&self, from: usize) -> usize {
         let chars: Vec<char> = self.input.chars().collect();
         let mut i = from;
@@ -1175,10 +1265,11 @@ impl App {
         }
     }
 
-    /// Advance the Tab-cycle by `delta` (±1), filling the selected candidate into
-    /// the input so Enter applies immediately. The ring is `[typed text] → 0 → 1
-    /// → … → N-1 → [typed text]`, so stepping past either end deselects and
-    /// restores what you typed. A no-op when there are no candidates.
+    /// Advance the Tab-cycle by `delta` (±1), filling the selected candidate
+    /// into the input so Enter applies immediately. The ring is `[typed
+    /// text] → 0 → 1 → … → N-1 → [typed text]`, so stepping past either end
+    /// deselects and restores what you typed. A no-op when there are no
+    /// candidates.
     pub fn cycle_suggestions(&mut self, delta: isize) {
         match self.sug_cycle.take() {
             None => {
@@ -1216,7 +1307,8 @@ impl App {
     }
 
     pub fn suggestions_visible(&self) -> bool {
-        matches!(self.mode, Mode::Filter | Mode::Command) && !self.sug.is_empty()
+        matches!(self.mode, Mode::Filter | Mode::Command)
+            && !self.sug.is_empty()
     }
 
     /// The candidate list to display and the highlighted index (None until Tab
@@ -1240,7 +1332,8 @@ impl App {
         if self.view_len() == 0 {
             return;
         }
-        let new = (self.selected as isize + delta).clamp(0, self.view_len() as isize - 1);
+        let new = (self.selected as isize + delta)
+            .clamp(0, self.view_len() as isize - 1);
         self.selected = new as usize;
         // Moving away from the newest record stops follow; reaching the end
         // re-enables it.
@@ -1279,7 +1372,8 @@ impl App {
     pub fn toggle_raw(&mut self) {
         self.raw = !self.raw;
         self.invalidate_search_render();
-        self.status = if self.raw { "raw logs" } else { "formatted logs" }.into();
+        self.status =
+            if self.raw { "raw logs" } else { "formatted logs" }.into();
     }
 
     /// Toggle the compact one-line list vs the multi-line expanded view (`c`).
@@ -1295,12 +1389,13 @@ impl App {
     }
 
     /// One-line rendering of a record for the compact list (parses, redacts,
-    /// formats). Newlines the template emits become tabs so each record occupies
-    /// exactly one row — otherwise the list windowing (one item = one row)
-    /// mis-counts and leaves a stray blank row while scrolling. The renderer
-    /// expands the tabs to aligned columns (see `ansi_text`), so the segments
-    /// that were separate lines line up in tab-stop columns. In raw mode the
-    /// record's own text is shown verbatim (control chars are stripped later).
+    /// formats). Newlines the template emits become tabs so each record
+    /// occupies exactly one row — otherwise the list windowing (one item =
+    /// one row) mis-counts and leaves a stray blank row while scrolling.
+    /// The renderer expands the tabs to aligned columns (see `ansi_text`),
+    /// so the segments that were separate lines line up in tab-stop
+    /// columns. In raw mode the record's own text is shown verbatim
+    /// (control chars are stripped later).
     pub fn render_row(&self, line: &str) -> String {
         if self.raw {
             return line.replace('\n', "\t");
@@ -1308,9 +1403,10 @@ impl App {
         self.render_with(line, &self.row_fmt).replace('\n', "\t")
     }
 
-    /// Multi-line rendering of a record for the expanded list — header line plus
-    /// pretty data, exactly like piped `jlf`. In raw mode it's the record as
-    /// pretty-printed JSON (every field, no recipe), like the detail pane.
+    /// Multi-line rendering of a record for the expanded list — header line
+    /// plus pretty data, exactly like piped `jlf`. In raw mode it's the
+    /// record as pretty-printed JSON (every field, no recipe), like the
+    /// detail pane.
     pub fn render_record(&self, line: &str) -> String {
         if self.raw {
             return self.render_detail(line);
@@ -1345,7 +1441,10 @@ impl App {
         if !self.redact.is_empty() {
             jlf_core::redact(&mut j, &self.redact);
         }
-        format!("{:?}", j.styled(jlf_core::MarkupStyles::default()).indented(2))
+        format!(
+            "{:?}",
+            j.styled(jlf_core::MarkupStyles::default()).indented(2)
+        )
     }
 
     /// Iterate the records in the current view, paging the spilled middle back
@@ -1354,14 +1453,19 @@ impl App {
     fn view_iter(&self) -> Box<dyn Iterator<Item = Rc<str>> + '_> {
         match &self.view {
             Some(v) => Box::new(v.iter().map(move |&i| self.store.get(i))),
-            None => Box::new((0..self.store.len()).map(move |i| self.store.get(i))),
+            None => {
+                Box::new((0..self.store.len()).map(move |i| self.store.get(i)))
+            }
         }
     }
 
     /// Stream the current view's raw records (one JSON line each, honoring the
     /// active filter) to `path`. Streams via a buffered writer so a huge view
     /// doesn't materialize in memory. Returns the number of records written.
-    pub fn write_view_raw(&self, path: &std::path::Path) -> std::io::Result<usize> {
+    pub fn write_view_raw(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<usize> {
         use std::io::{BufWriter, Write};
         let mut w = BufWriter::new(std::fs::File::create(path)?);
         let mut n = 0;
@@ -1389,8 +1493,8 @@ impl App {
     }
 
     /// Fold the next batch of view records into the active summary (and pick up
-    /// records that arrived since the last tick), refreshing the rendered panel.
-    /// A no-op when no summary is open.
+    /// records that arrived since the last tick), refreshing the rendered
+    /// panel. A no-op when no summary is open.
     pub fn tick_summary(&mut self) {
         let Some(mut job) = self.summary_job.take() else {
             return;
@@ -1407,8 +1511,8 @@ impl App {
         self.summary_job = Some(job);
     }
 
-    /// Whether a summary is still folding records (so the event loop should keep
-    /// ticking promptly instead of idling).
+    /// Whether a summary is still folding records (so the event loop should
+    /// keep ticking promptly instead of idling).
     pub fn summary_computing(&self) -> bool {
         self.summary_job
             .as_ref()
@@ -1452,10 +1556,18 @@ impl App {
             "follow" => self.toggle_follow(),
             "csv" | "tsv" | "md" => self.export(verb, &rest),
             "save" => match rest.first() {
-                Some(name) => match crate::save::save_recipe(name, &self.filter_text, &self.redact) {
+                Some(name) => match crate::save::save_recipe(
+                    name,
+                    &self.filter_text,
+                    &self.redact,
+                ) {
                     Ok((path, dup)) => {
-                        let note = if dup { " (name already existed)" } else { "" };
-                        self.status = format!("saved recipe '{name}' to {}{note}", path.display());
+                        let note =
+                            if dup { " (name already existed)" } else { "" };
+                        self.status = format!(
+                            "saved recipe '{name}' to {}{note}",
+                            path.display()
+                        );
                     }
                     Err(e) => self.status = format!("save failed: {e}"),
                 },
@@ -1463,15 +1575,18 @@ impl App {
             },
             "help" | "h" | "?" => self.help = true,
             other => {
-                self.status =
-                    format!("unknown command '{other}' — try: {} (? for help)", COMMANDS.join(" "));
+                self.status = format!(
+                    "unknown command '{other}' — try: {} (? for help)",
+                    COMMANDS.join(" ")
+                );
             }
         }
     }
 
     fn export(&mut self, kind: &str, rest: &[&str]) {
         let Some(cols) = rest.first() else {
-            self.status = format!("{kind} needs columns, e.g. :{kind} ts,level,msg");
+            self.status =
+                format!("{kind} needs columns, e.g. :{kind} ts,level,msg");
             return;
         };
         let cols: Vec<Vec<String>> = cols.split(',').map(path).collect();
@@ -1483,13 +1598,11 @@ impl App {
         let sep = if kind == "tsv" { '\t' } else { ',' };
         let md = kind == "md";
         let mut buf = String::new();
-        let header: Vec<String> = cols
-            .iter()
-            .map(|c| c.join("."))
-            .collect();
+        let header: Vec<String> = cols.iter().map(|c| c.join(".")).collect();
         write_row(&mut buf, &header, sep, md);
         if md {
-            let dashes: Vec<String> = header.iter().map(|_| "---".to_owned()).collect();
+            let dashes: Vec<String> =
+                header.iter().map(|_| "---".to_owned()).collect();
             write_row(&mut buf, &dashes, sep, md);
         }
         let mut rows = 0usize;
@@ -1531,7 +1644,9 @@ fn write_row(buf: &mut String, cells: &[String], sep: char, md: bool) {
 }
 
 /// Merge the user's configured variables (if any) over the built-in defaults.
-fn merge_variables(from_config: Option<Vec<(String, String)>>) -> Vec<(String, String)> {
+fn merge_variables(
+    from_config: Option<Vec<(String, String)>>,
+) -> Vec<(String, String)> {
     let mut variables = jlf_core::default_variables();
     if let Some(from_config) = from_config {
         for (k2, v2) in from_config {
@@ -1546,8 +1661,9 @@ fn merge_variables(from_config: Option<Vec<(String, String)>>) -> Vec<(String, S
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::mpsc::channel;
+
+    use super::*;
 
     fn app_with(lines: &[&str]) -> App {
         let (tx, rx) = channel();
@@ -1563,11 +1679,18 @@ mod tests {
     /// A scan level with no inherited candidates (matches already exact for its
     /// cursor) — for hand-building stack states in tests.
     fn level(needle: &str, matches: Vec<usize>, cursor: usize) -> ScanLevel {
-        ScanLevel { needle: needle.to_string(), matches, cursor, pending: Vec::new(), pending_idx: 0 }
+        ScanLevel {
+            needle: needle.to_string(),
+            matches,
+            cursor,
+            pending: Vec::new(),
+            pending_idx: 0,
+        }
     }
 
-    /// Drive the background scan (and preview jump) to completion, standing in for
-    /// the run loop's idle ticks, since the interactive path defers scanning.
+    /// Drive the background scan (and preview jump) to completion, standing in
+    /// for the run loop's idle ticks, since the interactive path defers
+    /// scanning.
     fn settle(app: &mut App) {
         while app.search_scan_computing() {
             app.tick_search_scan();
@@ -1634,11 +1757,16 @@ mod tests {
         assert_eq!(app.render_row(SAMPLE[0]), SAMPLE[0]);
         // Raw expanded rendering is pretty-printed JSON (multi-line).
         let pretty = app.render_record(SAMPLE[0]);
-        assert!(pretty.contains('\n') && pretty.contains("\"user\""), "got:\n{pretty}");
+        assert!(
+            pretty.contains('\n') && pretty.contains("\"user\""),
+            "got:\n{pretty}"
+        );
 
-        // write_view_raw streams the current view's raw lines, honoring filters.
+        // write_view_raw streams the current view's raw lines, honoring
+        // filters.
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("jlf-tui-test-{}.jsonl", std::process::id()));
+        let path =
+            dir.join(format!("jlf-tui-test-{}.jsonl", std::process::id()));
         let n = app.write_view_raw(&path).unwrap();
         assert_eq!(n, 3);
         let body = std::fs::read_to_string(&path).unwrap();
@@ -1654,7 +1782,8 @@ mod tests {
 
     #[test]
     fn incremental_search_previews_and_cancels() {
-        // records: 0=alice, 1=bob, 2=alice. Start at the bottom, anchored there.
+        // records: 0=alice, 1=bob, 2=alice. Start at the bottom, anchored
+        // there.
         let mut app = app_with(SAMPLE);
         app.selected = 2;
         app.enter_search();
@@ -1666,12 +1795,24 @@ mod tests {
         }
         settle(&mut app);
         assert_eq!(app.selected, 1, "preview should jump to the bob match");
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 1 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: Some(1),
+                total: 1
+            })
+        );
         // A non-matching character holds at the anchor and reports no matches.
         app.input_char('z');
         settle(&mut app);
         assert_eq!(app.selected, 2, "no match holds at the anchor");
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: None,
+                total: 0
+            })
+        );
         // Backspacing back to a match previews again.
         app.input_backspace();
         settle(&mut app);
@@ -1679,7 +1820,10 @@ mod tests {
         // Cancel returns to the anchor and drops the preview.
         app.cancel_search();
         assert_eq!(app.selected, 2);
-        assert!(app.search_query.is_empty(), "cancel keeps no committed search");
+        assert!(
+            app.search_query.is_empty(),
+            "cancel keeps no committed search"
+        );
     }
 
     #[test]
@@ -1688,7 +1832,7 @@ mod tests {
         let mut app = app_with(SAMPLE);
         app.selected = 0;
         app.apply_search("alice".to_string()); // commit; selection on match 0
-        // Move around while the search is committed.
+                                               // Move around while the search is committed.
         app.search_jump(true); // n → next match
         assert_eq!(app.selected, 2);
         // Re-open search; the anchor is wherever we are now.
@@ -1699,13 +1843,20 @@ mod tests {
         app.input_char('x');
         settle(&mut app);
         assert_eq!(app.selected, 2);
-        assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 0, .. })));
-        // Backspace restores "alice" (popped back to that level) — matches intact.
+        assert!(matches!(
+            app.search_position(),
+            Some(MatchCount::Counted { total: 0, .. })
+        ));
+        // Backspace restores "alice" (popped back to that level) — matches
+        // intact.
         app.input_backspace();
         settle(&mut app);
         assert_eq!(app.input, "alice");
         assert_eq!(app.scan_matches(), [0, 2]);
-        assert!(matches!(app.search_position(), Some(MatchCount::Counted { total: 2, .. })));
+        assert!(matches!(
+            app.search_position(),
+            Some(MatchCount::Counted { total: 2, .. })
+        ));
         // Widen further: "alic" still matches both.
         app.input_backspace();
         settle(&mut app);
@@ -1726,7 +1877,10 @@ mod tests {
         assert_eq!(app.scan_matches(), [0, 2]);
         let depth_before = app.scan_stack.len();
         // A new record streams in (append only — positions stay valid).
-        tx.send(r#"{"level":"info","user":"alice","latency_ms":7}"#.to_string()).unwrap();
+        tx.send(
+            r#"{"level":"info","user":"alice","latency_ms":7}"#.to_string(),
+        )
+        .unwrap();
         app.drain_input();
         // Append doesn't bump the generation, so the stack survives untouched…
         assert_eq!(app.scan_stack.len(), depth_before);
@@ -1745,14 +1899,19 @@ mod tests {
         let mut big = vec![3usize];
         big.extend(10..(10 + LEVEL_LIST_CAP));
         app.scan_stack.push(level("e", big, 10 + LEVEL_LIST_CAP));
-        // Typing "er" pushes a child: too big to inherit, so it resumes past the
-        // parent's first match, and the parent's list is freed to just that skip.
+        // Typing "er" pushes a child: too big to inherit, so it resumes past
+        // the parent's first match, and the parent's list is freed to
+        // just that skip.
         app.search_query = "er".to_string();
         app.reconcile_scan_stack();
         let parent = &app.scan_stack[app.scan_stack.len() - 2];
         assert!(parent.matches.is_empty(), "the big parent list is dropped");
         assert_eq!(parent.cursor, 3, "parent keeps just its first-match skip");
-        assert_eq!(app.scan_cursor(), 3, "child resumes at the parent's first match");
+        assert_eq!(
+            app.scan_cursor(),
+            3,
+            "child resumes at the parent's first match"
+        );
     }
 
     #[test]
@@ -1770,7 +1929,8 @@ mod tests {
             pending_idx: 1,
         });
         // Push child "al": it must inherit the confirmed match [0] *and* the
-        // parent's unfiltered candidate [2] — dropping the latter would lose it.
+        // parent's unfiltered candidate [2] — dropping the latter would lose
+        // it.
         app.search_query = "al".to_string();
         app.reconcile_scan_stack();
         assert_eq!(app.scan_stack.last().unwrap().pending, vec![0, 2]);
@@ -1795,11 +1955,16 @@ mod tests {
         app.scan_gen = app.view_gen;
         // A parent "z" whose scan reached the end with its first match at 5.
         app.scan_stack.push(level("z", (5..12).collect(), 12));
-        // Typing to "ze" inherits "z"'s matches as pending; resuming filters them
-        // (all still match) then scans the tail — the [0,5) dead head is skipped.
+        // Typing to "ze" inherits "z"'s matches as pending; resuming filters
+        // them (all still match) then scans the tail — the [0,5) dead
+        // head is skipped.
         app.search_query = "ze".to_string();
         app.reconcile_scan_stack();
-        assert_eq!(app.scan_cursor(), 12, "the child inherits the parent's cursor");
+        assert_eq!(
+            app.scan_cursor(),
+            12,
+            "the child inherits the parent's cursor"
+        );
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert_eq!(app.scan_matches(), (5..12).collect::<Vec<_>>().as_slice());
         assert!(app.search_count_complete());
@@ -1815,7 +1980,8 @@ mod tests {
         }
         settle(&mut app);
         assert_eq!(app.scan_matches(), [0, 2]);
-        // Typing 'c' pushes a child level; "ali" is now a frozen parent on the stack.
+        // Typing 'c' pushes a child level; "ali" is now a frozen parent on the
+        // stack.
         app.input_char('c'); // "alic"
         settle(&mut app);
         assert_eq!(app.active_needle(), "alic");
@@ -1841,7 +2007,13 @@ mod tests {
             app.input_char(c);
         }
         settle(&mut app);
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: None,
+                total: 0
+            })
+        );
         // Cancel the way main.rs does: leave the field first, then cancel.
         app.mode = Mode::Normal;
         app.input.clear();
@@ -1859,8 +2031,8 @@ mod tests {
 
     #[test]
     fn deleting_chars_widens_the_match_set() {
-        // records: 0=alice, 1=bob, 2=alice. "ali" → 2 matches; delete to "a" → 3
-        // (every record's rendered `latency_ms` contains an 'a').
+        // records: 0=alice, 1=bob, 2=alice. "ali" → 2 matches; delete to "a" →
+        // 3 (every record's rendered `latency_ms` contains an 'a').
         let mut app = app_with(SAMPLE);
         app.enter_search();
         for c in "ali".chars() {
@@ -1873,7 +2045,11 @@ mod tests {
         settle(&mut app);
         assert_eq!(app.input, "a");
         assert!(app.search_count_complete());
-        assert_eq!(app.scan_matches().len(), 3, "widening rescans and finds more");
+        assert_eq!(
+            app.scan_matches().len(),
+            3,
+            "widening rescans and finds more"
+        );
     }
 
     #[test]
@@ -1881,21 +2057,27 @@ mod tests {
         // 10k in-memory records; every 1000th message contains "panic" → 10.
         let lines: Vec<String> = (0..10_000)
             .map(|i| {
-                let msg = if i % 1000 == 500 { "panic here" } else { "all good" };
+                let msg =
+                    if i % 1000 == 500 { "panic here" } else { "all good" };
                 format!(r#"{{"level":"info","message":"{msg}","i":{i}}}"#)
             })
             .collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let mut app = app_with(&refs);
         app.enter_search();
-        // Type the query; after each keystroke finish the scan the way idle frames
-        // would, so we assert the settled count rather than a mid-scan partial.
+        // Type the query; after each keystroke finish the scan the way idle
+        // frames would, so we assert the settled count rather than a
+        // mid-scan partial.
         for c in "panic".chars() {
             app.input_char(c);
             app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         }
         assert!(app.search_count_complete());
-        assert_eq!(app.scan_matches().len(), 10, "exactly the ten 'panic' records");
+        assert_eq!(
+            app.scan_matches().len(),
+            10,
+            "exactly the ten 'panic' records"
+        );
     }
 
     #[test]
@@ -1907,7 +2089,10 @@ mod tests {
         // scanned yet) — the state a huge view is in mid-scan.
         app.resume_search_scan(Instant::now());
         assert!(!app.search_count_complete());
-        assert_eq!(app.search_position(), Some(MatchCount::Partial { found: 0 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Partial { found: 0 })
+        );
         // n/N still find matches by scanning the records directly.
         app.selected = 1;
         app.search_jump(true); // forward from 1 → record 2
@@ -1929,12 +2114,16 @@ mod tests {
         // A partial "al" level: positions [0, 2) scanned, match at 0.
         app.scan_stack.push(level("al", vec![0], 2));
         // Grow to "ali": the child inherits [0] as pending (to re-test) and the
-        // parent's cursor — no records are touched yet, so matches is still empty.
+        // parent's cursor — no records are touched yet, so matches is still
+        // empty.
         app.search_query = "ali".to_string();
         app.reconcile_scan_stack();
         assert_eq!(app.active_needle(), "ali");
         assert_eq!(app.scan_cursor(), 2, "cursor inherited from the parent");
-        assert!(app.scan_matches().is_empty(), "filtering is deferred to the background");
+        assert!(
+            app.scan_matches().is_empty(),
+            "filtering is deferred to the background"
+        );
         // Resuming filters the pending [0] (still matches) then scans the tail.
         app.resume_search_scan(Instant::now() + Duration::from_secs(60));
         assert_eq!(app.scan_matches(), [0, 2]);
@@ -1955,8 +2144,9 @@ mod tests {
         }
         settle(&mut app);
         assert_eq!(total(&app), 2, "'alice' matches two records");
-        // Backspacing widens the query past the previous one, so it can't narrow
-        // and must re-scan the whole view — the count grows back.
+        // Backspacing widens the query past the previous one, so it can't
+        // narrow and must re-scan the whole view — the count grows
+        // back.
         for _ in 0.."alic".len() {
             app.input_backspace();
         }
@@ -1967,35 +2157,46 @@ mod tests {
 
     #[test]
     fn search_matches_displayed_text_not_hidden_json_keys() {
-        // The default view renders `level` as its value (`info`/`error`), so the
-        // key name "level" never appears on screen — WYSIWYG search must not match
-        // it even though it's in the raw JSON. A visible value ("alice") still does.
+        // The default view renders `level` as its value (`info`/`error`), so
+        // the key name "level" never appears on screen — WYSIWYG search
+        // must not match it even though it's in the raw JSON. A visible
+        // value ("alice") still does.
         let mut app = app_with(SAMPLE);
         app.apply_search("level".to_string());
         assert_eq!(
             app.search_position(),
-            Some(MatchCount::Counted { current: None, total: 0 }),
+            Some(MatchCount::Counted {
+                current: None,
+                total: 0
+            }),
             "a hidden JSON key should not count as a match"
         );
         app.apply_search("alice".to_string());
         assert!(
-            matches!(app.search_position(), Some(MatchCount::Counted { total: 2, .. })),
+            matches!(
+                app.search_position(),
+                Some(MatchCount::Counted { total: 2, .. })
+            ),
             "a visible value should match"
         );
         // In raw mode the raw line *is* what's shown, so the key matches again.
         app.toggle_raw();
         app.apply_search("level".to_string());
         assert!(
-            matches!(app.search_position(), Some(MatchCount::Counted { total: 3, .. })),
+            matches!(
+                app.search_position(),
+                Some(MatchCount::Counted { total: 3, .. })
+            ),
             "raw mode matches the raw record, keys included"
         );
     }
 
     #[test]
     fn committed_search_reports_its_count() {
-        // Regression: committing a search must count against the committed query,
-        // not the just-emptied live input. Mirror main.rs's Enter handling:
-        // take the input, leave Search mode, then apply.
+        // Regression: committing a search must count against the committed
+        // query, not the just-emptied live input. Mirror main.rs's
+        // Enter handling: take the input, leave Search mode, then
+        // apply.
         let mut app = app_with(SAMPLE);
         app.selected = 2;
         app.enter_search();
@@ -2007,7 +2208,10 @@ mod tests {
         app.apply_search(text);
         assert_eq!(
             app.search_position(),
-            Some(MatchCount::Counted { current: Some(2), total: 2 }),
+            Some(MatchCount::Counted {
+                current: Some(2),
+                total: 2
+            }),
             "committed search should count both alice records"
         );
     }
@@ -2029,24 +2233,48 @@ mod tests {
         app.apply_search("alice".into());
         assert_eq!(app.view_len(), 3, "search must not hide rows");
         assert_eq!(app.selected, 0); // record 0 (alice) already matches
-        // n / N walk between matching records (records 0 and 2 have alice).
+                                     // n / N walk between matching records (records 0 and 2 have alice).
         app.search_jump(true);
         assert_eq!(app.selected, 2);
         // Position is reported as (current match, total matches).
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(2), total: 2 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: Some(2),
+                total: 2
+            })
+        );
         app.search_jump(true); // wraps back to the first match
         assert_eq!(app.selected, 0);
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 2 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: Some(1),
+                total: 2
+            })
+        );
         app.search_jump(false); // previous wraps forward to the last match
         assert_eq!(app.selected, 2);
         // Off a match, only the total is known.
         app.selected = 1;
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 2 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: None,
+                total: 2
+            })
+        );
         // Smart-case: a lowercase query matches case-insensitively and spans
         // values (records 0 and 2 contain "alice").
         app.apply_search("bob".into());
         assert_eq!(app.selected, 1);
-        assert_eq!(app.search_position(), Some(MatchCount::Counted { current: Some(1), total: 1 }));
+        assert_eq!(
+            app.search_position(),
+            Some(MatchCount::Counted {
+                current: Some(1),
+                total: 1
+            })
+        );
         // Clearing removes the search.
         app.apply_search(String::new());
         assert!(app.search_query.is_empty());
@@ -2065,8 +2293,8 @@ mod tests {
         assert_eq!(total(&app), 2);
         // Uppercase input still matches (query is lowercase).
         app.apply_search("ALICE".into());
-        // …no: "ALICE" has uppercase, so it's case-sensitive and won't match the
-        // lowercase data.
+        // …no: "ALICE" has uppercase, so it's case-sensitive and won't match
+        // the lowercase data.
         assert_eq!(total(&app), 0);
         // Mixed/exact case matches only the exact case.
         app.apply_search("Alice".into());
@@ -2171,7 +2399,8 @@ mod tests {
     fn csv_export_writes_filtered_rows() {
         let mut app = app_with(SAMPLE);
         app.apply_filter("level=error".into());
-        let path = std::env::temp_dir().join(format!("jlf_tui_test_{}.csv", std::process::id()));
+        let path = std::env::temp_dir()
+            .join(format!("jlf_tui_test_{}.csv", std::process::id()));
         app.run_command(&format!("csv level,user {}", path.display()));
         let out = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();

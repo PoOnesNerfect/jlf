@@ -1,10 +1,10 @@
 use crate::Json;
 
 /// Replace the value of any field matching a pattern with "***". Patterns:
-/// a bare key (`password`) or `*.key` match that key at any depth; a dotted path
-/// (`fields.message`) matches that rooted path (array indices are transparent, so
-/// `spans.method` redacts `method` in every element of `spans`). Applied
-/// recursively.
+/// a bare key (`password`) or `*.key` match that key at any depth; a dotted
+/// path (`fields.message`) matches that rooted path (array indices are
+/// transparent, so `spans.method` redacts `method` in every element of
+/// `spans`). Applied recursively.
 pub fn redact(json: &mut Json, patterns: &[String]) {
     redact_at(json, "", patterns);
 }
@@ -26,8 +26,9 @@ fn redact_at(json: &mut Json, path: &str, patterns: &[String]) {
             }
         }
         Json::Array(arr) => {
-            // Arrays are transparent: elements keep the array's path, so a dotted
-            // pattern matches inside every element without needing an index.
+            // Arrays are transparent: elements keep the array's path, so a
+            // dotted pattern matches inside every element without
+            // needing an index.
             for v in arr.iter_mut() {
                 redact_at(v, path, patterns);
             }
@@ -52,7 +53,8 @@ mod tests {
     use crate::parse_json;
 
     fn redacted(patterns: &[&str], input: &str) -> String {
-        let owned: Vec<String> = patterns.iter().map(|s| s.to_string()).collect();
+        let owned: Vec<String> =
+            patterns.iter().map(|s| s.to_string()).collect();
         let mut json = parse_json(input).unwrap();
         redact(&mut json, &owned);
         json.to_string()
@@ -67,25 +69,33 @@ mod tests {
 
     #[test]
     fn nested_key_is_redacted_at_any_depth() {
-        let out = redacted(&["password"], r#"{"a":{"b":{"password":"hunter2"}}}"#);
+        let out =
+            redacted(&["password"], r#"{"a":{"b":{"password":"hunter2"}}}"#);
         assert!(out.contains(r#""password":"***""#));
     }
 
     #[test]
     fn star_dot_pattern_matches_key_at_any_depth() {
-        let out = redacted(&["*.email"], r#"{"u":{"email":"a@b.com"},"email":"c@d.com"}"#);
+        let out = redacted(
+            &["*.email"],
+            r#"{"u":{"email":"a@b.com"},"email":"c@d.com"}"#,
+        );
         assert_eq!(out.matches(r#""email":"***""#).count(), 2);
     }
 
     #[test]
     fn non_matching_keys_are_untouched() {
         let input = r#"{"user":"alice","n":5}"#;
-        assert_eq!(redacted(&["token"], input), parse_json(input).unwrap().to_string());
+        assert_eq!(
+            redacted(&["token"], input),
+            parse_json(input).unwrap().to_string()
+        );
     }
 
     #[test]
     fn redacts_inside_arrays() {
-        let out = redacted(&["token"], r#"{"items":[{"token":"x"},{"token":"y"}]}"#);
+        let out =
+            redacted(&["token"], r#"{"items":[{"token":"x"},{"token":"y"}]}"#);
         assert_eq!(out.matches(r#""token":"***""#).count(), 2);
     }
 

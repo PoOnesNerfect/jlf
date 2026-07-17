@@ -1,11 +1,9 @@
-use core::cmp::Ordering;
-use core::fmt;
+use core::{cmp::Ordering, fmt};
 
 pub use owo_colors::OwoColorize as Colorize;
 
 use super::*;
-use crate::json::PathToken;
-use crate::Json;
+use crate::{json::PathToken, Json};
 
 // used for displaying the formatted log to output
 pub struct FormattedLog<'a> {
@@ -71,7 +69,17 @@ fn render<'a>(
 ) -> fmt::Result {
     let mut piece_i = 0;
     while piece_i < pieces.len() {
-        piece_i = write_piece(f, pieces, piece_i, args, json, cols, None, false, used_fields)?;
+        piece_i = write_piece(
+            f,
+            pieces,
+            piece_i,
+            args,
+            json,
+            cols,
+            None,
+            false,
+            used_fields,
+        )?;
     }
     Ok(())
 }
@@ -105,10 +113,17 @@ fn write_piece<'a>(
                     // optional rest (`{?..}`) with no leftover fields counts as
                     // empty too (so it doesn't print a bare `{}`/`[]`).
                     let mut scratch = String::new();
-                    let empty = rest_arg_without_content(arg, json, used_fields) || {
-                        write_arg(&mut scratch, arg, json, cur, used_fields)?;
-                        scratch.is_empty()
-                    };
+                    let empty =
+                        rest_arg_without_content(arg, json, used_fields) || {
+                            write_arg(
+                                &mut scratch,
+                                arg,
+                                json,
+                                cur,
+                                used_fields,
+                            )?;
+                            scratch.is_empty()
+                        };
                     if empty {
                         f.collapse_ws();
                     } else {
@@ -123,7 +138,17 @@ fn write_piece<'a>(
             let end = find_rep_end(pieces, piece_i);
             if !skip {
                 render_rep(
-                    f, pieces, piece_i, end, src, sep, *op, args, json, cols, used_fields,
+                    f,
+                    pieces,
+                    piece_i,
+                    end,
+                    src,
+                    sep,
+                    *op,
+                    args,
+                    json,
+                    cols,
+                    used_fields,
                 )?;
             }
             return Ok(end + 1);
@@ -131,18 +156,28 @@ fn write_piece<'a>(
         RepEnd => {}
         CondStart(cond, i) => {
             // Walk an `if / else if… / else` chain, running the first branch
-            // whose condition holds. `matched` stays set once any branch wins so
-            // later `else if`/`else` arms are skipped. When the whole block is
-            // itself skipped, every branch is suppressed.
-            let mut matched = !skip && test_cond(cond, args, *i, json, cur, used_fields);
+            // whose condition holds. `matched` stays set once any branch wins
+            // so later `else if`/`else` arms are skipped. When the
+            // whole block is itself skipped, every branch is
+            // suppressed.
+            let mut matched =
+                !skip && test_cond(cond, args, *i, json, cur, used_fields);
             let mut should_run = matched;
 
             piece_i += 1;
             while piece_i < pieces.len() {
                 match &pieces[piece_i] {
                     Piece::ElseCond(cond, i) => {
-                        should_run =
-                            !skip && !matched && test_cond(cond, args, *i, json, cur, used_fields);
+                        should_run = !skip
+                            && !matched
+                            && test_cond(
+                                cond,
+                                args,
+                                *i,
+                                json,
+                                cur,
+                                used_fields,
+                            );
                         matched |= should_run;
                         piece_i += 1;
                     }
@@ -158,8 +193,17 @@ fn write_piece<'a>(
                     break;
                 }
 
-                piece_i =
-                    write_piece(f, pieces, piece_i, args, json, cols, cur, !should_run, used_fields)?;
+                piece_i = write_piece(
+                    f,
+                    pieces,
+                    piece_i,
+                    args,
+                    json,
+                    cols,
+                    cur,
+                    !should_run,
+                    used_fields,
+                )?;
             }
         }
         // Handled in the CondStart case above
@@ -168,11 +212,13 @@ fn write_piece<'a>(
             let end = find_match_end(pieces, piece_i);
             if !skip {
                 // Bind the subject to `$value` and render the arm chain in
-                // between; the arms (an if/else-if chain over `$value`) pick the
-                // first matching one. Marking the subject consumed keeps it out
-                // of a later `${..}` rest dump.
+                // between; the arms (an if/else-if chain over `$value`) pick
+                // the first matching one. Marking the subject
+                // consumed keeps it out of a later `${..}` rest
+                // dump.
                 let (field_options, _) = &args[*subj];
-                let value = resolve_subject(json, field_options, cur, used_fields);
+                let value =
+                    resolve_subject(json, field_options, cur, used_fields);
                 let binding = Binding {
                     key: BindKey::Str(""),
                     value,
@@ -200,7 +246,8 @@ fn write_piece<'a>(
     Ok(piece_i + 1)
 }
 
-/// Index of the `MatchEnd` matching the `MatchStart` at `start` (nesting-aware).
+/// Index of the `MatchEnd` matching the `MatchStart` at `start`
+/// (nesting-aware).
 fn find_match_end(pieces: &[Piece], start: usize) -> usize {
     let mut depth = 0usize;
     let mut i = start + 1;
@@ -221,9 +268,10 @@ fn find_match_end(pieces: &[Piece], start: usize) -> usize {
 }
 
 /// Resolve a `${match}` subject to its value. A plain path is looked up in the
-/// record (and recorded in `used_fields` so a later `${..}` rest dump skips it);
-/// `$value`/`${value.sub}` resolve against the enclosing repetition/match binding
-/// so a match can dispatch on a loop entry. The first non-null option wins.
+/// record (and recorded in `used_fields` so a later `${..}` rest dump skips
+/// it); `$value`/`${value.sub}` resolve against the enclosing repetition/match
+/// binding so a match can dispatch on a loop entry. The first non-null option
+/// wins.
 fn resolve_subject<'a>(
     json: &'a Json<'a>,
     field_options: &'a [Field],
@@ -234,7 +282,9 @@ fn resolve_subject<'a>(
     for field in field_options {
         last = match field {
             Field::ColValue => cur.map_or(json, |c| c.value),
-            Field::ColValuePath(names) => cur.map_or(json, |c| walk(c.value, names)),
+            Field::ColValuePath(names) => {
+                cur.map_or(json, |c| walk(c.value, names))
+            }
             _ => resolve_field(json, field),
         };
         if !last.is_null() {
@@ -299,8 +349,9 @@ fn render_rep<'a>(
                 RepSource::Path(field) => resolve_field(json, field),
                 _ => json,
             };
-            // The base path of this iteration, so an object key already shown by
-            // an earlier `${base.key}` reference is skipped here (like `${..}`).
+            // The base path of this iteration, so an object key already shown
+            // by an earlier `${base.key}` reference is skipped here
+            // (like `${..}`).
             let base: &[FieldType] = match src {
                 RepSource::Path(Field::Names(names)) => names,
                 _ => &[],
@@ -339,7 +390,17 @@ fn render_rep<'a>(
         }
         let mut i = start + 1;
         while i < end {
-            i = write_piece(f, pieces, i, args, json, cols, Some(b), false, used_fields)?;
+            i = write_piece(
+                f,
+                pieces,
+                i,
+                args,
+                json,
+                cols,
+                Some(b),
+                false,
+                used_fields,
+            )?;
         }
     }
 
@@ -365,8 +426,9 @@ fn walk<'a>(mut val: &'a Json<'a>, names: &FieldNames) -> &'a Json<'a> {
                 // Not a nested key: the remaining name tokens may be a single
                 // flattened dotted key (e.g. tracing's `log.file` stored as one
                 // literal key). Try joining consecutive names with '.', keeping
-                // the longest match so the most specific key wins. Nested lookup
-                // is tried first above, so real nesting still takes precedence.
+                // the longest match so the most specific key wins. Nested
+                // lookup is tried first above, so real nesting
+                // still takes precedence.
                 let mut joined = n.clone();
                 let mut best: Option<(String, usize)> = None;
                 let mut j = i + 1;
@@ -391,12 +453,16 @@ fn walk<'a>(mut val: &'a Json<'a>, names: &FieldNames) -> &'a Json<'a> {
     val
 }
 
-/// True when `base + key` was already consumed by an earlier field reference, so
-/// a repetition over `base` should skip that entry (e.g. `${fields.message}` up
-/// top drops `message` from a later `$fields( … )`). The trailing tokens after
-/// `base` are joined with '.', so a flattened key like `log.file` (referenced as
-/// `${fields.log.file}`) is also recognised and skipped.
-fn key_consumed(used_fields: &SmallVec<[&Field; 5]>, base: &[FieldType], key: &str) -> bool {
+/// True when `base + key` was already consumed by an earlier field reference,
+/// so a repetition over `base` should skip that entry (e.g. `${fields.message}`
+/// up top drops `message` from a later `$fields( … )`). The trailing tokens
+/// after `base` are joined with '.', so a flattened key like `log.file`
+/// (referenced as `${fields.log.file}`) is also recognised and skipped.
+fn key_consumed(
+    used_fields: &SmallVec<[&Field; 5]>,
+    base: &[FieldType],
+    key: &str,
+) -> bool {
     with_excluded(used_fields, |excluded| {
         excluded.iter().any(|path| {
             path.len() > base.len()
@@ -441,10 +507,10 @@ fn resolve_field<'a>(json: &'a Json<'a>, field: &Field) -> &'a Json<'a> {
     }
 }
 
-/// True when an optional arg's selected field is the rest (`..`) and there are no
-/// leftover fields to show — so `{?..}` renders empty and collapses its space
-/// rather than printing a bare `{}`/`[]`. A present earlier fallback (`{?a|..}`
-/// with `a` set) returns false, since rest is never reached.
+/// True when an optional arg's selected field is the rest (`..`) and there are
+/// no leftover fields to show — so `{?..}` renders empty and collapses its
+/// space rather than printing a bare `{}`/`[]`. A present earlier fallback
+/// (`{?a|..}` with `a` set) returns false, since rest is never reached.
 fn rest_arg_without_content<'a>(
     (field_options, _): &'a Arg,
     json: &'a Json<'a>,
@@ -453,10 +519,14 @@ fn rest_arg_without_content<'a>(
     for field in field_options {
         match field {
             Field::Whole => return false,
-            Field::ColValue | Field::ColKey | Field::ColValuePath(_) => return false,
+            Field::ColValue | Field::ColKey | Field::ColValuePath(_) => {
+                return false
+            }
             Field::Literal(_) => return false,
             Field::Rest => {
-                return !with_excluded(used_fields, |excluded| json.has_rest_content(excluded));
+                return !with_excluded(used_fields, |excluded| {
+                    json.has_rest_content(excluded)
+                });
             }
             Field::Names(names) => {
                 let val = walk(json, names);
@@ -485,7 +555,9 @@ fn test_cond<'a>(
     for field in field_options {
         let matched = match field {
             Field::Whole => test_cond2(cond, json),
-            Field::ColValue => cur.map(|c| test_cond2(cond, c.value)).unwrap_or(false),
+            Field::ColValue => {
+                cur.map(|c| test_cond2(cond, c.value)).unwrap_or(false)
+            }
             Field::ColValuePath(names) => cur
                 .map(|c| test_cond2(cond, walk(c.value, names)))
                 .unwrap_or(false),
@@ -501,7 +573,9 @@ fn test_cond<'a>(
                 if *cond == Cond::Has {
                     true
                 } else {
-                    with_excluded(used_fields, |excluded| json.has_rest_content(excluded))
+                    with_excluded(used_fields, |excluded| {
+                        json.has_rest_content(excluded)
+                    })
                 }
             }
             Field::Names(names) => {
@@ -564,7 +638,8 @@ fn compare_scalar(json: &Json<'_>, op: CmpOp, rhs: &str) -> bool {
         return false;
     };
     let ord = match op {
-        CmpOp::Eq | CmpOp::Ne => match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
+        CmpOp::Eq | CmpOp::Ne => match (lhs.parse::<f64>(), rhs.parse::<f64>())
+        {
             (Ok(a), Ok(b)) => a.partial_cmp(&b),
             _ => Some(lhs.cmp(rhs)),
         },
@@ -583,38 +658,44 @@ fn compare_scalar(json: &Json<'_>, op: CmpOp, rhs: &str) -> bool {
     }
 }
 
-/// Order two scalar strings for a `<`/`>`/`<=`/`>=` comparison: numerically when
-/// both parse as numbers (tolerating a unit suffix), else as timestamps, else
-/// lexicographically. Mirrors the CLI filter's ordering semantics.
+/// Order two scalar strings for a `<`/`>`/`<=`/`>=` comparison: numerically
+/// when both parse as numbers (tolerating a unit suffix), else as timestamps,
+/// else lexicographically. Mirrors the CLI filter's ordering semantics.
 fn order_scalars(lhs: &str, rhs: &str) -> Option<Ordering> {
-    if let (Some(a), Some(b)) = (crate::parse_number(lhs), crate::parse_number(rhs)) {
+    if let (Some(a), Some(b)) =
+        (crate::parse_number(lhs), crate::parse_number(rhs))
+    {
         return a.partial_cmp(&b);
     }
-    if let (Some(a), Some(b)) = (crate::parse_datetime(lhs), crate::parse_datetime(rhs)) {
+    if let (Some(a), Some(b)) =
+        (crate::parse_datetime(lhs), crate::parse_datetime(rhs))
+    {
         return Some(a.cmp(&b));
     }
     Some(lhs.cmp(rhs))
 }
 
-/// Evaluate a `${match}` arm against the (non-null) subject: the wildcard (empty
-/// list) matches any present value; otherwise any listed test may match.
+/// Evaluate a `${match}` arm against the (non-null) subject: the wildcard
+/// (empty list) matches any present value; otherwise any listed test may match.
 fn match_arm(json: &Json<'_>, tests: &[ArmTest]) -> bool {
     if tests.is_empty() {
         return true; // `_`: the caller already excluded null subjects
     }
     tests.iter().any(|t| match t {
         ArmTest::Cmp(op, rhs) => compare_scalar(json, *op, rhs),
-        ArmTest::Range {
-            lo,
-            hi,
-            hi_inclusive,
-        } => json
+        ArmTest::Range { lo, hi, hi_inclusive } => json
             .as_str()
             .or_else(|| json.as_value())
             .and_then(crate::parse_number)
             .is_some_and(|v| {
                 lo.is_none_or(|lo| v >= lo)
-                    && hi.is_none_or(|hi| if *hi_inclusive { v <= hi } else { v < hi })
+                    && hi.is_none_or(|hi| {
+                        if *hi_inclusive {
+                            v <= hi
+                        } else {
+                            v < hi
+                        }
+                    })
             }),
     })
 }
@@ -652,7 +733,9 @@ fn write_arg<'a>(
                 return match cur {
                     Some(c) => match c.key {
                         BindKey::Str(s) => write_scalar_str(f, format, s),
-                        BindKey::Index(idx) => write_scalar_str(f, format, &idx.to_string()),
+                        BindKey::Index(idx) => {
+                            write_scalar_str(f, format, &idx.to_string())
+                        }
                     },
                     None => Ok(()),
                 };
@@ -674,7 +757,11 @@ fn write_arg<'a>(
 
 /// Write a plain string value with the arg's escape or style applied (used for
 /// `$key`, which is a bare string/index rather than a `Json` node).
-fn write_scalar_str(f: &mut impl fmt::Write, format: &Format, val: &str) -> fmt::Result {
+fn write_scalar_str(
+    f: &mut impl fmt::Write,
+    format: &Format,
+    val: &str,
+) -> fmt::Result {
     if format.escape != Escape::None {
         return write_escaped(f, format.escape, val);
     }
@@ -685,7 +772,11 @@ fn write_scalar_str(f: &mut impl fmt::Write, format: &Format, val: &str) -> fmt:
     }
 }
 
-fn write_arg2(f: &mut impl fmt::Write, format: &Format, json: &Json<'_>) -> fmt::Result {
+fn write_arg2(
+    f: &mut impl fmt::Write,
+    format: &Format,
+    json: &Json<'_>,
+) -> fmt::Result {
     let Format {
         style,
         compact,
@@ -769,12 +860,17 @@ fn with_excluded<R>(
     f: impl FnOnce(&[&[PathToken]]) -> R,
 ) -> R {
     let paths = build_excluded(used_fields);
-    let excluded: SmallVec<[&[PathToken]; 5]> = paths.iter().map(|p| p.as_slice()).collect();
+    let excluded: SmallVec<[&[PathToken]; 5]> =
+        paths.iter().map(|p| p.as_slice()).collect();
     f(&excluded)
 }
 
 /// Write `s` with the given escape applied.
-fn write_escaped(f: &mut impl fmt::Write, escape: Escape, s: &str) -> fmt::Result {
+fn write_escaped(
+    f: &mut impl fmt::Write,
+    escape: Escape,
+    s: &str,
+) -> fmt::Result {
     match escape {
         Escape::None => f.write_str(s),
         Escape::Html => {
@@ -791,7 +887,11 @@ fn write_escaped(f: &mut impl fmt::Write, escape: Escape, s: &str) -> fmt::Resul
             Ok(())
         }
         Escape::Csv => {
-            if s.contains('"') || s.contains('\n') || s.contains('\r') || s.contains(',') {
+            if s.contains('"')
+                || s.contains('\n')
+                || s.contains('\r')
+                || s.contains(',')
+            {
                 f.write_char('"')?;
                 for c in s.chars() {
                     if c == '"' {
@@ -894,24 +994,20 @@ impl fmt::Debug for RestView<'_> {
 }
 
 /// A writer that can collapse one whitespace separator next to an empty
-/// `{?field}`. Plain writers treat the collapse hooks as no-ops, so non-optional
-/// templates render with zero extra work.
+/// `{?field}`. Plain writers treat the collapse hooks as no-ops, so
+/// non-optional templates render with zero extra work.
 trait Write2: fmt::Write {
     /// An optional field rendered empty: collapse one adjacent space.
     fn collapse_ws(&mut self) {}
     /// Emit any deferred trailing whitespace.
-    fn flush_ws(&mut self) -> fmt::Result {
-        Ok(())
-    }
+    fn flush_ws(&mut self) -> fmt::Result { Ok(()) }
 }
 
 /// Pass-through writer for templates without any `{?field}`.
 struct Plain<'a, W: fmt::Write>(&'a mut W);
 
 impl<W: fmt::Write> fmt::Write for Plain<'_, W> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0.write_str(s)
-    }
+    fn write_str(&mut self, s: &str) -> fmt::Result { self.0.write_str(s) }
 }
 
 impl<W: fmt::Write> Write2 for Plain<'_, W> {}
@@ -941,15 +1037,16 @@ impl<'a, W: fmt::Write> Trimmer<'a, W> {
 impl<W: fmt::Write> fmt::Write for Trimmer<'_, W> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // Collapsible separators include newlines, not just spaces/tabs, so an
-        // empty optional can absorb a line break (e.g. the `\n` before `{?@data}`).
+        // empty optional can absorb a line break (e.g. the `\n` before
+        // `{?@data}`).
         const WS: [char; 4] = [' ', '\t', '\n', '\r'];
         let mut s = s;
         if self.skip_leading_ws {
             let trimmed = s.trim_start_matches(WS);
             let stripped_some = trimmed.len() != s.len();
             s = trimmed;
-            // Keep skipping only while the run is still all whitespace; stop once
-            // real content (this or a later write) appears.
+            // Keep skipping only while the run is still all whitespace; stop
+            // once real content (this or a later write) appears.
             if !stripped_some || !s.is_empty() {
                 self.skip_leading_ws = false;
             }
@@ -988,4 +1085,3 @@ impl<W: fmt::Write> Write2 for Trimmer<'_, W> {
         Ok(())
     }
 }
-

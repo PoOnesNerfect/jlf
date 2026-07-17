@@ -8,8 +8,8 @@ pub use format::{column, Column, Escape, FormattedLog, Formatter};
 
 mod config;
 pub use config::{
-    builtin_formats, default_variables, get_config, Config, ConfigFile, FormatDef, PresetDef,
-    Recipe,
+    builtin_formats, default_variables, get_config, Config, ConfigFile,
+    FormatDef, PresetDef, Recipe,
 };
 
 mod expand;

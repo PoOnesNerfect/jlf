@@ -1,14 +1,17 @@
 //! Run the real `jlf` binary on the sample to preview a built command.
 
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::{
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 /// Locate the `jlf` binary: next to this executable first, then on `PATH`.
 pub fn jlf_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join(if cfg!(windows) { "jlf.exe" } else { "jlf" });
+            let sibling =
+                dir.join(if cfg!(windows) { "jlf.exe" } else { "jlf" });
             if sibling.exists() {
                 return sibling;
             }

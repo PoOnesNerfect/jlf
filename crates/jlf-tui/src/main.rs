@@ -1,25 +1,26 @@
 mod app;
-mod store;
 mod catalog;
 mod field;
 mod reader;
 mod save;
+mod store;
 mod summary;
 mod ui;
 
-use std::sync::mpsc::channel;
-use std::time::Duration;
-
-use jlf_core::Filter;
-use ratatui::crossterm::{
-    event::{
-        self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
-    },
-    execute,
-};
-use ratatui::DefaultTerminal;
+use std::{sync::mpsc::channel, time::Duration};
 
 use app::{App, Mode};
+use jlf_core::Filter;
+use ratatui::{
+    crossterm::{
+        event::{
+            self, DisableFocusChange, EnableFocusChange, Event, KeyCode,
+            KeyEventKind, KeyModifiers,
+        },
+        execute,
+    },
+    DefaultTerminal,
+};
 use reader::Source;
 
 /// Records the selection jumps for a Shift-J / Shift-K "fast move".
@@ -42,16 +43,17 @@ fn main() -> color_eyre::Result<()> {
 
     // Keyboard events reach us through fd 0. When something other than a
     // terminal is on stdin (a piped data stream, a redirected file), crossterm
-    // can't read keys from it — on macOS it fails to even initialize its reader.
-    // So point fd 0 at the controlling terminal, saving the piped data (when we
-    // need it as the source) on a fresh fd for the reader.
+    // can't read keys from it — on macOS it fails to even initialize its
+    // reader. So point fd 0 at the controlling terminal, saving the piped
+    // data (when we need it as the source) on a fresh fd for the reader.
     let want_stdin_data = file.is_none();
     let piped = match prepare_terminal_input(want_stdin_data) {
         Ok(p) => p,
         Err(_) => {
             eprintln!("jlf-tui: no terminal available for keyboard input.");
             eprintln!(
-                "        run it attached to a terminal, e.g. `jlf tui app.log` or `cat logs | jlf tui`."
+                "        run it attached to a terminal, e.g. `jlf tui \
+                 app.log` or `cat logs | jlf tui`."
             );
             std::process::exit(1);
         }
@@ -63,7 +65,8 @@ fn main() -> color_eyre::Result<()> {
     // A live pipe (`cmd -f | jlf tui`) has an upstream producer that keeps
     // running after we quit, so the shell blocks on it. Note it so we can stop
     // it on exit.
-    let from_pipe = matches!(source, Some(Source::Pipe(_)) | Some(Source::Stdin));
+    let from_pipe =
+        matches!(source, Some(Source::Pipe(_)) | Some(Source::Stdin));
     let rx = match source {
         Some(s) => reader::spawn(s, true),
         None => channel().1,
@@ -91,10 +94,10 @@ fn main() -> color_eyre::Result<()> {
 }
 
 /// When our input was a live pipe, terminate the upstream producer on exit so
-/// the shell doesn't block waiting on a still-running `… -f`. We signal only our
-/// own process group, and only when it is a subordinate pipeline group (its
-/// group id differs from the session id) — so the interactive shell, which leads
-/// the session, is never signalled.
+/// the shell doesn't block waiting on a still-running `… -f`. We signal only
+/// our own process group, and only when it is a subordinate pipeline group (its
+/// group id differs from the session id) — so the interactive shell, which
+/// leads the session, is never signalled.
 #[cfg(unix)]
 fn stop_pipeline_producer() {
     unsafe {
@@ -124,8 +127,10 @@ fn stop_pipeline_producer() {}
 /// event reader fails to initialize on it, while the real pts device works.
 #[cfg(unix)]
 fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
-    use std::io::IsTerminal;
-    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::{
+        io::IsTerminal,
+        os::unix::io::{AsRawFd, FromRawFd},
+    };
 
     if std::io::stdin().is_terminal() {
         return Ok(None);
@@ -143,7 +148,10 @@ fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
     // Put the controlling terminal on fd 0 for crossterm's event reader. Prefer
     // the real device path over `/dev/tty` (see the doc comment).
     let path = terminal_device_path().unwrap_or_else(|| "/dev/tty".into());
-    let tty = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
     if unsafe { libc::dup2(tty.as_raw_fd(), libc::STDIN_FILENO) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -181,10 +189,14 @@ fn prepare_terminal_input(want_data: bool) -> std::io::Result<Option<Source>> {
     }
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
+fn run(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+) -> color_eyre::Result<()> {
     // Transient status messages ("search cleared", "N match", …) fade a few
     // seconds after they appear so they don't linger. Tracked here (not in App)
-    // since it's purely a display concern; a new/changed message resets the clock.
+    // since it's purely a display concern; a new/changed message resets the
+    // clock.
     const STATUS_TTL: Duration = Duration::from_secs(2);
     let mut status_since: Option<std::time::Instant> = None;
     let mut last_status = String::new();
@@ -193,14 +205,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
         // Advance a running summary (folds a batch of records per frame, and
         // picks up newly-arrived ones) before drawing.
         app.tick_summary();
-        // Advance a running search scan too, so a big-view count keeps filling in
-        // (`N+ matches` → exact) after you stop typing.
+        // Advance a running search scan too, so a big-view count keeps filling
+        // in (`N+ matches` → exact) after you stop typing.
         app.tick_search_scan();
         // Expire a transient status after STATUS_TTL; reset the clock whenever
         // the message changes.
         if app.status != last_status {
             last_status = app.status.clone();
-            status_since = (!app.status.is_empty()).then(std::time::Instant::now);
+            status_since =
+                (!app.status.is_empty()).then(std::time::Instant::now);
         } else if status_since.is_some_and(|t| t.elapsed() >= STATUS_TTL) {
             app.status.clear();
             last_status.clear();
@@ -213,10 +226,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
         }
         terminal.draw(|f| ui::draw(f, app))?;
 
-        // Poll for input. During a big-file burst there's more buffered input to
-        // ingest, so don't block — loop immediately to keep filling and
-        // repainting (the count climbs as a progress cue). While a summary folds,
-        // poll briefly so it finishes fast without busy-spinning. Otherwise idle.
+        // Poll for input. During a big-file burst there's more buffered input
+        // to ingest, so don't block — loop immediately to keep filling
+        // and repainting (the count climbs as a progress cue). While a
+        // summary folds, poll briefly so it finishes fast without
+        // busy-spinning. Otherwise idle.
         let timeout = if more_input {
             Duration::from_millis(0)
         } else if app.summary_computing() || app.search_scan_computing() {
@@ -243,16 +257,23 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> color_eyre::Result<()> 
     }
 }
 
-/// Write the current (filtered) view to a temp file as raw JSON lines and open it
-/// in the user's editor (`$VISUAL`/`$EDITOR`, else a platform default). The TUI
-/// owns the terminal, so it's suspended (leave the alternate screen, disable raw
-/// mode) around the editor and restored afterward with a forced repaint. All
-/// failures are surfaced as a status message rather than crashing the viewer.
-fn open_view_in_editor(app: &mut App, terminal: &mut DefaultTerminal) -> color_eyre::Result<()> {
-    use ratatui::crossterm::terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+/// Write the current (filtered) view to a temp file as raw JSON lines and open
+/// it in the user's editor (`$VISUAL`/`$EDITOR`, else a platform default). The
+/// TUI owns the terminal, so it's suspended (leave the alternate screen,
+/// disable raw mode) around the editor and restored afterward with a forced
+/// repaint. All failures are surfaced as a status message rather than crashing
+/// the viewer.
+fn open_view_in_editor(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+) -> color_eyre::Result<()> {
+    use ratatui::crossterm::{
+        execute,
+        terminal::{
+            disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
+            LeaveAlternateScreen,
+        },
     };
-    use ratatui::crossterm::execute;
 
     let mut path = std::env::temp_dir();
     path.push(format!("jlf-tui-view-{}.jsonl", std::process::id()));
@@ -284,22 +305,36 @@ fn open_view_in_editor(app: &mut App, terminal: &mut DefaultTerminal) -> color_e
     Ok(())
 }
 
-/// Build the editor command: `$VISUAL`, then `$EDITOR`, then a platform default,
-/// plus the file to open positioned at `last_line` (the newest record) when the
-/// editor's line-jump syntax is known. Extra words in the env var (e.g.
-/// `code --wait`) are kept as leading arguments. Returns `(command, args)` where
-/// `args` already includes the file path. For an unrecognized editor the file is
-/// opened without positioning — a wrong flag could be taken as a filename, so we
-/// only add one for editors we know.
-fn editor_command(path: &std::path::Path, last_line: usize) -> (String, Vec<String>) {
+/// Build the editor command: `$VISUAL`, then `$EDITOR`, then a platform
+/// default, plus the file to open positioned at `last_line` (the newest record)
+/// when the editor's line-jump syntax is known. Extra words in the env var
+/// (e.g. `code --wait`) are kept as leading arguments. Returns `(command,
+/// args)` where `args` already includes the file path. For an unrecognized
+/// editor the file is opened without positioning — a wrong flag could be taken
+/// as a filename, so we only add one for editors we know.
+fn editor_command(
+    path: &std::path::Path,
+    last_line: usize,
+) -> (String, Vec<String>) {
     let spec = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "vi".into() });
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "vi".into()
+            }
+        });
     build_editor_args(&spec, &path.to_string_lossy(), last_line)
 }
 
-/// Pure editor-argument builder (no env), so it's testable. See [`editor_command`].
-fn build_editor_args(spec: &str, file: &str, last_line: usize) -> (String, Vec<String>) {
+/// Pure editor-argument builder (no env), so it's testable. See
+/// [`editor_command`].
+fn build_editor_args(
+    spec: &str,
+    file: &str,
+    last_line: usize,
+) -> (String, Vec<String>) {
     let mut parts = spec.split_whitespace().map(str::to_owned);
     let cmd = parts.next().unwrap_or_else(|| "vi".into());
     let mut args: Vec<String> = parts.collect();
@@ -314,8 +349,8 @@ fn build_editor_args(spec: &str, file: &str, last_line: usize) -> (String, Vec<S
 
     match base.as_str() {
         // `+LINE file` — vi/vim family, nano, emacs, kakoune.
-        "vi" | "vim" | "nvim" | "view" | "gvim" | "mvim" | "nano" | "emacs" | "emacsclient"
-        | "kak"
+        "vi" | "vim" | "nvim" | "view" | "gvim" | "mvim" | "nano" | "emacs"
+        | "emacsclient" | "kak"
             if last_line > 0 =>
         {
             args.push(format!("+{last_line}"));
@@ -326,7 +361,8 @@ fn build_editor_args(spec: &str, file: &str, last_line: usize) -> (String, Vec<S
             args.push(format!("{file}:{last_line}"));
         }
         // `--goto file:LINE` — VS Code and friends.
-        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf"
+        "code" | "code-insiders" | "codium" | "vscodium" | "cursor"
+        | "windsurf"
             if last_line > 0 =>
         {
             args.push("--goto".into());
@@ -362,7 +398,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 handle_normal(app, code);
             }
         }
-        Mode::Filter | Mode::Search | Mode::Command => handle_input(app, code, mods),
+        Mode::Filter | Mode::Search | Mode::Command => {
+            handle_input(app, code, mods)
+        }
     }
 }
 
@@ -380,7 +418,9 @@ fn handle_normal(app: &mut App, code: KeyCode) {
     }
 
     // A help or summary popup intercepts dismiss keys first.
-    if (app.help || app.summary.is_some()) && matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+    if (app.help || app.summary.is_some())
+        && matches!(code, KeyCode::Esc | KeyCode::Char('q'))
+    {
         app.help = false;
         app.close_summary();
         return;
@@ -423,9 +463,9 @@ fn handle_normal(app: &mut App, code: KeyCode) {
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('?') => app.enter_filter(),
         KeyCode::Char(':') => app.enter_command(),
-        // n / N step between search matches. Logs read newest-last, so `n` walks
-        // upward (toward older records) and `N` downward (toward newer), matching
-        // the "newest first" direction Enter jumps to.
+        // n / N step between search matches. Logs read newest-last, so `n`
+        // walks upward (toward older records) and `N` downward (toward
+        // newer), matching the "newest first" direction Enter jumps to.
         KeyCode::Char('n') => app.search_jump(false),
         KeyCode::Char('N') => app.search_jump(true),
         // Enter opens/closes the detail pane for the selected record.
@@ -453,11 +493,12 @@ fn handle_normal(app: &mut App, code: KeyCode) {
 fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
     let alt = mods.contains(KeyModifiers::ALT);
-    // Autocomplete: Tab/Shift-Tab (or ↑/↓, Ctrl-n/p) select and *fill* successive
-    // candidates so Enter applies immediately; nothing is selected until the
-    // first Tab. Enter commits what's shown; Esc exits the field. The cursor can
-    // move anywhere in the input (arrows, word jumps, Home/End) and editing acts
-    // at that position, mirroring a terminal readline.
+    // Autocomplete: Tab/Shift-Tab (or ↑/↓, Ctrl-n/p) select and *fill*
+    // successive candidates so Enter applies immediately; nothing is
+    // selected until the first Tab. Enter commits what's shown; Esc exits
+    // the field. The cursor can move anywhere in the input (arrows, word
+    // jumps, Home/End) and editing acts at that position, mirroring a
+    // terminal readline.
     if ctrl {
         match code {
             // Ctrl-W deletes the word before the cursor; on an empty input it
@@ -494,13 +535,17 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         return;
     }
     match code {
-        KeyCode::Tab | KeyCode::Down if app.suggestions_visible() => app.cycle_suggestions(1),
-        KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => app.cycle_suggestions(-1),
+        KeyCode::Tab | KeyCode::Down if app.suggestions_visible() => {
+            app.cycle_suggestions(1)
+        }
+        KeyCode::BackTab | KeyCode::Up if app.suggestions_visible() => {
+            app.cycle_suggestions(-1)
+        }
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
             // Leave input mode *before* applying so `search_needle()` reads the
-            // committed query (not the just-emptied `input`) when the apply path
-            // refreshes the cached match count.
+            // committed query (not the just-emptied `input`) when the apply
+            // path refreshes the cached match count.
             let mode = app.mode;
             app.mode = Mode::Normal;
             match mode {
@@ -512,8 +557,9 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         KeyCode::Esc => {
             // Cancel: leave input mode first (so the search path re-reads the
-            // committed query, not the abandoned live input), then return to the
-            // anchor. No-op for filter/command beyond leaving the field.
+            // committed query, not the abandoned live input), then return to
+            // the anchor. No-op for filter/command beyond leaving
+            // the field.
             let was_search = matches!(app.mode, Mode::Search);
             app.mode = Mode::Normal;
             app.input.clear();
@@ -534,9 +580,9 @@ fn handle_input(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     }
 }
 
-/// Backspace when there's text, else delete the visual prefix — which leaves the
-/// field. Deleting the whole `?` filter or `/` search this way clears it (empty
-/// means none), rather than keeping the previously-applied one.
+/// Backspace when there's text, else delete the visual prefix — which leaves
+/// the field. Deleting the whole `?` filter or `/` search this way clears it
+/// (empty means none), rather than keeping the previously-applied one.
 fn input_backspace_or_exit(app: &mut App) {
     if app.input.is_empty() {
         exit_search_or_command(app);
@@ -550,10 +596,14 @@ fn input_backspace_or_exit(app: &mut App) {
 /// and keeps whatever was already applied.)
 fn exit_search_or_command(app: &mut App) {
     match app.mode {
-        Mode::Filter if !app.filter_text.is_empty() => app.apply_filter(String::new()),
+        Mode::Filter if !app.filter_text.is_empty() => {
+            app.apply_filter(String::new())
+        }
         // Deleting out of search: clear an applied query, else just cancel the
         // preview back to the anchor.
-        Mode::Search if !app.search_query.is_empty() => app.apply_search(String::new()),
+        Mode::Search if !app.search_query.is_empty() => {
+            app.apply_search(String::new())
+        }
         Mode::Search => app.cancel_search(),
         _ => {}
     }
@@ -583,15 +633,19 @@ mod tests {
         // VS Code → `--goto file:LINE`, keeping extra env args (e.g. --wait)
         assert_eq!(
             build_editor_args("code --wait", "/tmp/v.jsonl", 9),
-            (
-                "code".into(),
-                vec!["--wait".into(), "--goto".into(), "/tmp/v.jsonl:9".into()]
-            )
+            ("code".into(), vec![
+                "--wait".into(),
+                "--goto".into(),
+                "/tmp/v.jsonl:9".into()
+            ])
         );
         // A full path to the editor still resolves by base name.
         assert_eq!(
             build_editor_args("/usr/bin/nvim", "/tmp/v.jsonl", 3),
-            ("/usr/bin/nvim".into(), vec!["+3".into(), "/tmp/v.jsonl".into()])
+            ("/usr/bin/nvim".into(), vec![
+                "+3".into(),
+                "/tmp/v.jsonl".into()
+            ])
         );
         // Unknown editor → just the file (no risky positioning flag).
         assert_eq!(

@@ -3,10 +3,12 @@
 //! sample is a live pipe we also keep the pipe open so "Run it" can stream the
 //! built command against the live tail rather than the finite sample.
 
-use std::fs::File;
-use std::io::{BufRead, IsTerminal};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::{
+    fs::File,
+    io::{BufRead, IsTerminal},
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 /// How many lines of sample to keep for previews.
 const MAX_SAMPLE: usize = 500;
@@ -73,8 +75,8 @@ fn timeout_exit() -> ! {
 
 /// If stdin is piped (`cat logs | jlf it`), read a bounded sample and then
 /// reattach stdin to the controlling terminal so the prompts can read keys.
-/// Returns `(sample, live)` if stdin was piped (`live` is the still-open pipe on
-/// unix), else `None`.
+/// Returns `(sample, live)` if stdin was piped (`live` is the still-open pipe
+/// on unix), else `None`.
 ///
 /// The sample is read with `poll`, so a finite pipe returns as soon as it ends,
 /// while a *live* stream that emits a burst and then goes quiet (a server log,
@@ -88,16 +90,16 @@ pub fn from_stdin_if_piped() -> Option<(String, Option<Live>)> {
     if std::io::stdin().is_terminal() {
         return None;
     }
-    // Dup the pipe onto our own fd: the sampler and the later live hand-off read
-    // it, while fd 0 gets repurposed for the terminal below.
+    // Dup the pipe onto our own fd: the sampler and the later live hand-off
+    // read it, while fd 0 gets repurposed for the terminal below.
     let raw: RawFd = unsafe { libc::dup(0) };
     if raw < 0 {
         return Some((sample_stdin_only(), None));
     }
 
     let (sample, leftover, eof) = sample_pipe(raw);
-    // A live stream that never emitted anything: nothing to preview against, and
-    // it won't close on its own — point the user at a finite sample.
+    // A live stream that never emitted anything: nothing to preview against,
+    // and it won't close on its own — point the user at a finite sample.
     if sample.trim().is_empty() && !eof {
         unsafe { libc::close(raw) };
         timeout_exit();
@@ -110,9 +112,10 @@ pub fn from_stdin_if_piped() -> Option<(String, Option<Live>)> {
 }
 
 /// Poll-read a bounded sample from `fd` without ever blocking indefinitely.
-/// Returns `(sample, leftover, eof)` where `leftover` is the bytes read past the
-/// last sample line (an incomplete final line, or lines beyond [`MAX_SAMPLE`]) so
-/// the live hand-off drops nothing, and `eof` marks a stream that closed.
+/// Returns `(sample, leftover, eof)` where `leftover` is the bytes read past
+/// the last sample line (an incomplete final line, or lines beyond
+/// [`MAX_SAMPLE`]) so the live hand-off drops nothing, and `eof` marks a stream
+/// that closed.
 #[cfg(unix)]
 fn sample_pipe(fd: std::os::unix::io::RawFd) -> (String, Vec<u8>, bool) {
     // Non-blocking so reads return EAGAIN instead of hanging; `poll` does the
@@ -132,8 +135,9 @@ fn sample_pipe(fd: std::os::unix::io::RawFd) -> (String, Vec<u8>, bool) {
     let mut eof = false;
 
     'outer: while lines < MAX_SAMPLE {
-        // How long to wait this round: before any data, up to FIRST_WAIT; after,
-        // the shorter of the idle gap (burst ended) and the overall cap.
+        // How long to wait this round: before any data, up to FIRST_WAIT;
+        // after, the shorter of the idle gap (burst ended) and the
+        // overall cap.
         let wait = if got {
             IDLE_GAP
                 .checked_sub(last.elapsed())
@@ -144,20 +148,35 @@ fn sample_pipe(fd: std::os::unix::io::RawFd) -> (String, Vec<u8>, bool) {
         };
         let Some(wait) = wait else { break };
 
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        let r = unsafe { libc::poll(&mut pfd, 1, wait.as_millis().min(i32::MAX as u128) as i32) };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let r = unsafe {
+            libc::poll(
+                &mut pfd,
+                1,
+                wait.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
         if r < 0 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            if std::io::Error::last_os_error().raw_os_error()
+                == Some(libc::EINTR)
+            {
                 continue;
             }
             break;
         }
         if r == 0 {
-            break; // window elapsed: first-data give-up, or burst idle / overall cap
+            break; // window elapsed: first-data give-up, or burst idle /
+                   // overall cap
         }
         // Readable (or hung up): drain everything available this round.
         loop {
-            let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+            let n = unsafe {
+                libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len())
+            };
             if n > 0 {
                 got = true;
                 last = Instant::now();
@@ -259,9 +278,9 @@ fn reattach_tty() {
 
 #[cfg(all(unix, test))]
 mod tests {
+    use std::{io::Write, os::unix::io::FromRawFd};
+
     use super::*;
-    use std::io::Write;
-    use std::os::unix::io::FromRawFd;
 
     fn os_pipe() -> (i32, i32) {
         let mut fds = [0i32; 2];
@@ -283,7 +302,11 @@ mod tests {
 
         let start = Instant::now();
         let (sample, _leftover, eof) = sample_pipe(rd);
-        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
         assert!(!eof);
         assert_eq!(sample, "{\"a\":1}\n{\"a\":2}\n");
 
@@ -291,7 +314,8 @@ mod tests {
         writer.join().unwrap();
     }
 
-    // A finite pipe is read through EOF, including a trailing line with no `\n`.
+    // A finite pipe is read through EOF, including a trailing line with no
+    // `\n`.
     #[test]
     fn finite_pipe_reads_to_eof() {
         let (rd, wr) = os_pipe();

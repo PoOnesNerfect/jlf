@@ -41,7 +41,10 @@ fn main() {
         match pick_sample() {
             Some((s, path)) => (s, wizard::RunInput::File(path.into())),
             None => {
-                eprintln!("jlf it: no sample data. Try `jlf it <file>` or `cat logs | jlf it`.");
+                eprintln!(
+                    "jlf it: no sample data. Try `jlf it <file>` or `cat logs \
+                     | jlf it`."
+                );
                 std::process::exit(1);
             }
         }
@@ -54,7 +57,10 @@ fn main() {
 
     // After a possible pipe drain, we need a terminal for the prompts.
     if !std::io::stdin().is_terminal() {
-        eprintln!("jlf it: no terminal available for prompts (run it attached to a terminal).");
+        eprintln!(
+            "jlf it: no terminal available for prompts (run it attached to a \
+             terminal)."
+        );
         std::process::exit(1);
     }
 
@@ -65,8 +71,9 @@ fn main() {
     }
 }
 
-/// No file and no pipe: offer the bundled example if present, or ask for a path.
-/// Returns the sample text and the file it came from (so "Run it" can re-read it).
+/// No file and no pipe: offer the bundled example if present, or ask for a
+/// path. Returns the sample text and the file it came from (so "Run it" can
+/// re-read it).
 fn pick_sample() -> Option<(String, String)> {
     for candidate in ["examples/sample.ndjson", "examples/dummy_logs"] {
         if let Ok(s) = input::from_file(candidate) {

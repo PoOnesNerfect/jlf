@@ -1,24 +1,26 @@
 //! A bounded, file-backed record store.
 //!
-//! A long-running `tail -f | jlf tui` can see millions of records; keeping every
-//! raw line in memory would grow without bound. Instead the store keeps only the
-//! **head** (the first records) and the **tail** (the most recent) resident — the
-//! two places you actually jump to with `g` and `G`/follow — and spills the
-//! **middle** to a temp file, paging chunks back on demand behind a small cache.
-//! Memory stays bounded (~`head_cap + tail_cap` records plus a few cached chunks)
-//! no matter how long the stream runs; the temp file holds the aged-out middle
-//! and is deleted on exit.
+//! A long-running `tail -f | jlf tui` can see millions of records; keeping
+//! every raw line in memory would grow without bound. Instead the store keeps
+//! only the **head** (the first records) and the **tail** (the most recent)
+//! resident — the two places you actually jump to with `g` and `G`/follow — and
+//! spills the **middle** to a temp file, paging chunks back on demand behind a
+//! small cache. Memory stays bounded (~`head_cap + tail_cap` records plus a few
+//! cached chunks) no matter how long the stream runs; the temp file holds the
+//! aged-out middle and is deleted on exit.
 //!
 //! Records are addressed by a stable logical index `0..len()`. `get(i)` returns
 //! the record (cloning only a cheap `Rc`), reading from disk when `i` falls in
 //! the spilled middle.
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
+    path::PathBuf,
+    rc::Rc,
+};
 
 /// Records kept resident at the start of the stream (jumped to with `g`).
 const HEAD_CAP: usize = 50_000;
@@ -70,9 +72,7 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new() -> Self {
-        Self::with_caps(HEAD_CAP, TAIL_CAP, CHUNK)
-    }
+    pub fn new() -> Self { Self::with_caps(HEAD_CAP, TAIL_CAP, CHUNK) }
 
     /// Construct with explicit caps (used by tests to exercise spilling without
     /// pushing 100k records).
@@ -95,14 +95,10 @@ impl Store {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
+    pub fn len(&self) -> usize { self.len }
 
     #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
 
     /// Append a record. Fills the head first, then the tail; once the tail is
     /// full the oldest tail record ages into the spilled middle.
@@ -124,8 +120,8 @@ impl Store {
     }
 
     /// Fetch record `i` (`i < len()`), reading from the spill file when it lies
-    /// in the middle. Returns an empty record on an out-of-range index or a read
-    /// error (both rare and non-fatal for a viewer).
+    /// in the middle. Returns an empty record on an out-of-range index or a
+    /// read error (both rare and non-fatal for a viewer).
     pub fn get(&self, i: usize) -> Rc<str> {
         if i < self.head.len() {
             return self.head[i].clone();
@@ -142,7 +138,8 @@ impl Store {
     }
 
     /// Preload the chunk covering `i` so a later `get(i)` during rendering is a
-    /// cache hit (used to prefetch just off the visible edges for smooth scroll).
+    /// cache hit (used to prefetch just off the visible edges for smooth
+    /// scroll).
     pub fn prefetch(&self, i: usize) {
         let pending_start = self.head_cap + self.spilled;
         if i < self.head_cap || i >= pending_start.min(self.len) {
@@ -166,7 +163,10 @@ impl Store {
             return hit;
         }
         let records = self.load_chunk(ci);
-        let rec = records.get(i - first).cloned().unwrap_or_else(|| Rc::from(""));
+        let rec = records
+            .get(i - first)
+            .cloned()
+            .unwrap_or_else(|| Rc::from(""));
         let mut cache = self.cache.borrow_mut();
         cache.push(CachedChunk { first, records });
         if cache.len() > CACHE_CHUNKS {
@@ -203,22 +203,25 @@ impl Store {
             line.clear();
             match br.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => out.push(Rc::from(line.trim_end_matches(['\n', '\r']))),
+                Ok(_) => {
+                    out.push(Rc::from(line.trim_end_matches(['\n', '\r'])))
+                }
             }
         }
         out
     }
 
-    /// Write the pending records as one chunk to the spill file (created lazily),
-    /// recording its byte offset so it can be paged back.
+    /// Write the pending records as one chunk to the spill file (created
+    /// lazily), recording its byte offset so it can be paged back.
     fn flush_chunk(&mut self) {
         if self.pending.is_empty() {
             return;
         }
         if self.writer.is_none() && !self.open_spill() {
-            // Couldn't open a spill file: keep the records in memory rather than
-            // dropping them (bounded by however far the stream runs without a
-            // usable temp dir — the safe failure mode).
+            // Couldn't open a spill file: keep the records in memory rather
+            // than dropping them (bounded by however far the stream
+            // runs without a usable temp dir — the safe failure
+            // mode).
             return;
         }
         let writer = self.writer.as_mut().expect("just opened");

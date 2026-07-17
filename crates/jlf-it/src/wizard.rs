@@ -1,19 +1,27 @@
 //! The interactive builder: pick a mode, then edit any part with a LIVE preview
-//! that refreshes on every keystroke, before running or saving it. When a filter
-//! matches nothing in the sample, the preview falls back to a synthesized record
-//! (see `synth`) so you can still see the shape of the result.
+//! that refreshes on every keystroke, before running or saving it. When a
+//! filter matches nothing in the sample, the preview falls back to a
+//! synthesized record (see `synth`) so you can still see the shape of the
+//! result.
 
-use std::collections::HashSet;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use console::{style, Key, Term};
-use dialoguer::{theme::ColorfulTheme, theme::Theme, Confirm, Input, Select};
+use dialoguer::{
+    theme::{ColorfulTheme, Theme},
+    Confirm, Input, Select,
+};
 use serde_json::Value;
 
-use crate::builder::{Builder, Mode};
-use crate::fields::{self, Catalog};
-use crate::{input, preview, sample, save, synth};
+use crate::{
+    builder::{Builder, Mode},
+    fields::{self, Catalog},
+    input, preview, sample, save, synth,
+};
 
 /// Outcome of a prompt: committed, or the user backed out (Esc/Ctrl-C).
 type Prompt = Result<(), ()>;
@@ -39,11 +47,10 @@ enum Complete {
     List,
 }
 
-fn theme() -> ColorfulTheme {
-    ColorfulTheme::default()
-}
+fn theme() -> ColorfulTheme { ColorfulTheme::default() }
 
-/// An `Input` theme that puts the typed value on its own line, below the prompt.
+/// An `Input` theme that puts the typed value on its own line, below the
+/// prompt.
 struct NewlineInput;
 
 impl Theme for NewlineInput {
@@ -57,7 +64,12 @@ impl Theme for NewlineInput {
             writeln!(f, "{}", style(prompt).cyan())?;
         }
         match default {
-            Some(d) => write!(f, "{} {} ", style(format!("({d})")).dim(), style("›").cyan()),
+            Some(d) => write!(
+                f,
+                "{} {} ",
+                style(format!("({d})")).dim(),
+                style("›").cyan()
+            ),
             None => write!(f, "{} ", style("›").cyan()),
         }
     }
@@ -72,14 +84,19 @@ struct Ctx<'a> {
     /// [`sample::curate`]). Summaries use the full `sample` instead.
     preview_sample: &'a str,
     cat: &'a Catalog,
-    /// The richest sample record, shown (colored) so the user sees the raw data.
+    /// The richest sample record, shown (colored) so the user sees the raw
+    /// data.
     example: Option<&'a Value>,
 }
 
 /// A discrete `Select` (mode pick, save target) — no live preview needed.
 /// Runs a dialoguer menu. Returns `Ok(Some(i))` for a pick, `Ok(None)` when the
 /// user presses Esc (a soft "back"), and `Err(())` on Ctrl-C (a hard quit).
-fn select(prompt: &str, items: &[String], default: usize) -> Result<Option<usize>, ()> {
+fn select(
+    prompt: &str,
+    items: &[String],
+    default: usize,
+) -> Result<Option<usize>, ()> {
     let default = default.min(items.len().saturating_sub(1));
     let r = Select::with_theme(&theme())
         .with_prompt(prompt)
@@ -135,9 +152,7 @@ fn parse_filter_line(s: &str) -> Vec<String> {
 }
 
 /// Does this input read as a `$`-template (vs a plain field list)?
-fn is_template(s: &str) -> bool {
-    s.contains('$')
-}
+fn is_template(s: &str) -> bool { s.contains('$') }
 
 /// Restore the terminal cursor on both streams (dialoguer hides it on stderr).
 /// Safe to call from a Ctrl-C handler.
@@ -152,12 +167,14 @@ pub fn show_cursor() {
 struct CursorGuard;
 
 impl Drop for CursorGuard {
-    fn drop(&mut self) {
-        show_cursor();
-    }
+    fn drop(&mut self) { show_cursor(); }
 }
 
-pub fn run(sample: String, jlf: PathBuf, mut run_input: RunInput) -> std::io::Result<()> {
+pub fn run(
+    sample: String,
+    jlf: PathBuf,
+    mut run_input: RunInput,
+) -> std::io::Result<()> {
     // Show the cursor again however this returns (normal, `?`, or panic).
     let _cursor = CursorGuard;
     let term = Term::stdout();
@@ -233,7 +250,10 @@ pub fn run(sample: String, jlf: PathBuf, mut run_input: RunInput) -> std::io::Re
             }
             Act::Save => {
                 let _ = ctx.term.clear_screen();
-                println!("{}", style(" jlf it — save a recipe ").black().on_cyan());
+                println!(
+                    "{}",
+                    style(" jlf it — save a recipe ").black().on_cyan()
+                );
                 save_flow(&b)?;
                 let _ = Confirm::with_theme(&theme())
                     .with_prompt("continue")
@@ -253,11 +273,17 @@ fn preview_or_synth(jlf: &Path, b: &Builder, sample: &str) -> (String, bool) {
     let args = colored_args(b);
     let out = preview::run(jlf, &args, sample);
     if out.trim() == "(no matching records)" && !b.filters.is_empty() {
-        let first = sample.lines().find(|l| !l.trim().is_empty()).unwrap_or("{}");
+        let first = sample
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("{}");
         if let Some(line) = synth::synthesize(first, &b.filters) {
             let s = preview::run(jlf, &args, &line);
             let t = s.trim();
-            if !t.is_empty() && t != "(no matching records)" && !t.starts_with("(no output)") {
+            if !t.is_empty()
+                && t != "(no matching records)"
+                && !t.starts_with("(no output)")
+            {
                 return (s, true);
             }
         }
@@ -269,12 +295,21 @@ fn preview_or_synth(jlf: &Path, b: &Builder, sample: &str) -> (String, bool) {
 /// from the original source — re-reading a file in full, or resuming the live
 /// pipe (so a `… -f` stream keeps flowing) — falling back to the sample text.
 /// jlf inherits the terminal, so it colors and flushes per record (live tail).
-fn run_final(jlf: &Path, b: &Builder, sample: &str, input: RunInput) -> std::io::Result<()> {
+fn run_final(
+    jlf: &Path,
+    b: &Builder,
+    sample: &str,
+    input: RunInput,
+) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
 
     println!(
         "\n{}",
-        style(format!("── running: {} · Ctrl-C to stop ──", b.command_line())).dim()
+        style(format!(
+            "── running: {} · Ctrl-C to stop ──",
+            b.command_line()
+        ))
+        .dim()
     );
 
     let mut cmd = Command::new(jlf);
@@ -349,9 +384,9 @@ fn curate_matching(sample: &str, filter_strs: &[String]) -> String {
     sample::curate(&matching, 80)
 }
 
-/// A preview that keeps every record on screen: matching ones in color, the rest
-/// dimmed. Used while editing filters (View mode) so records don't vanish as you
-/// type a not-yet-finished filter.
+/// A preview that keeps every record on screen: matching ones in color, the
+/// rest dimmed. Used while editing filters (View mode) so records don't vanish
+/// as you type a not-yet-finished filter.
 fn preview_dim(jlf: &Path, b: &Builder, sample: &str) -> String {
     let mut args = colored_args(b);
     args.insert(1, "--dim-unmatched".to_owned());
@@ -375,7 +410,8 @@ fn draw_body(
     let (rows, cols) = ctx.term.size();
     let width = (cols as usize).max(20);
     // Budget: title (1) + footer + the command frame (3) + two content frames
-    // (2 border rows each). Whatever's left is split between sample and preview.
+    // (2 border rows each). Whatever's left is split between sample and
+    // preview.
     let content = (rows as usize)
         .saturating_sub(1 + 3 + footer_rows + 4)
         .max(6);
@@ -389,20 +425,37 @@ fn draw_body(
     let preview_h = content.saturating_sub(sample_h).max(3);
 
     // Repaint in place from the top-left. Clearing the screen first blanks it
-    // for a frame, which reads as a flash while typing; instead we move home and
-    // every line erases its own tail (\x1b[K), so the new frame overwrites the
-    // old one directly with nothing ever going blank.
+    // for a frame, which reads as a flash while typing; instead we move home
+    // and every line erases its own tail (\x1b[K), so the new frame
+    // overwrites the old one directly with nothing ever going blank.
     let mut screen = String::from("\x1b[H");
-    line(&mut screen, &style(" jlf it — build a command ").black().on_cyan().to_string());
+    line(
+        &mut screen,
+        &style(" jlf it — build a command ")
+            .black()
+            .on_cyan()
+            .to_string(),
+    );
 
     if let Some(ex) = ctx.example {
-        let lines: Vec<String> = sample::render(ex, highlight).lines().map(String::from).collect();
-        draw_frame(&mut screen, "sample record · matches highlighted", &lines, sample_h, width, sample_scroll);
+        let lines: Vec<String> = sample::render(ex, highlight)
+            .lines()
+            .map(String::from)
+            .collect();
+        draw_frame(
+            &mut screen,
+            "sample record · matches highlighted",
+            &lines,
+            sample_h,
+            width,
+            sample_scroll,
+        );
     }
 
     // Pick the preview source:
     // - Summaries aggregate over the whole sample (counts must be accurate).
-    // - Dim (filter editing) keeps the full sample so matches surface in context.
+    // - Dim (filter editing) keeps the full sample so matches surface in
+    //   context.
     // - A record preview with an active filter curates the *matching* records
     //   (filter first, then dedup) so it shows varied matches, not repeats.
     // - Otherwise, the pre-curated whole-sample view.
@@ -432,8 +485,16 @@ fn draw_body(
     let plines: Vec<String> = pv.lines().map(String::from).collect();
     draw_frame(&mut screen, title, &plines, preview_h, width, 0);
 
-    // The command it builds, framed and near the footer so it's not lost at the top.
-    draw_frame(&mut screen, "command", &[style(b.command_line()).cyan().to_string()], 1, width, 0);
+    // The command it builds, framed and near the footer so it's not lost at the
+    // top.
+    draw_frame(
+        &mut screen,
+        "command",
+        &[style(b.command_line()).cyan().to_string()],
+        1,
+        width,
+        0,
+    );
 
     print!("{screen}");
     let _ = std::io::stdout().flush();
@@ -503,7 +564,9 @@ fn draw_frame(
     let lw = console::measure_text_width(&label);
     line(
         out,
-        &style(format!("└{label}{}┘", "─".repeat(inner.saturating_sub(lw)))).dim().to_string(),
+        &style(format!("└{label}{}┘", "─".repeat(inner.saturating_sub(lw))))
+            .dim()
+            .to_string(),
     );
 }
 
@@ -511,10 +574,11 @@ fn draw_frame(
 /// refreshes on every keystroke. `dim` selects the dimming filter preview;
 /// `complete` drives autocompletion of fields, then operators, then values.
 ///
-/// Suggestions never auto-select: they show dimmed until you press Tab/Shift-Tab
-/// (or ↑/↓), which selects and *fills* successive candidates into the input so
-/// Enter applies immediately. Editing the buffer deselects; Enter always commits
-/// what's shown; Esc exits without applying; ←/→/Home/End move the cursor.
+/// Suggestions never auto-select: they show dimmed until you press
+/// Tab/Shift-Tab (or ↑/↓), which selects and *fills* successive candidates into
+/// the input so Enter applies immediately. Editing the buffer deselects; Enter
+/// always commits what's shown; Esc exits without applying; ←/→/Home/End move
+/// the cursor.
 fn live_edit(
     ctx: &Ctx,
     b: &mut Builder,
@@ -556,8 +620,8 @@ fn live_edit(
             None => (&live, None),
         };
 
-        // Always emit the suggestion + hint lines (blank when none) so the input
-        // row never moves.
+        // Always emit the suggestion + hint lines (blank when none) so the
+        // input row never moves.
         let mut foot = String::new();
         if cands.is_empty() {
             line(&mut foot, "");
@@ -576,7 +640,13 @@ fn live_edit(
                 .collect::<Vec<_>>()
                 .join(" ");
             line(&mut foot, &format!("{} {}", style("⇥").dim(), row));
-            line(&mut foot, &format!("  {}", style("Tab/↑↓ cycle · ⏎ apply · Esc cancel").dim()));
+            line(
+                &mut foot,
+                &format!(
+                    "  {}",
+                    style("Tab/↑↓ cycle · ⏎ apply · Esc cancel").dim()
+                ),
+            );
         }
         line(&mut foot, &style(prompt).cyan().to_string());
         // Input line: erase its tail and everything below it (stale rows from a
@@ -593,8 +663,9 @@ fn live_edit(
 
         match ctx.term.read_key() {
             // Enter always commits what's shown — Tab has already filled any
-            // chosen suggestion, so there's nothing left to accept here. An empty
-            // buffer commits the empty value (e.g. clears a filter).
+            // chosen suggestion, so there's nothing left to accept here. An
+            // empty buffer commits the empty value (e.g. clears a
+            // filter).
             Ok(Key::Enter) => {
                 apply(b, &s);
                 return Ok(());
@@ -603,16 +674,22 @@ fn live_edit(
             Ok(Key::Escape) => return Err(()),
             // PgDn/PgUp scroll the sample-record frame.
             Ok(Key::PageDown) => {
-                sample_scroll = (sample_scroll + 3).min(sample_len.saturating_sub(1));
+                sample_scroll =
+                    (sample_scroll + 3).min(sample_len.saturating_sub(1));
             }
             Ok(Key::PageUp) => sample_scroll = sample_scroll.saturating_sub(3),
-            // Tab/↓ select and fill the next candidate (Shift-Tab/↑ the previous),
-            // cycling the frozen list; the first press selects the first item.
+            // Tab/↓ select and fill the next candidate (Shift-Tab/↑ the
+            // previous), cycling the frozen list; the first press
+            // selects the first item.
             Ok(Key::Tab) | Ok(Key::ArrowDown) => {
-                cycle_step(&mut cycle, &mut buf, &mut pos, complete, ctx.cat, 1);
+                cycle_step(
+                    &mut cycle, &mut buf, &mut pos, complete, ctx.cat, 1,
+                );
             }
             Ok(Key::BackTab) | Ok(Key::ArrowUp) => {
-                cycle_step(&mut cycle, &mut buf, &mut pos, complete, ctx.cat, -1);
+                cycle_step(
+                    &mut cycle, &mut buf, &mut pos, complete, ctx.cat, -1,
+                );
             }
             Ok(Key::Char(c)) => {
                 match c {
@@ -701,7 +778,13 @@ fn cycle_step(
             let filled = repl.len();
             buf.splice(start..end, repl);
             *pos = start + filled;
-            *cycle = Some(Cycle { start, base, cands, idx, filled });
+            *cycle = Some(Cycle {
+                start,
+                base,
+                cands,
+                idx,
+                filled,
+            });
         }
         Some(mut c) => {
             let next = c.idx as isize + delta;
@@ -728,9 +811,7 @@ fn cycle_step(
 /// other character — whitespace, `,`, `.`, filter operators — is a boundary.
 /// This lets Ctrl-W stop at `,`/`.` inside field paths and column lists instead
 /// of wiping the whole line when nothing is space-separated.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+fn is_word_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
 
 /// Delete the word before the cursor: skip the run of boundary chars, then the
 /// preceding run of word chars (so `a.b.c` deletes `c`, then `.b`, then `.a`).
@@ -749,7 +830,12 @@ fn delete_word_back(buf: &mut Vec<char>, pos: &mut usize) {
 /// Compute the token span at the cursor and its ranked completions for `ctx`.
 /// Returns `(start, end, candidates)`; Tab replaces `buf[start..end]` with the
 /// first candidate.
-fn suggestions(ctx: Complete, buf: &[char], pos: usize, cat: &Catalog) -> (usize, usize, Vec<String>) {
+fn suggestions(
+    ctx: Complete,
+    buf: &[char],
+    pos: usize,
+    cat: &Catalog,
+) -> (usize, usize, Vec<String>) {
     match ctx {
         Complete::None => (pos, pos, Vec::new()),
         Complete::Field => {
@@ -777,7 +863,11 @@ fn suggestions(ctx: Complete, buf: &[char], pos: usize, cat: &Catalog) -> (usize
 /// Filter context: locate the word at the cursor and complete its field part,
 /// then operators once the field is exact, then the field's values after an
 /// operator.
-fn filter_suggestions(buf: &[char], pos: usize, cat: &Catalog) -> (usize, usize, Vec<String>) {
+fn filter_suggestions(
+    buf: &[char],
+    pos: usize,
+    cat: &Catalog,
+) -> (usize, usize, Vec<String>) {
     let mut ws = pos;
     while ws > 0 && !buf[ws - 1].is_whitespace() {
         ws -= 1;
@@ -794,7 +884,11 @@ fn filter_suggestions(buf: &[char], pos: usize, cat: &Catalog) -> (usize, usize,
             let val_start = ws + op_at + op_len;
             if pos >= val_start {
                 let token: String = buf[val_start..we].iter().collect();
-                (val_start, we, fields::match_values(cat.values(field), &token, 8))
+                (
+                    val_start,
+                    we,
+                    fields::match_values(cat.values(field), &token, 8),
+                )
             } else {
                 let token: String = word[..op_at].iter().collect();
                 (ws, ws + op_at, fields::match_paths(&cat.paths, &token, 8))
@@ -814,7 +908,8 @@ fn filter_suggestions(buf: &[char], pos: usize, cat: &Catalog) -> (usize, usize,
 
 /// Find the first filter operator in a word, returning `(char index, length)`.
 fn find_op(word: &[char]) -> Option<(usize, usize)> {
-    const OPS2: [[char; 2]; 4] = [['!', '='], ['>', '='], ['<', '='], ['!', '~']];
+    const OPS2: [[char; 2]; 4] =
+        [['!', '='], ['>', '='], ['<', '='], ['!', '~']];
     const OPS1: [char; 4] = ['~', '=', '>', '<'];
     for i in 0..word.len() {
         for op in OPS2 {
@@ -865,7 +960,14 @@ fn live_select(
         line(&mut foot, &style(prompt).cyan().to_string());
         for (i, it) in items.iter().enumerate() {
             if i == sel {
-                line(&mut foot, &format!("{} {}", style("❯").cyan(), style(it).cyan().bold()));
+                line(
+                    &mut foot,
+                    &format!(
+                        "{} {}",
+                        style("❯").cyan(),
+                        style(it).cyan().bold()
+                    ),
+                );
             } else {
                 line(&mut foot, &format!("  {}", style(it).dim()));
             }
@@ -888,8 +990,12 @@ fn live_select(
                 let _ = ctx.term.show_cursor();
                 return Err(());
             }
-            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => sel = (sel + 1) % n,
-            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => sel = (sel + n - 1) % n,
+            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => {
+                sel = (sel + 1) % n
+            }
+            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => {
+                sel = (sel + n - 1) % n
+            }
             Ok(Key::Char(c)) if c.is_ascii_digit() => {
                 let d = (c as usize) - ('0' as usize);
                 if d >= 1 && d <= n {
@@ -932,7 +1038,8 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
     )];
     match b.mode() {
         Mode::View => {
-            let layout = b.template.clone().unwrap_or_else(|| b.fields.join(","));
+            let layout =
+                b.template.clone().unwrap_or_else(|| b.fields.join(","));
             let desc = if layout.is_empty() {
                 "whole record".to_string()
             } else {
@@ -943,18 +1050,26 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
                 format!("Compact — {}", if b.compact { "on" } else { "off" }),
                 Act::ToggleCompact,
             ));
-            m.push((format!("Redact — {}", shown(&b.redact.join(","))), Act::EditRedact));
+            m.push((
+                format!("Redact — {}", shown(&b.redact.join(","))),
+                Act::EditRedact,
+            ));
         }
         Mode::Summarize => {
             let s = format!(
                 "{} {}{}",
                 b.verb.as_deref().unwrap_or("count"),
                 b.field.as_deref().unwrap_or(""),
-                b.by.as_deref().map(|x| format!(" by {x}")).unwrap_or_default(),
+                b.by.as_deref()
+                    .map(|x| format!(" by {x}"))
+                    .unwrap_or_default(),
             );
             m.push((format!("Summary — {}", s.trim()), Act::EditSummary));
             m.push((
-                format!("Output format — {}", shown(b.format.as_deref().unwrap_or(""))),
+                format!(
+                    "Output format — {}",
+                    shown(b.format.as_deref().unwrap_or(""))
+                ),
                 Act::EditOutputFormat,
             ));
         }
@@ -974,7 +1089,10 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
         Mode::Summarize => "summarize",
         Mode::Export => "export",
     };
-    m.push((format!("⇄ Change mode — {}", style(mode).cyan()), Act::ChangeMode));
+    m.push((
+        format!("⇄ Change mode — {}", style(mode).cyan()),
+        Act::ChangeMode,
+    ));
     m.push((style("▶ Run it").green().bold().to_string(), Act::Run));
     m.push((style("✎ Save as a recipe").cyan().to_string(), Act::Save));
     m.push((style("✕ Quit").red().to_string(), Act::Quit));
@@ -986,12 +1104,14 @@ fn menu(b: &Builder) -> Vec<(String, Act)> {
 fn accel(act: Act) -> char {
     match act {
         Act::EditFilters => 'f',
-        Act::EditView => 't',     // Template / fields (View only)
+        Act::EditView => 't', // Template / fields (View only)
         Act::ToggleCompact => 'c',
         Act::EditRedact => 'd',
         Act::EditSummary => 'y',
         Act::EditOutputFormat => 'o',
-        Act::EditExport => 't',   // Table (Export only) — never coexists with EditView
+        // Table export never coexists with template editing, so both can use
+        // `t`.
+        Act::EditExport => 't',
         Act::ChangeMode => 'm',
         Act::Run => 'r',
         Act::Save => 's',
@@ -1007,9 +1127,14 @@ enum Pick {
 }
 
 /// The main menu: draws the frames plus the action list, each tagged with its
-/// one-key accelerator. Enter picks the highlight; pressing an accelerator (or a
-/// 1-based digit) jumps straight to that item; ↑↓/jk/Tab move; Esc backs out.
-fn menu_pick(ctx: &Ctx, b: &Builder, items: &[(String, Act)], start: usize) -> Pick {
+/// one-key accelerator. Enter picks the highlight; pressing an accelerator (or
+/// a 1-based digit) jumps straight to that item; ↑↓/jk/Tab move; Esc backs out.
+fn menu_pick(
+    ctx: &Ctx,
+    b: &Builder,
+    items: &[(String, Act)],
+    start: usize,
+) -> Pick {
     let accels: Vec<char> = items.iter().map(|(_, a)| accel(*a)).collect();
     let n = items.len();
     let mut sel = start.min(n.saturating_sub(1));
@@ -1024,10 +1149,22 @@ fn menu_pick(ctx: &Ctx, b: &Builder, items: &[(String, Act)], start: usize) -> P
             if i == sel {
                 line(
                     &mut foot,
-                    &format!("{} {} {}", style("❯").cyan(), style(tag).cyan().bold(), style(label).cyan().bold()),
+                    &format!(
+                        "{} {} {}",
+                        style("❯").cyan(),
+                        style(tag).cyan().bold(),
+                        style(label).cyan().bold()
+                    ),
                 );
             } else {
-                line(&mut foot, &format!("  {} {}", style(tag).yellow(), style(label).dim()));
+                line(
+                    &mut foot,
+                    &format!(
+                        "  {} {}",
+                        style(tag).yellow(),
+                        style(label).dim()
+                    ),
+                );
             }
         }
         foot.push_str(&format!(
@@ -1046,8 +1183,12 @@ fn menu_pick(ctx: &Ctx, b: &Builder, items: &[(String, Act)], start: usize) -> P
                 let _ = ctx.term.show_cursor();
                 return Pick::Back;
             }
-            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => sel = (sel + 1) % n,
-            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => sel = (sel + n - 1) % n,
+            Ok(Key::ArrowDown | Key::Tab | Key::Char('j')) if n > 0 => {
+                sel = (sel + 1) % n
+            }
+            Ok(Key::ArrowUp | Key::BackTab | Key::Char('k')) if n > 0 => {
+                sel = (sel + n - 1) % n
+            }
             // A 1-based digit jumps straight to that item.
             Ok(Key::Char(c)) if c.is_ascii_digit() => {
                 let d = (c as usize).wrapping_sub('1' as usize);
@@ -1096,8 +1237,9 @@ fn start() -> Option<Builder> {
 
 fn edit_filters(ctx: &Ctx, b: &mut Builder) -> Prompt {
     let initial = b.filters.join(" ");
-    // Dim (rather than drop) non-matching records while editing a View filter, so
-    // the log stays on screen as the half-typed filter matches nothing yet.
+    // Dim (rather than drop) non-matching records while editing a View filter,
+    // so the log stays on screen as the half-typed filter matches nothing
+    // yet.
     let dim = matches!(b.mode(), Mode::View);
     live_edit(
         ctx,
@@ -1115,7 +1257,9 @@ fn edit_view(ctx: &Ctx, b: &mut Builder) -> Prompt {
     live_edit(
         ctx,
         b,
-        "Which fields to show on each line? A comma list like  timestamp,level,message  — or blank to show the whole record. (Advanced: a $template like  $level $message.)",
+        "Which fields to show on each line? A comma list like  \
+         timestamp,level,message  — or blank to show the whole record. \
+         (Advanced: a $template like  $level $message.)",
         &initial,
         false,
         Complete::List,
@@ -1140,7 +1284,8 @@ fn edit_redact(ctx: &Ctx, b: &mut Builder) -> Prompt {
     live_edit(
         ctx,
         b,
-        "Redact fields — names or paths like  token, fields.message, *.email  (blank to clear)",
+        "Redact fields — names or paths like  token, fields.message, *.email  \
+         (blank to clear)",
         &initial,
         false,
         Complete::List,
@@ -1150,7 +1295,10 @@ fn edit_redact(ctx: &Ctx, b: &mut Builder) -> Prompt {
 
 fn edit_summary(ctx: &Ctx, b: &mut Builder) {
     const VERBS: [&str; 4] = ["count", "stats", "top", "uniq"];
-    let cur = VERBS.iter().position(|v| Some(*v) == b.verb.as_deref()).unwrap_or(0);
+    let cur = VERBS
+        .iter()
+        .position(|v| Some(*v) == b.verb.as_deref())
+        .unwrap_or(0);
     // Esc on any step cancels the whole flow (back to the menu), rather than
     // advancing to the next step.
     if live_select(ctx, b, "Which summary?", &VERBS, cur, |b, i| {
@@ -1178,23 +1326,38 @@ fn edit_summary(ctx: &Ctx, b: &mut Builder) {
 
     if verb == "top" {
         let n0 = b.n.map(|n| n.to_string()).unwrap_or_default();
-        if live_edit(ctx, b, "How many (top N)?", &n0, false, Complete::None, |b, s| {
-            b.n = s.trim().parse().ok()
-        })
+        if live_edit(
+            ctx,
+            b,
+            "How many (top N)?",
+            &n0,
+            false,
+            Complete::None,
+            |b, s| b.n = s.trim().parse().ok(),
+        )
         .is_err()
         {
             return;
         }
     }
     let by0 = b.by.clone().unwrap_or_default();
-    let _ = live_edit(ctx, b, "Group by a field? (blank to skip)", &by0, false, Complete::Field, |b, s| {
-        b.by = (!s.trim().is_empty()).then(|| s.trim().to_owned())
-    });
+    let _ = live_edit(
+        ctx,
+        b,
+        "Group by a field? (blank to skip)",
+        &by0,
+        false,
+        Complete::Field,
+        |b, s| b.by = (!s.trim().is_empty()).then(|| s.trim().to_owned()),
+    );
 }
 
 fn edit_export(ctx: &Ctx, b: &mut Builder) {
     const FMTS: [&str; 3] = ["csv", "tsv", "md"];
-    let cur = FMTS.iter().position(|v| Some(*v) == b.format.as_deref()).unwrap_or(0);
+    let cur = FMTS
+        .iter()
+        .position(|v| Some(*v) == b.format.as_deref())
+        .unwrap_or(0);
     // Esc on the format picker cancels the whole flow instead of advancing to
     // the columns editor.
     if live_select(ctx, b, "Table format?", &FMTS, cur, |b, i| {
@@ -1235,7 +1398,10 @@ fn save_flow(b: &Builder) -> std::io::Result<()> {
             return Ok(());
         };
         let name = name.trim().to_owned();
-        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             break name;
         }
@@ -1255,7 +1421,8 @@ fn save_flow(b: &Builder) -> std::io::Result<()> {
         println!(
             "{}",
             style(format!(
-                "  note: [recipe.{name}] already existed — appended another; edit to keep one"
+                "  note: [recipe.{name}] already existed — appended another; \
+                 edit to keep one"
             ))
             .yellow()
         );
@@ -1265,7 +1432,10 @@ fn save_flow(b: &Builder) -> std::io::Result<()> {
         style("✓ saved").green(),
         style(format!("@{name} → {}", target.path.display())).dim()
     );
-    println!("{}", style(format!("  run it any time with: jlf @{name}")).dim());
+    println!(
+        "{}",
+        style(format!("  run it any time with: jlf @{name}")).dim()
+    );
     Ok(())
 }
 
@@ -1281,12 +1451,15 @@ mod tests {
             vec!["fields.message~Build mode: DEBUG"]
         );
         // Each `field op value` token starts a new filter.
-        assert_eq!(
-            parse_filter_line("level=INFO status>=500"),
-            vec!["level=INFO", "status>=500"]
-        );
+        assert_eq!(parse_filter_line("level=INFO status>=500"), vec![
+            "level=INFO",
+            "status>=500"
+        ]);
         // A spaced value followed by another filter.
-        assert_eq!(parse_filter_line("msg~a b level=INFO"), vec!["msg~a b", "level=INFO"]);
+        assert_eq!(parse_filter_line("msg~a b level=INFO"), vec![
+            "msg~a b",
+            "level=INFO"
+        ]);
     }
 
     fn ctrl_w(s: &str) -> String {
@@ -1300,10 +1473,17 @@ mod tests {
 
     #[test]
     fn ctrl_w_stops_at_path_and_list_boundaries() {
-        // Dotted path: peel one segment at a time, not the whole line. A leading
-        // boundary is consumed with the word it precedes (standard readline).
-        assert_eq!(ctrl_w("level,fields.message,span.method"), "level,fields.message,span.");
-        assert_eq!(ctrl_w("level,fields.message,span."), "level,fields.message,");
+        // Dotted path: peel one segment at a time, not the whole line. A
+        // leading boundary is consumed with the word it precedes
+        // (standard readline).
+        assert_eq!(
+            ctrl_w("level,fields.message,span.method"),
+            "level,fields.message,span."
+        );
+        assert_eq!(
+            ctrl_w("level,fields.message,span."),
+            "level,fields.message,"
+        );
         assert_eq!(ctrl_w("level,fields.message,"), "level,fields.");
         // Whitespace still works; underscores stay part of a word.
         assert_eq!(ctrl_w("ts level user_id"), "ts level ");

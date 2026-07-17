@@ -2,8 +2,8 @@ use color_eyre::eyre::{eyre, Result};
 
 /// Inline `${@name}` / `${?@name}` recipe includes in a `$`-DSL template,
 /// expanding each to the named variable's template (recursively). Everything
-/// else — fields, `$( … )` repetitions, `$if( … )` / `$match( … )` blocks — passes through
-/// untouched for the formatter to parse.
+/// else — fields, `$( … )` repetitions, `$if( … )` / `$match( … )` blocks —
+/// passes through untouched for the formatter to parse.
 pub fn expanded_format(format: &str, variables: &[(String, String)]) -> String {
     let mut out = String::new();
     expand_into(&mut out, format, variables, 0);
@@ -11,14 +11,22 @@ pub fn expanded_format(format: &str, variables: &[(String, String)]) -> String {
 }
 
 #[inline]
-pub fn get_variable<'a>(variables: &'a [(String, String)], key: &str) -> Result<&'a str> {
+pub fn get_variable<'a>(
+    variables: &'a [(String, String)],
+    key: &str,
+) -> Result<&'a str> {
     variables
         .iter()
         .find_map(|(k, v)| (k == key).then_some(v.as_str()))
         .ok_or_else(|| eyre!("Variable doesn't exist: {key}"))
 }
 
-fn expand_into(out: &mut String, input: &str, variables: &[(String, String)], depth: usize) {
+fn expand_into(
+    out: &mut String,
+    input: &str,
+    variables: &[(String, String)],
+    depth: usize,
+) {
     if depth > 64 {
         out.push_str(input); // cycle guard
         return;
@@ -39,15 +47,24 @@ fn expand_into(out: &mut String, input: &str, variables: &[(String, String)], de
                         let after = i + 2 + rel + 1;
                         let trimmed = content.trim();
                         if let Some(name) = trimmed.strip_prefix("?@") {
-                            if let Ok(val) = get_variable(variables, name.trim()) {
+                            if let Ok(val) =
+                                get_variable(variables, name.trim())
+                            {
                                 let mut inner = String::new();
-                                expand_into(&mut inner, val, variables, depth + 1);
+                                expand_into(
+                                    &mut inner,
+                                    val,
+                                    variables,
+                                    depth + 1,
+                                );
                                 out.push_str(&make_optional(&inner));
                             }
                             i = after;
                             continue;
                         } else if let Some(name) = trimmed.strip_prefix('@') {
-                            if let Ok(val) = get_variable(variables, name.trim()) {
+                            if let Ok(val) =
+                                get_variable(variables, name.trim())
+                            {
                                 expand_into(out, val, variables, depth + 1);
                             }
                             i = after;

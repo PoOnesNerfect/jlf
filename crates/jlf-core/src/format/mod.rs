@@ -17,8 +17,8 @@ pub enum Field {
     Names(FieldNames),
     Whole,
     Rest,
-    /// A quoted literal (`${"text":mods}`): constant text rendered with the arg's
-    /// modifiers, so raw text can be styled/escaped like a value.
+    /// A quoted literal (`${"text":mods}`): constant text rendered with the
+    /// arg's modifiers, so raw text can be styled/escaped like a value.
     Literal(String),
     /// `$value` inside a `$( … )` repetition: the current entry's value.
     ColValue,
@@ -57,8 +57,9 @@ pub fn column(name: impl Into<String>) -> Column {
 pub struct Formatter {
     pieces: Vec<Piece>,
     args: Vec<Arg>,
-    /// Whether any arg is an optional `{?field}` — gates the (slightly costlier)
-    /// whitespace-collapsing render path so plain templates pay nothing.
+    /// Whether any arg is an optional `{?field}` — gates the (slightly
+    /// costlier) whitespace-collapsing render path so plain templates pay
+    /// nothing.
     has_optional: bool,
     /// Columns for bare `$( … )` repetition (from `-f`/args); empty otherwise.
     columns: Vec<Column>,
@@ -117,8 +118,9 @@ pub enum Piece {
     ElseCond(Cond, usize),
     Else,
     CondEnd,
-    /// Start of a `${match path}` block: `path` is the subject arg. The subject's
-    /// value is bound to `$value` for the arms in between, up to `MatchEnd`.
+    /// Start of a `${match path}` block: `path` is the subject arg. The
+    /// subject's value is bound to `$value` for the arms in between, up to
+    /// `MatchEnd`.
     MatchStart(usize),
     /// End of a `${match … }` block.
     MatchEnd,
@@ -144,12 +146,14 @@ pub enum Cond {
     If,
     Has,
     IfConfig(bool),
-    /// `$if(field OP literal => …)` — compare the field's scalar value against a
-    /// literal. Numeric when both sides parse as numbers, else lexicographic.
+    /// `$if(field OP literal => …)` — compare the field's scalar value against
+    /// a literal. Numeric when both sides parse as numbers, else
+    /// lexicographic.
     Cmp(CmpOp, String),
-    /// A `${match}` arm: matches when the bound subject (`$value`) satisfies any
-    /// of the listed tests. An empty list is the `_` wildcard — it matches any
-    /// present (non-null) value, so a missing subject renders nothing.
+    /// A `${match}` arm: matches when the bound subject (`$value`) satisfies
+    /// any of the listed tests. An empty list is the `_` wildcard — it
+    /// matches any present (non-null) value, so a missing subject renders
+    /// nothing.
     Arm(Vec<ArmTest>),
 }
 
@@ -190,10 +194,11 @@ pub struct Format {
     pub compact: bool,
     pub is_json: bool,
     pub indent: usize,
-    // `{?field}`: when this field renders empty, collapse one adjacent space so
-    // an absent field leaves no stray gap.
+    // `{?field}`: when this field renders empty, collapse one adjacent space
+    // so an absent field leaves no stray gap.
     pub optional: bool,
-    // escape applied to interpolated values (custom output formats), e.g. HTML.
+    // escape applied to interpolated values (custom output formats), e.g.
+    // HTML.
     pub escape: Escape,
     pub markup_styles: MarkupStyles,
 }
@@ -207,8 +212,8 @@ pub enum Escape {
     #[default]
     None,
     Html,
-    /// RFC-4180 CSV: wrap in quotes when the cell contains `"`, a newline, or a
-    /// comma; double any inner quotes.
+    /// RFC-4180 CSV: wrap in quotes when the cell contains `"`, a newline, or
+    /// a comma; double any inner quotes.
     Csv,
     /// TSV: replace tabs and newlines with spaces.
     Tsv,
@@ -247,18 +252,31 @@ mod dsl_tests {
 
     #[test]
     fn bare_field_and_path() {
-        assert_eq!(render("$level $ts", &[], r#"{"level":"INFO","ts":"1"}"#), "INFO 1");
+        assert_eq!(
+            render("$level $ts", &[], r#"{"level":"INFO","ts":"1"}"#),
+            "INFO 1"
+        );
         assert_eq!(render("${user.id}", &[], r#"{"user":{"id":"7"}}"#), "7");
     }
 
     #[test]
     fn flattened_dotted_key_falls_back() {
         // A literal dotted key resolves when there's no matching nesting.
-        assert_eq!(render("${fields.log.file}", &[], r#"{"fields":{"log.file":"/p"}}"#), "/p");
+        assert_eq!(
+            render(
+                "${fields.log.file}",
+                &[],
+                r#"{"fields":{"log.file":"/p"}}"#
+            ),
+            "/p"
+        );
         // A top-level flattened key too.
         assert_eq!(render("${a.b}", &[], r#"{"a.b":"flat"}"#), "flat");
         // Real nesting still wins over a same-named flattened key.
-        assert_eq!(render("${a.b}", &[], r#"{"a":{"b":"nested"},"a.b":"flat"}"#), "nested");
+        assert_eq!(
+            render("${a.b}", &[], r#"{"a":{"b":"nested"},"a.b":"flat"}"#),
+            "nested"
+        );
     }
 
     #[test]
@@ -278,9 +296,12 @@ mod dsl_tests {
     #[test]
     fn malformed_repetition_errors_and_is_not_swallowed() {
         // An operator-less `$name( … )` must error even when a valid repetition
-        // follows on the next line — previously the bare-separator scan absorbed
-        // the following block, silently rendering nothing.
-        assert!(Formatter::new("$key(a => b)\n$fields( $key )*", true, false).is_err());
+        // follows on the next line — previously the bare-separator scan
+        // absorbed the following block, silently rendering nothing.
+        assert!(
+            Formatter::new("$key(a => b)\n$fields( $key )*", true, false)
+                .is_err()
+        );
         // A real bare separator right after `)` still parses.
         assert!(Formatter::new("$cols( $key ),*", true, false).is_ok());
     }
@@ -288,11 +309,19 @@ mod dsl_tests {
     #[test]
     fn column_rep_csv() {
         assert_eq!(
-            render(r#"$cols( $key ),*"#, &["ts", "level"], r#"{"ts":"1","level":"INFO"}"#),
+            render(
+                r#"$cols( $key ),*"#,
+                &["ts", "level"],
+                r#"{"ts":"1","level":"INFO"}"#
+            ),
             "ts,level"
         );
         assert_eq!(
-            render(r#"$cols( ${value:csv} ),*"#, &["ts", "level"], r#"{"ts":"1","level":"a,b"}"#),
+            render(
+                r#"$cols( ${value:csv} ),*"#,
+                &["ts", "level"],
+                r#"{"ts":"1","level":"a,b"}"#
+            ),
             "1,\"a,b\""
         );
     }
@@ -302,15 +331,27 @@ mod dsl_tests {
         // A nested object in a table cell must stay on one line and be quoted
         // for the dialect — never pretty-printed across rows.
         assert_eq!(
-            render(r#"$cols( ${value:csv} ),*"#, &["fields"], r#"{"fields":{"m":"a,b","n":5}}"#),
+            render(
+                r#"$cols( ${value:csv} ),*"#,
+                &["fields"],
+                r#"{"fields":{"m":"a,b","n":5}}"#
+            ),
             r#""{""m"":""a,b"",""n"":5}""#
         );
         assert_eq!(
-            render(r#"$cols( ${value:md} )" | "*"#, &["fields"], r#"{"fields":{"m":"x"}}"#),
+            render(
+                r#"$cols( ${value:md} )" | "*"#,
+                &["fields"],
+                r#"{"fields":{"m":"x"}}"#
+            ),
             r#"{"m":"x"}"#
         );
         assert_eq!(
-            render(r#"$cols( ${value:tsv} )\t*"#, &["fields"], r#"{"fields":{"m":"x"}}"#),
+            render(
+                r#"$cols( ${value:tsv} )\t*"#,
+                &["fields"],
+                r#"{"fields":{"m":"x"}}"#
+            ),
             r#"{"m":"x"}"#
         );
     }
@@ -326,7 +367,11 @@ mod dsl_tests {
     #[test]
     fn md_row_with_quoted_sep() {
         assert_eq!(
-            render(r#"| $cols( ${value:md} )" | "* |"#, &["a", "b"], r#"{"a":"x","b":"y"}"#),
+            render(
+                r#"| $cols( ${value:md} )" | "* |"#,
+                &["a", "b"],
+                r#"{"a":"x","b":"y"}"#
+            ),
             "| x | y |"
         );
     }
@@ -334,14 +379,21 @@ mod dsl_tests {
     #[test]
     fn path_rep_flatten_fields() {
         assert_eq!(
-            render(r#"$fields( $key=$value )" "*"#, &[], r#"{"fields":{"dir":"/d","n":5}}"#),
+            render(
+                r#"$fields( $key=$value )" "*"#,
+                &[],
+                r#"{"fields":{"dir":"/d","n":5}}"#
+            ),
             "dir=/d n=5"
         );
     }
 
     #[test]
     fn conditional_and_optional() {
-        assert_eq!(render("$if(warn => W)$else(ok)", &[], r#"{"warn":true}"#), "W");
+        assert_eq!(
+            render("$if(warn => W)$else(ok)", &[], r#"{"warn":true}"#),
+            "W"
+        );
         assert_eq!(render("a${?missing} b", &[], r#"{}"#), "ab");
     }
 
@@ -355,8 +407,14 @@ mod dsl_tests {
 
     #[test]
     fn if_comparison_operators() {
-        assert_eq!(render("$if(n == 200 => y)$else(n)", &[], r#"{"n":200}"#), "y");
-        assert_eq!(render("$if(n != 200 => y)$else(n)", &[], r#"{"n":201}"#), "y");
+        assert_eq!(
+            render("$if(n == 200 => y)$else(n)", &[], r#"{"n":200}"#),
+            "y"
+        );
+        assert_eq!(
+            render("$if(n != 200 => y)$else(n)", &[], r#"{"n":201}"#),
+            "y"
+        );
         assert_eq!(render("$if(n <= 3 => y)$else(n)", &[], r#"{"n":3}"#), "y");
         assert_eq!(render("$if(n < 3 => y)$else(n)", &[], r#"{"n":3}"#), "n");
     }
@@ -377,15 +435,25 @@ mod dsl_tests {
     #[test]
     fn has_vs_if_and_config() {
         // `$has` tests existence, `$if` truthiness — so a present `0` differs
-        assert_eq!(render("$has(body => has)$else(no)", &[], r#"{"body":0}"#), "has");
-        assert_eq!(render("$if(body => yes)$else(no)", &[], r#"{"body":0}"#), "no");
+        assert_eq!(
+            render("$has(body => has)$else(no)", &[], r#"{"body":0}"#),
+            "has"
+        );
+        assert_eq!(
+            render("$if(body => yes)$else(no)", &[], r#"{"body":0}"#),
+            "no"
+        );
         // an all-whitespace branch body is kept as an intentional separator
-        assert_eq!(render("a$config(compact =>  )$else(\n)b", &[], r#"{}"#), "a\nb");
+        assert_eq!(
+            render("a$config(compact =>  )$else(\n)b", &[], r#"{}"#),
+            "a\nb"
+        );
     }
 
     #[test]
     fn match_ranges() {
-        let t = "$match(status $when(500.. => 5xx) $when(400..500 => 4xx) $else(ok))";
+        let t = "$match(status $when(500.. => 5xx) $when(400..500 => 4xx) \
+                 $else(ok))";
         assert_eq!(render(t, &[], r#"{"status":200}"#), "ok");
         assert_eq!(render(t, &[], r#"{"status":404}"#), "4xx");
         assert_eq!(render(t, &[], r#"{"status":503}"#), "5xx");
@@ -411,7 +479,8 @@ mod dsl_tests {
     #[test]
     fn match_multiline_layout() {
         // decorative line breaks + indentation around arms are dropped
-        let t = "$match(lvl\n  $when(\"INFO\" => info)\n  $when(\"ERROR\" => err)\n)";
+        let t = "$match(lvl\n  $when(\"INFO\" => info)\n  $when(\"ERROR\" => \
+                 err)\n)";
         assert_eq!(render(t, &[], r#"{"lvl":"INFO"}"#), "info");
         assert_eq!(render(t, &[], r#"{"lvl":"ERROR"}"#), "err");
     }
@@ -419,13 +488,15 @@ mod dsl_tests {
     #[test]
     fn match_on_repetition_value() {
         // `$match(value …)` inside `$( … )` dispatches on each entry's value
-        let t = r#"$( $key=$match(value $when(>=100 => big) $else(small)) )" "*"#;
+        let t =
+            r#"$( $key=$match(value $when(>=100 => big) $else(small)) )" "*"#;
         assert_eq!(render(t, &[], r#"{"a":5,"b":500}"#), "a=small b=big");
     }
 
     #[test]
     fn nested_match() {
-        let t = "$match(s $when(>=500 => $match(value $when(==503 => down) $else(5xx))) $else(ok))";
+        let t = "$match(s $when(>=500 => $match(value $when(==503 => down) \
+                 $else(5xx))) $else(ok))";
         assert_eq!(render(t, &[], r#"{"s":200}"#), "ok");
         assert_eq!(render(t, &[], r#"{"s":500}"#), "5xx");
         assert_eq!(render(t, &[], r#"{"s":503}"#), "down");
@@ -440,7 +511,11 @@ mod dsl_tests {
     #[test]
     fn value_path_in_array_rep() {
         assert_eq!(
-            render(r#"$spans( [${value.name}] )" "*"#, &[], r#"{"spans":[{"name":"a"},{"name":"b"}]}"#),
+            render(
+                r#"$spans( [${value.name}] )" "*"#,
+                &[],
+                r#"{"spans":[{"name":"a"},{"name":"b"}]}"#
+            ),
             "[a] [b]"
         );
     }
@@ -448,8 +523,11 @@ mod dsl_tests {
     fn rep_skips_consumed_key() {
         // referencing fields.message first drops it from the $fields flatten
         assert_eq!(
-            render(r#"${fields.message} | $fields( $key=$value )" "*"#, &[],
-                r#"{"fields":{"message":"hi","a":"1","b":"2"}}"#),
+            render(
+                r#"${fields.message} | $fields( $key=$value )" "*"#,
+                &[],
+                r#"{"fields":{"message":"hi","a":"1","b":"2"}}"#
+            ),
             "hi | a=1 b=2"
         );
     }
@@ -464,13 +542,19 @@ mod dsl_tests {
     #[test]
     fn if_guard_block() {
         let t = r#"${level}$if(span.method => -> ${span.method})"#;
-        assert_eq!(render(t, &[], r#"{"level":"INFO","span":{"method":"GET"}}"#), "INFO-> GET");
+        assert_eq!(
+            render(t, &[], r#"{"level":"INFO","span":{"method":"GET"}}"#),
+            "INFO-> GET"
+        );
         assert_eq!(render(t, &[], r#"{"level":"WARN"}"#), "WARN");
     }
     #[test]
     fn quoted_literal_renders_constant_text() {
         // A quoted hole is literal text, not a field lookup.
-        assert_eq!(render(r#"${"hi"} ${x}"#, &[], r#"{"x":"there"}"#), "hi there");
+        assert_eq!(
+            render(r#"${"hi"} ${x}"#, &[], r#"{"x":"there"}"#),
+            "hi there"
+        );
         // Modifiers apply to it (escaping is observable without color).
         assert_eq!(render(r#"${"a,b":csv}"#, &[], r#"{}"#), "\"a,b\"");
         // A colon inside the literal is not a modifier separator.
@@ -493,14 +577,19 @@ mod dsl_tests {
         // A numeric value with a unit suffix must compare by magnitude, not
         // lexicographically. `$when(<150)` and a `$if` ordering op both apply.
         let arm = r#"$match(fields.latency $when(<150 => lo) $else(hi))"#;
-        let lo = |v: &str| render(arm, &[], &format!(r#"{{"fields":{{"latency":"{v}"}}}}"#));
+        let lo = |v: &str| {
+            render(arm, &[], &format!(r#"{{"fields":{{"latency":"{v}"}}}}"#))
+        };
         assert_eq!(lo("17.881 ms"), "lo"); // was "hi" (lexicographic bug)
         assert_eq!(lo("8.972 ms"), "lo"); // was "hi"
         assert_eq!(lo("144.306 ms"), "lo");
         assert_eq!(lo("236.643 ms"), "hi");
         // Ranges tolerate the suffix too.
         let rng = r#"$match(fields.latency $when(0..150 => lo) $else(hi))"#;
-        assert_eq!(render(rng, &[], r#"{"fields":{"latency":"17.881 ms"}}"#), "lo");
+        assert_eq!(
+            render(rng, &[], r#"{"fields":{"latency":"17.881 ms"}}"#),
+            "lo"
+        );
         // `$if` ordering op.
         let cond = r#"$if(d > 100 => big)$else(small)"#;
         assert_eq!(render(cond, &[], r#"{"d":"17.881 ms"}"#), "small");
@@ -516,4 +605,3 @@ mod dsl_tests {
         assert_eq!(render(t, &[], r#"{"code":"2yy"}"#), "no");
     }
 }
-

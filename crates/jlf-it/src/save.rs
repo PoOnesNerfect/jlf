@@ -1,7 +1,6 @@
 //! Persisting a built command as a `[recipe.NAME]` block.
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use etcetera::{choose_base_strategy, BaseStrategy};
 
@@ -11,8 +10,8 @@ pub struct SaveTarget {
     pub path: PathBuf,
 }
 
-/// The places a recipe can be saved: the workspace `jlf.toml`/`.jlf.toml` (if one
-/// exists, else a new `./.jlf.toml`) and the user config `jlf/config.toml`.
+/// The places a recipe can be saved: the workspace `jlf.toml`/`.jlf.toml` (if
+/// one exists, else a new `./.jlf.toml`) and the user config `jlf/config.toml`.
 pub fn targets() -> Vec<SaveTarget> {
     let mut out = Vec::new();
 
@@ -40,7 +39,11 @@ pub fn targets() -> Vec<SaveTarget> {
 
 /// Append a recipe block to `path` (creating the file and parent dirs). Returns
 /// whether an existing `[recipe.NAME]` was detected (so the caller can warn).
-pub fn append_recipe(path: &PathBuf, name: &str, block: &str) -> std::io::Result<bool> {
+pub fn append_recipe(
+    path: &PathBuf,
+    name: &str,
+    block: &str,
+) -> std::io::Result<bool> {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             fs::create_dir_all(dir)?;

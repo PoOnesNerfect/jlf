@@ -29,9 +29,7 @@ pub struct Digest {
 }
 
 impl Default for Digest {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Digest {
@@ -70,15 +68,12 @@ impl Digest {
         }
     }
 
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-    pub fn min(&self) -> f64 {
-        self.min
-    }
-    pub fn max(&self) -> f64 {
-        self.max
-    }
+    pub fn count(&self) -> u64 { self.count }
+
+    pub fn min(&self) -> f64 { self.min }
+
+    pub fn max(&self) -> f64 { self.max }
+
     pub fn mean(&self) -> f64 {
         if self.count == 0 {
             f64::NAN
@@ -88,9 +83,7 @@ impl Digest {
     }
 
     /// Whether percentiles are still exact (`true`) or sketch-approximated.
-    pub fn is_exact(&self) -> bool {
-        self.sketch.is_none()
-    }
+    pub fn is_exact(&self) -> bool { self.sketch.is_none() }
 
     /// The `q`-quantile (`0.0..=1.0`). Exact while under the cap.
     pub fn quantile(&mut self, q: f64) -> f64 {
@@ -100,8 +93,7 @@ impl Digest {
         match &mut self.sketch {
             Some(s) => s.quantile(q).clamp(self.min, self.max),
             None => {
-                self.exact
-                    .sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+                self.exact.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
                 let i = (((self.exact.len() - 1) as f64) * q).round() as usize;
                 self.exact[i]
             }
@@ -151,7 +143,8 @@ impl TDigest {
         if self.buffer.is_empty() {
             return;
         }
-        let mut pts: Vec<Centroid> = Vec::with_capacity(self.centroids.len() + self.buffer.len());
+        let mut pts: Vec<Centroid> =
+            Vec::with_capacity(self.centroids.len() + self.buffer.len());
         pts.append(&mut self.centroids);
         for &x in &self.buffer {
             pts.push(Centroid { mean: x, weight: 1.0 });
@@ -206,7 +199,8 @@ impl TDigest {
         }
         for i in 1..cs.len() {
             if target <= centers[i] {
-                let t = (target - centers[i - 1]) / (centers[i] - centers[i - 1]);
+                let t =
+                    (target - centers[i - 1]) / (centers[i] - centers[i - 1]);
                 return cs[i - 1].mean + (cs[i].mean - cs[i - 1].mean) * t;
             }
         }
@@ -215,8 +209,8 @@ impl TDigest {
 }
 
 /// The t-digest scale function `k1`: a centroid spanning cumulative quantiles
-/// `[q0, q1]` is allowed while `k(q1) - k(q0) <= 1`, which keeps centroids small
-/// near 0 and 1 (accurate tails) and larger in the middle.
+/// `[q0, q1]` is allowed while `k(q1) - k(q0) <= 1`, which keeps centroids
+/// small near 0 and 1 (accurate tails) and larger in the middle.
 fn k(q: f64, delta: f64) -> f64 {
     let q = q.clamp(0.0, 1.0);
     delta / (2.0 * PI) * (2.0 * q - 1.0).asin()

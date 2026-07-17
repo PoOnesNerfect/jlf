@@ -88,8 +88,12 @@ impl Filter {
         match self.op {
             Op::Eq => self.values.iter().any(|v| v == field),
             Op::Ne => self.values.iter().all(|v| v != field),
-            Op::Contains => self.values.iter().any(|v| field.contains(v.as_str())),
-            Op::NotContains => self.values.iter().all(|v| !field.contains(v.as_str())),
+            Op::Contains => {
+                self.values.iter().any(|v| field.contains(v.as_str()))
+            }
+            Op::NotContains => {
+                self.values.iter().all(|v| !field.contains(v.as_str()))
+            }
             Op::Gt | Op::Lt | Op::Ge | Op::Le => self.values.iter().any(|v| {
                 order_compare(field, v).is_some_and(|ord| match self.op {
                     Op::Gt => ord.is_gt(),
@@ -127,10 +131,11 @@ pub fn parse_number(s: &str) -> Option<f64> {
 }
 
 /// Order two field values for a `>`/`<`/`>=`/`<=` comparison. Tries numbers
-/// first (via [`parse_number`], so units are tolerated); if both aren't numeric,
-/// falls back to timestamps (via [`parse_datetime`]), so `ts>2026-07-11T15:00Z`
-/// compares chronologically. Returns `None` when the two values aren't
-/// comparable in either domain, which never satisfies an ordering op.
+/// first (via [`parse_number`], so units are tolerated); if both aren't
+/// numeric, falls back to timestamps (via [`parse_datetime`]), so
+/// `ts>2026-07-11T15:00Z` compares chronologically. Returns `None` when the two
+/// values aren't comparable in either domain, which never satisfies an ordering
+/// op.
 fn order_compare(field: &str, value: &str) -> Option<std::cmp::Ordering> {
     if let (Some(a), Some(b)) = (parse_number(field), parse_number(value)) {
         return a.partial_cmp(&b);
@@ -142,22 +147,26 @@ fn order_compare(field: &str, value: &str) -> Option<std::cmp::Ordering> {
 }
 
 /// Parse a timestamp to nanoseconds since the Unix epoch, for chronological
-/// ordering of `>`/`<` filters. Covers the common log formats without a datetime
-/// dependency:
+/// ordering of `>`/`<` filters. Covers the common log formats without a
+/// datetime dependency:
 ///
 /// - ISO 8601 / RFC 3339: `2026-07-11T15:11:48.968666Z`, `2026-07-11 15:11:48`,
-///   `2026-07-11T15:11:48+02:00`, `2026/07/11 15:04:05`, `2026-07-11` (date only)
+///   `2026-07-11T15:11:48+02:00`, `2026/07/11 15:04:05`, `2026-07-11` (date
+///   only)
 /// - log4j comma fraction: `2026-07-11 15:11:48,123`
-/// - RFC 2822 / HTTP-date: `Wed, 21 Oct 2015 07:28:00 GMT`, `Tue, 01 Jul 2003 10:52:37 +0200`
+/// - RFC 2822 / HTTP-date: `Wed, 21 Oct 2015 07:28:00 GMT`, `Tue, 01 Jul 2003
+///   10:52:37 +0200`
 /// - Apache common-log: `10/Oct/2000:13:55:36 -0700`
-/// - month names: `21 Oct 2015 07:28:00`, `Oct 21, 2015 07:28:00`, `11-Jul-2026`
-/// - syslog (no year): `Oct 11 15:11:48` — ordered within a shared sentinel year
+/// - month names: `21 Oct 2015 07:28:00`, `Oct 21, 2015 07:28:00`,
+///   `11-Jul-2026`
+/// - syslog (no year): `Oct 11 15:11:48` — ordered within a shared sentinel
+///   year
 ///
 /// Missing lower components default to zero, so a partial bound like
 /// `2026-07-11` or `2026-07-11T15:11` works. Timezones understood: `Z`, `UTC`,
-/// `GMT`, and numeric `±HH:MM` / `±HHMM` / `±HH` (UTC assumed when absent). Named
-/// zone abbreviations (EST, PST, …) are ambiguous and not supported. Returns
-/// `None` for anything that isn't a recognized timestamp.
+/// `GMT`, and numeric `±HH:MM` / `±HHMM` / `±HH` (UTC assumed when absent).
+/// Named zone abbreviations (EST, PST, …) are ambiguous and not supported.
+/// Returns `None` for anything that isn't a recognized timestamp.
 pub fn parse_datetime(s: &str) -> Option<i128> {
     let s = strip_weekday(s.trim());
     parse_iso(s)
@@ -168,12 +177,19 @@ pub fn parse_datetime(s: &str) -> Option<i128> {
 }
 
 /// Days from civil, seconds-of-day, and timezone combined into epoch nanos.
-fn combine(year: i64, month: i64, day: i64, time_nanos: i128, tz_subtract: i128) -> i128 {
-    days_from_civil(year, month, day) as i128 * NANOS_PER_DAY + time_nanos - tz_subtract
+fn combine(
+    year: i64,
+    month: i64,
+    day: i64,
+    time_nanos: i128,
+    tz_subtract: i128,
+) -> i128 {
+    days_from_civil(year, month, day) as i128 * NANOS_PER_DAY + time_nanos
+        - tz_subtract
 }
 
-/// ISO 8601 / RFC 3339: `YYYY[-/]MM[-/]DD` optionally followed by a `T`/space and
-/// `HH[:MM[:SS[.,frac]]]` and a timezone (glued or space-separated).
+/// ISO 8601 / RFC 3339: `YYYY[-/]MM[-/]DD` optionally followed by a `T`/space
+/// and `HH[:MM[:SS[.,frac]]]` and a timezone (glued or space-separated).
 fn parse_iso(s: &str) -> Option<i128> {
     let (date, rest) = match s.split_once(['T', ' ']) {
         Some((d, r)) => (d, Some(r)),
@@ -225,7 +241,11 @@ fn parse_named(s: &str) -> Option<i128> {
         return None;
     }
     let (year, month, day) = if let Some(month) = month_name(t[0]) {
-        (int_field(t[2], 0, 9999)?, month, int_field(t[1].trim_end_matches(','), 1, 31)?)
+        (
+            int_field(t[2], 0, 9999)?,
+            month,
+            int_field(t[1].trim_end_matches(','), 1, 31)?,
+        )
     } else if let Some(month) = month_name(t[1]) {
         (int_field(t[2], 0, 9999)?, month, int_field(t[0], 1, 31)?)
     } else {
@@ -245,7 +265,8 @@ fn parse_named(s: &str) -> Option<i128> {
     Some(combine(year, month, day, time_nanos, tz))
 }
 
-/// Dash-separated month name: `DD-Mon-YYYY` with an optional ` HH:MM:SS` and tz.
+/// Dash-separated month name: `DD-Mon-YYYY` with an optional ` HH:MM:SS` and
+/// tz.
 fn parse_dmy_dash(s: &str) -> Option<i128> {
     let mut it = s.split_whitespace();
     let date = it.next()?;
@@ -270,9 +291,9 @@ fn parse_dmy_dash(s: &str) -> Option<i128> {
     Some(combine(year, month, day, time_nanos, tz))
 }
 
-/// syslog / RFC 3164: `Mon DD HH:MM:SS` with no year. Placed in a fixed sentinel
-/// year so such stamps order correctly among themselves (a leap year, so
-/// `Feb 29` is valid); they aren't comparable to year-bearing timestamps.
+/// syslog / RFC 3164: `Mon DD HH:MM:SS` with no year. Placed in a fixed
+/// sentinel year so such stamps order correctly among themselves (a leap year,
+/// so `Feb 29` is valid); they aren't comparable to year-bearing timestamps.
 fn parse_syslog(s: &str) -> Option<i128> {
     const SENTINEL_YEAR: i64 = 2000;
     let t: Vec<&str> = s.split_whitespace().collect();
@@ -299,28 +320,34 @@ fn is_weekday(prefix3: &str) -> bool {
     let mut buf = [0u8; 3];
     buf.copy_from_slice(prefix3.as_bytes());
     buf.make_ascii_lowercase();
-    matches!(&buf, b"mon" | b"tue" | b"wed" | b"thu" | b"fri" | b"sat" | b"sun")
+    matches!(
+        &buf,
+        b"mon" | b"tue" | b"wed" | b"thu" | b"fri" | b"sat" | b"sun"
+    )
 }
 
-/// Map an English month name (full or 3-letter, any case, optional trailing `.`)
-/// to its 1-based number.
+/// Map an English month name (full or 3-letter, any case, optional trailing
+/// `.`) to its 1-based number.
 fn month_name(s: &str) -> Option<i64> {
     let s = s.trim_end_matches('.');
-    if s.len() < 3 || !s.is_ascii() || !s.bytes().all(|b| b.is_ascii_alphabetic()) {
+    if s.len() < 3
+        || !s.is_ascii()
+        || !s.bytes().all(|b| b.is_ascii_alphabetic())
+    {
         return None;
     }
     let mut buf = [0u8; 3];
     buf.copy_from_slice(&s.as_bytes()[..3]);
     buf.make_ascii_lowercase();
     let months: [&[u8; 3]; 12] = [
-        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov",
-        b"dec",
+        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep",
+        b"oct", b"nov", b"dec",
     ];
     months.iter().position(|m| *m == &buf).map(|i| i as i64 + 1)
 }
 
-/// Parse `HH[:MM[:SS[.,frac]]]` into nanoseconds-of-day, tolerating a `.` or `,`
-/// fractional separator (log4j uses the comma).
+/// Parse `HH[:MM[:SS[.,frac]]]` into nanoseconds-of-day, tolerating a `.` or
+/// `,` fractional separator (log4j uses the comma).
 fn parse_time(time: &str) -> Option<i128> {
     let mut t = time.split(':');
     let hour = int_field(t.next()?, 0, 23)?;
@@ -338,7 +365,10 @@ fn parse_time(time: &str) -> Option<i128> {
     if t.next().is_some() {
         return None;
     }
-    Some((hour * 3600 + minute * 60 + second) as i128 * 1_000_000_000 + frac_nanos)
+    Some(
+        (hour * 3600 + minute * 60 + second) as i128 * 1_000_000_000
+            + frac_nanos,
+    )
 }
 
 /// Split a time-of-day from its timezone (glued as in `15:11:48Z` / `…+02:00`,
@@ -351,7 +381,11 @@ fn parse_time_and_tz(rest: &str) -> Option<(i128, i128)> {
         return Some((parse_time(time)?, 0));
     }
     // A `+`/`-` after the hour introduces a numeric offset glued to the time.
-    if let Some(pos) = rest.get(1..).and_then(|r| r.find(['+', '-'])).map(|i| i + 1) {
+    if let Some(pos) = rest
+        .get(1..)
+        .and_then(|r| r.find(['+', '-']))
+        .map(|i| i + 1)
+    {
         return Some((parse_time(&rest[..pos])?, parse_tz(&rest[pos..])?));
     }
     Some((parse_time(rest)?, 0))
@@ -370,7 +404,8 @@ fn int_field(s: &str, lo: i64, hi: i64) -> Option<i64> {
 }
 
 /// Convert the digits after a `.`/`,` in the seconds field to nanoseconds,
-/// padding or truncating to 9 digits (`.5` -> 500_000_000). Empty is allowed (0).
+/// padding or truncating to 9 digits (`.5` -> 500_000_000). Empty is allowed
+/// (0).
 fn parse_fraction_nanos(frac: &str) -> Option<i128> {
     if frac.is_empty() {
         return Some(0);
@@ -551,28 +586,37 @@ mod tests {
             parse_datetime("Wed, 21 Oct 2015 09:28:00 +02:00"),
             Some(base)
         );
-        assert_eq!(parse_datetime("Wed, 21 Oct 2015 05:28:00 -0200"), Some(base));
+        assert_eq!(
+            parse_datetime("Wed, 21 Oct 2015 05:28:00 -0200"),
+            Some(base)
+        );
         // month-name forms in both orders
         assert_eq!(parse_datetime("21 Oct 2015 07:28:00"), Some(base));
         assert_eq!(parse_datetime("Oct 21, 2015 07:28:00"), Some(base));
         assert_eq!(parse_datetime("October 21, 2015 07:28:00 UTC"), Some(base));
         // Apache common-log
-        assert_eq!(
-            parse_datetime("21/Oct/2015:07:28:00 +0000"),
-            Some(base)
-        );
-        assert_eq!(
-            parse_datetime("21/Oct/2015:00:28:00 -0700"),
-            Some(base)
-        );
+        assert_eq!(parse_datetime("21/Oct/2015:07:28:00 +0000"), Some(base));
+        assert_eq!(parse_datetime("21/Oct/2015:00:28:00 -0700"), Some(base));
         // dash-separated month name
         assert_eq!(parse_datetime("21-Oct-2015 07:28:00"), Some(base));
         // date-only and partial-time bounds
-        assert_eq!(parse_datetime("2015-10-21"), parse_datetime("2015-10-21T00:00:00Z"));
-        assert_eq!(parse_datetime("2015-10-21T07:28"), parse_datetime("2015-10-21T07:28:00Z"));
+        assert_eq!(
+            parse_datetime("2015-10-21"),
+            parse_datetime("2015-10-21T00:00:00Z")
+        );
+        assert_eq!(
+            parse_datetime("2015-10-21T07:28"),
+            parse_datetime("2015-10-21T07:28:00Z")
+        );
         // syslog (no year) orders within itself; unknown named zones rejected
-        assert!(parse_datetime("Oct 21 07:28:00") < parse_datetime("Oct 21 07:29:00"));
-        assert!(parse_datetime("Feb 09 00:00:00") < parse_datetime("Dec 09 00:00:00"));
+        assert!(
+            parse_datetime("Oct 21 07:28:00")
+                < parse_datetime("Oct 21 07:29:00")
+        );
+        assert!(
+            parse_datetime("Feb 09 00:00:00")
+                < parse_datetime("Dec 09 00:00:00")
+        );
         assert_eq!(parse_datetime("2015-10-21T07:28:00 EST"), None);
     }
 
@@ -606,7 +650,10 @@ mod tests {
     fn fallback_fields_first_present_wins() {
         // `a|b|c=x` matches whichever of those keys is present.
         assert!(matches("lvl|level|severity=error", r#"{"lvl":"error"}"#));
-        assert!(matches("lvl|level|severity=error", r#"{"severity":"error"}"#));
+        assert!(matches(
+            "lvl|level|severity=error",
+            r#"{"severity":"error"}"#
+        ));
         assert!(matches("lvl|level|severity=error", r#"{"level":"error"}"#));
         assert!(!matches("lvl|level|severity=error", r#"{"level":"warn"}"#));
         // none present -> missing -> only !=/!~ match

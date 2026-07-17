@@ -38,7 +38,12 @@ fn apply(base: &mut Value, token: &str) -> bool {
     // A fallback chain `a|b|c` matches when the first present field matches, so
     // set the first. An OR list `x,y` matches any, so pick the first.
     let key = lhs.split('|').next().unwrap_or(lhs).trim();
-    let raw = rhs.split(',').next().unwrap_or(rhs).trim().trim_matches('"');
+    let raw = rhs
+        .split(',')
+        .next()
+        .unwrap_or(rhs)
+        .trim()
+        .trim_matches('"');
     if key.is_empty() {
         return false;
     }
@@ -63,7 +68,9 @@ fn number(v: f64) -> Value {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         Value::Number((v as i64).into())
     } else {
-        Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+        Number::from_f64(v)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -119,7 +126,8 @@ mod tests {
     use super::*;
 
     fn synth_val(line: &str, filters: &[&str]) -> Value {
-        let filters: Vec<String> = filters.iter().map(|s| s.to_string()).collect();
+        let filters: Vec<String> =
+            filters.iter().map(|s| s.to_string()).collect();
         let s = synthesize(line, &filters).expect("should synthesize");
         serde_json::from_str(&s).unwrap()
     }

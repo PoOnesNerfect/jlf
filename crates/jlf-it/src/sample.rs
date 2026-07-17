@@ -85,7 +85,8 @@ fn severity_rank(v: &Value) -> u8 {
 /// distinct records aren't merged.
 fn signature(v: &Value) -> String {
     let level = str_field(v, &["level", "lvl", "severity"]).unwrap_or_default();
-    let target = str_field(v, &["target", "logger", "module", "module_path"]).unwrap_or_default();
+    let target = str_field(v, &["target", "logger", "module", "module_path"])
+        .unwrap_or_default();
     let msg = str_field(v, &["message", "msg", "body"])
         .or_else(|| v.get("fields").and_then(|f| f.get("message")?.as_str()))
         .unwrap_or_default();
@@ -137,11 +138,15 @@ pub fn render(v: &Value, highlight: &HashSet<String>) -> String {
     out
 }
 
-fn dim(s: &str) -> String {
-    style(s).dim().to_string()
-}
+fn dim(s: &str) -> String { style(s).dim().to_string() }
 
-fn go(v: &Value, path: &str, indent: usize, hl: &HashSet<String>, out: &mut String) {
+fn go(
+    v: &Value,
+    path: &str,
+    indent: usize,
+    hl: &HashSet<String>,
+    out: &mut String,
+) {
     match v {
         Value::Object(map) => {
             out.push_str(&dim("{"));
@@ -231,11 +236,16 @@ mod tests {
     #[test]
     fn curate_collapses_spam_and_floats_errors() {
         let sample = concat!(
-            r#"{"level":"INFO","message":"Skipping migration V1__a.sql"}"#, "\n",
-            r#"{"level":"INFO","message":"Skipping migration V2__b.sql"}"#, "\n",
-            r#"{"level":"INFO","message":"Skipping migration V3__c.sql"}"#, "\n",
-            r#"{"level":"INFO","message":"Server started"}"#, "\n",
-            r#"{"level":"ERROR","message":"connection refused"}"#, "\n",
+            r#"{"level":"INFO","message":"Skipping migration V1__a.sql"}"#,
+            "\n",
+            r#"{"level":"INFO","message":"Skipping migration V2__b.sql"}"#,
+            "\n",
+            r#"{"level":"INFO","message":"Skipping migration V3__c.sql"}"#,
+            "\n",
+            r#"{"level":"INFO","message":"Server started"}"#,
+            "\n",
+            r#"{"level":"ERROR","message":"connection refused"}"#,
+            "\n",
         );
         let out = curate(sample, 80);
         let lines: Vec<&str> = out.lines().collect();
@@ -250,10 +260,13 @@ mod tests {
     #[test]
     fn render_highlights_the_matched_path() {
         console::set_colors_enabled(true);
-        let v: Value = serde_json::from_str(r#"{"fields":{"status":200}}"#).unwrap();
-        let hl: HashSet<String> = ["fields.status".to_string()].into_iter().collect();
+        let v: Value =
+            serde_json::from_str(r#"{"fields":{"status":200}}"#).unwrap();
+        let hl: HashSet<String> =
+            ["fields.status".to_string()].into_iter().collect();
         let out = render(&v, &hl);
-        // the highlighted key uses a background (reverse/black-on-yellow) escape
+        // the highlighted key uses a background (reverse/black-on-yellow)
+        // escape
         assert!(out.contains("status"));
         assert!(out.contains("\u{1b}[")); // has ANSI styling
     }

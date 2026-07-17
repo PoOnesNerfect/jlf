@@ -2,9 +2,10 @@ use std::io::{self, Error};
 
 mod cli;
 
-/// Built-in subcommands handled by the core CLI; everything else may dispatch to
-/// an external `jlf-<name>` extension.
-const BUILTINS: &[&str] = &["expand", "list", "count", "stats", "top", "uniq", "help"];
+/// Built-in subcommands handled by the core CLI; everything else may dispatch
+/// to an external `jlf-<name>` extension.
+const BUILTINS: &[&str] =
+    &["expand", "list", "count", "stats", "top", "uniq", "help"];
 
 fn main() {
     maybe_dispatch_extension();
@@ -20,9 +21,9 @@ fn main() {
     }
 }
 
-/// git-style dispatch: if the first argument is a bare word that isn't a built-in,
-/// run `jlf-<word>` from PATH with the remaining args (inheriting stdio). If the
-/// extension isn't installed, print an install hint and exit.
+/// git-style dispatch: if the first argument is a bare word that isn't a
+/// built-in, run `jlf-<word>` from PATH with the remaining args (inheriting
+/// stdio). If the extension isn't installed, print an install hint and exit.
 fn maybe_dispatch_extension() {
     let mut args = std::env::args_os().skip(1);
     let Some(first) = args.next() else { return };
@@ -31,7 +32,10 @@ fn maybe_dispatch_extension() {
         return;
     }
     // A subcommand is a plain word: no path, operator, or template characters.
-    if !sub.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !sub
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return;
     }
 
@@ -40,8 +44,14 @@ fn maybe_dispatch_extension() {
     match exec(&bin, &rest) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            eprintln!("jlf: '{sub}' is not a jlf command and `{bin}` is not installed.");
-            eprintln!("       install it (e.g. `cargo install {bin}`) or run `jlf help`.");
+            eprintln!(
+                "jlf: '{sub}' is not a jlf command and `{bin}` is not \
+                 installed."
+            );
+            eprintln!(
+                "       install it (e.g. `cargo install {bin}`) or run `jlf \
+                 help`."
+            );
             std::process::exit(127);
         }
         Err(e) => {

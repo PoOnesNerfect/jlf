@@ -1,6 +1,6 @@
-//! End-to-end per-record rendering: parse a log line, then render it through the
-//! template a recipe produces. This is the actual runtime cost of a recipe —
-//! recipe *resolution* happens once at startup, but the template it yields is
+//! End-to-end per-record rendering: parse a log line, then render it through
+//! the template a recipe produces. This is the actual runtime cost of a recipe
+//! — recipe *resolution* happens once at startup, but the template it yields is
 //! rendered for every record, so this is what determines throughput.
 //!
 //! Each benchmark renders the same three tracing-style records through a
@@ -40,7 +40,8 @@ fn render_bench(c: &mut Criterion) {
     let message_tpl = "${?message|msg|fields.message}".to_owned();
     // A CSV row — exercises `$cols`/`$rows` repetition over fixed columns.
     let csv_tpl = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*";
-    let csv_cols = vec![column("timestamp"), column("level"), column("message")];
+    let csv_cols =
+        vec![column("timestamp"), column("level"), column("message")];
 
     let mut group = c.benchmark_group("render (3 records)");
 

@@ -45,7 +45,8 @@ impl Builder {
         let mut args = Vec::new();
         match self.mode() {
             Mode::Summarize => {
-                // subcommand first, then field / by / n, then filters, then format
+                // subcommand first, then field / by / n, then filters, then
+                // format
                 args.push(self.verb.clone().unwrap());
                 if let Some(f) = &self.field {
                     args.push(f.clone());
@@ -156,7 +157,8 @@ impl Builder {
         for a in self.to_args() {
             // Quote anything the shell would interpret (templates, filters, …).
             let special = [
-                ' ', '{', '}', '|', '"', '$', '(', ')', '*', '?', '<', '>', '~', '!', '&', ';',
+                ' ', '{', '}', '|', '"', '$', '(', ')', '*', '?', '<', '>',
+                '~', '!', '&', ';',
             ];
             if a.is_empty() || a.contains(special) {
                 out.push_str(&format!(" '{a}'"));
@@ -181,7 +183,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(b.to_args(), vec!["level=error", "${ts} ${msg}"]);
-        assert!(b.to_recipe_toml("errs").contains("filter = \"level=error\""));
+        assert!(b
+            .to_recipe_toml("errs")
+            .contains("filter = \"level=error\""));
         assert!(b.to_recipe_toml("errs").contains("out = \"${ts} ${msg}\""));
     }
 
@@ -193,10 +197,7 @@ mod tests {
             redact: vec!["token".into()],
             ..Default::default()
         };
-        assert_eq!(
-            b.to_args(),
-            vec!["-f", "ts,level", "-c", "-r", "token"]
-        );
+        assert_eq!(b.to_args(), vec!["-f", "ts,level", "-c", "-r", "token"]);
     }
 
     #[test]
@@ -208,10 +209,13 @@ mod tests {
             format: Some("md".into()),
             ..Default::default()
         };
-        assert_eq!(
-            b.to_args(),
-            vec!["stats", "latency_ms", "by", "level", "@md"]
-        );
+        assert_eq!(b.to_args(), vec![
+            "stats",
+            "latency_ms",
+            "by",
+            "level",
+            "@md"
+        ]);
         let toml = b.to_recipe_toml("lat");
         assert!(toml.contains("stats = \"latency_ms\""));
         assert!(toml.contains("by = \"level\""));

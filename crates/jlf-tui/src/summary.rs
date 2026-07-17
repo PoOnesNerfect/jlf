@@ -23,8 +23,8 @@ enum Kind {
 
 /// An incremental summary aggregator. Records are `feed`-d one at a time (so a
 /// summary can stream over a huge store across frames and keep updating as new
-/// records arrive) and `render`-ed on demand. `reset` clears the accumulators so
-/// a filter change can recompute from scratch.
+/// records arrive) and `render`-ed on demand. `reset` clears the accumulators
+/// so a filter change can recompute from scratch.
 pub struct Agg {
     kind: Kind,
     /// The field to aggregate (`None` = plain `count` of records).
@@ -40,7 +40,11 @@ pub struct Agg {
 impl Agg {
     /// Build an aggregator for a `:` command verb, or `Err(message)` when the
     /// verb needs a field it wasn't given.
-    pub fn new(verb: &str, field: Option<&str>, n: usize) -> Result<Agg, String> {
+    pub fn new(
+        verb: &str,
+        field: Option<&str>,
+        n: usize,
+    ) -> Result<Agg, String> {
         let kind = match verb {
             "count" => Kind::Count,
             "uniq" => Kind::Uniq,
@@ -109,8 +113,8 @@ impl Agg {
         }
     }
 
-    /// Render the current aggregate. `processed`/`of` drive a progress note shown
-    /// until the whole view has been folded in.
+    /// Render the current aggregate. `processed`/`of` drive a progress note
+    /// shown until the whole view has been folded in.
     pub fn render(&self, processed: usize, of: usize) -> Summary {
         let mut rows = match &self.kind {
             Kind::Count => self.render_count(),
@@ -119,10 +123,16 @@ impl Agg {
             Kind::Stats => self.render_stats(),
         };
         if processed < of {
-            let pct = processed.checked_mul(100).and_then(|p| p.checked_div(of)).unwrap_or(100);
+            let pct = processed
+                .checked_mul(100)
+                .and_then(|p| p.checked_div(of))
+                .unwrap_or(100);
             rows.push(format!("… computing {pct}% ({processed} of {of})"));
         }
-        Summary { title: self.title(), rows }
+        Summary {
+            title: self.title(),
+            rows,
+        }
     }
 
     fn title(&self) -> String {
@@ -153,7 +163,11 @@ impl Agg {
     }
 
     fn render_uniq(&self) -> Vec<String> {
-        vec![format!("{} distinct (of {} values)", self.seen.len(), self.total)]
+        vec![format!(
+            "{} distinct (of {} values)",
+            self.seen.len(),
+            self.total
+        )]
     }
 
     fn render_top(&self, n: usize) -> Vec<String> {
@@ -162,15 +176,23 @@ impl Agg {
         let shown = rows.len().min(n);
         let mut out = vec![format!("{:>10}   share  value", "count")];
         out.extend(rows.iter().take(n).map(|(k, c)| {
-            let pct = if self.total > 0 { **c as f64 / self.total as f64 * 100.0 } else { 0.0 };
+            let pct = if self.total > 0 {
+                **c as f64 / self.total as f64 * 100.0
+            } else {
+                0.0
+            };
             format!("{c:>10}  {pct:>5.1}%  {k}")
         }));
-        out.push(format!("top {shown} of {distinct} distinct ({} values)", self.total));
+        out.push(format!(
+            "top {shown} of {distinct} distinct ({} values)",
+            self.total
+        ));
         out
     }
 
     fn render_stats(&self) -> Vec<String> {
-        // `quantile` sorts in place, so work on a clone to keep `render` `&self`.
+        // `quantile` sorts in place, so work on a clone to keep `render`
+        // `&self`.
         let mut d = self.digest.clone();
         if d.count() == 0 {
             return vec!["count 0".into(), "(no numeric values)".into()];

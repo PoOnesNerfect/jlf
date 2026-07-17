@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::{fmt, fs, path::PathBuf};
+use std::{collections::HashMap, fmt, fs, path::PathBuf};
 
 use etcetera::{choose_base_strategy, BaseStrategy};
 use serde::Deserialize;
@@ -34,8 +33,12 @@ pub fn get_config() -> color_eyre::Result<ConfigFile> {
 /// names the file and points at the exact offending span (the `toml` crate
 /// renders a `line | … | ^^^` caret under the error).
 fn parse_config_file(path: &std::path::Path) -> color_eyre::Result<ConfigFile> {
-    let raw = fs::read_to_string(path)
-        .map_err(|e| color_eyre::eyre::eyre!("failed to read config `{}`: {e}", path.display()))?;
+    let raw = fs::read_to_string(path).map_err(|e| {
+        color_eyre::eyre::eyre!(
+            "failed to read config `{}`: {e}",
+            path.display()
+        )
+    })?;
     toml::from_str(&raw).map_err(|e| {
         color_eyre::eyre::eyre!("invalid config `{}`:\n\n{e}", path.display())
     })
@@ -44,28 +47,34 @@ fn parse_config_file(path: &std::path::Path) -> color_eyre::Result<ConfigFile> {
 /// How a recipe's `out` string is interpreted, decided purely by its shape.
 enum Content<'a> {
     /// A `$`-DSL template, verbatim literal text, or a whitespace-only string
-    /// (e.g. a `"\n"` separator). Rendered as-is — whitespace can be meaningful.
+    /// (e.g. a `"\n"` separator). Rendered as-is — whitespace can be
+    /// meaningful.
     Template(&'a str),
     /// A single `field[:mods]` value accessor — the only shape usable as a
     /// value (`@name` in filters/summaries).
-    Field { path: &'a str, mods: Option<&'a str> },
+    Field {
+        path: &'a str,
+        mods: Option<&'a str>,
+    },
     /// An `a,b,c` list of columns (a table / view projection).
     Columns(Vec<&'a str>),
 }
 
 /// Whether `s` looks like a value accessor path — a fallback chain of dotted
-/// field names (`latency_ms|duration|elapsed`, `fields.message`, `..`). Anything
-/// with other characters (spaces, brackets, `/`) is treated as literal text.
+/// field names (`latency_ms|duration|elapsed`, `fields.message`, `..`).
+/// Anything with other characters (spaces, brackets, `/`) is treated as literal
+/// text.
 fn is_field_path(s: &str) -> bool {
     !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'|' | b'-'))
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'|' | b'-')
+        })
 }
 
 /// A unified recipe: one named, reusable definition that can act as a template
 /// fragment (`{@name}`), a saved command (`@name` / `-p`), a named field, or a
-/// custom output format. See the README (Recipes and configuration). Recipes translate down to the
-/// existing variable/preset/format machinery.
+/// custom output format. See the README (Recipes and configuration). Recipes
+/// translate down to the existing variable/preset/format machinery.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
@@ -76,7 +85,8 @@ pub struct Recipe {
     /// Records to keep (`key=value`, space-separated).
     pub filter: Option<String>,
     pub redact: Option<String>,
-    /// Reference an output format (built-in `csv`/`tsv`/`md` or another recipe).
+    /// Reference an output format (built-in `csv`/`tsv`/`md` or another
+    /// recipe).
     pub format: Option<String>,
     pub escape: Option<String>,
     pub count: Option<String>,
@@ -112,9 +122,13 @@ impl Recipe {
         let colon = trimmed.find(':');
         let comma = trimmed.find(',');
         Some(match (colon, comma) {
-            // `:` before any comma -> a single field with (comma-separated) mods,
-            // as long as the part before the `:` is a field path (else literal).
-            (Some(c), maybe) if maybe.is_none_or(|m| c < m) && is_field_path(trimmed[..c].trim()) => {
+            // `:` before any comma -> a single field with (comma-separated)
+            // mods, as long as the part before the `:` is a field
+            // path (else literal).
+            (Some(c), maybe)
+                if maybe.is_none_or(|m| c < m)
+                    && is_field_path(trimmed[..c].trim()) =>
+            {
                 Content::Field {
                     path: trimmed[..c].trim(),
                     mods: Some(trimmed[c + 1..].trim()),
@@ -128,8 +142,8 @@ impl Recipe {
                     .filter(|s| !s.is_empty())
                     .collect(),
             ),
-            // a bare field path -> a value accessor; any other literal string is
-            // a verbatim template.
+            // a bare field path -> a value accessor; any other literal string
+            // is a verbatim template.
             _ if is_field_path(trimmed) => Content::Field {
                 path: trimmed,
                 mods: None,
@@ -140,8 +154,8 @@ impl Recipe {
 
     /// The string used when this recipe is inlined (`${@name}`): a template
     /// verbatim, else an optional `${?field[:mods]}`, else a `${?a} ${?b}` from
-    /// the columns. Optional by default, so an absent field collapses its space —
-    /// you write `${@name}`, not `${?@name}`.
+    /// the columns. Optional by default, so an absent field collapses its space
+    /// — you write `${@name}`, not `${?@name}`.
     fn inline_body(&self) -> Option<String> {
         Some(match self.content()? {
             Content::Template(t) => t.to_owned(),
@@ -198,8 +212,10 @@ impl Recipe {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(out, filter, redact, format,
-              escape, count, stats, top, uniq, by, n, base);
+        take!(
+            out, filter, redact, format, escape, count, stats, top, uniq, by,
+            n, base
+        );
     }
 
     /// The conditional override sub-recipe for an active flag, if present.
@@ -213,7 +229,8 @@ impl Recipe {
     }
 
     /// Does this recipe describe a custom output format — one with a global
-    /// `escape`, or an `out` that emits its own frame/table via `$rows(`/`$cols(`?
+    /// `escape`, or an `out` that emits its own frame/table via
+    /// `$rows(`/`$cols(`?
     fn is_format(&self) -> bool {
         self.escape.is_some()
             || self
@@ -229,8 +246,9 @@ pub struct ConfigFile {
     pub config: Config,
     #[serde(default, deserialize_with = "de_map_to_list")]
     pub variables: Option<Vec<(String, String)>>,
-    /// Output formats: the built-ins `csv`/`tsv`/`md` plus any `[recipe.*]` with
-    /// an `escape` or an `out` that frames its own table via `$rows(`/`$cols(`.
+    /// Output formats: the built-ins `csv`/`tsv`/`md` plus any `[recipe.*]`
+    /// with an `escape` or an `out` that frames its own table via
+    /// `$rows(`/`$cols(`.
     #[serde(default, rename = "format")]
     pub formats: HashMap<String, FormatDef>,
     /// Saved argument bundles from `[preset.NAME]` tables.
@@ -243,43 +261,40 @@ pub struct ConfigFile {
     #[serde(default, rename = "recipe")]
     pub recipe: HashMap<String, Recipe>,
     /// Field recipes as `name -> value accessor` (e.g. `latency ->
-    /// latency_ms|duration|elapsed`), so `@name` resolves in filter and summary
-    /// positions. Filled by `resolve_recipes`; not read from config directly.
+    /// latency_ms|duration|elapsed`), so `@name` resolves in filter and
+    /// summary positions. Filled by `resolve_recipes`; not read from
+    /// config directly.
     #[serde(skip)]
     pub field_aliases: HashMap<String, String>,
 }
 
 /// The built-in `csv`/`tsv`/`md` output formats, as single `$`-DSL templates:
-/// a `$cols( $key )` header row, then `$rows( … )` per record. Seeded so they're
-/// runnable by name (`@csv`, `--format md`) and overridable by a `[recipe.*]`.
+/// a `$cols( $key )` header row, then `$rows( … )` per record. Seeded so
+/// they're runnable by name (`@csv`, `--format md`) and overridable by a
+/// `[recipe.*]`.
 pub fn builtin_formats() -> HashMap<String, FormatDef> {
     HashMap::from([
-        (
-            "csv".to_owned(),
-            FormatDef {
-                escape: None,
-                body: "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*".to_owned(),
-            },
-        ),
-        (
-            "tsv".to_owned(),
-            FormatDef {
-                escape: None,
-                body: "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*".to_owned(),
-            },
-        ),
-        (
-            "md".to_owned(),
-            FormatDef {
-                escape: None,
-                body: "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*".to_owned(),
-            },
-        ),
+        ("csv".to_owned(), FormatDef {
+            escape: None,
+            body: "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+                .to_owned(),
+        }),
+        ("tsv".to_owned(), FormatDef {
+            escape: None,
+            body: "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+                .to_owned(),
+        }),
+        ("md".to_owned(), FormatDef {
+            escape: None,
+            body: "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* \
+                   |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+                .to_owned(),
+        }),
     ])
 }
 
-/// A custom output format: one `$`-DSL `body` template (a `$rows( … )` marks the
-/// per-record part; text around it prints once), with interpolated values
+/// A custom output format: one `$`-DSL `body` template (a `$rows( … )` marks
+/// the per-record part; text around it prints once), with interpolated values
 /// escaped per `escape`.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct FormatDef {
@@ -319,7 +334,8 @@ pub fn default_variables() -> Vec<(String, String)> {
     [
         (
             "output",
-            "${@timestamp}${@level}${@message}$config(compact => \\t)$else(\\n)${@data}",
+            "${@timestamp}${@level}${@message}$config(compact => \
+             \\t)$else(\\n)${@data}",
         ),
         ("timestamp", "${?timestamp:dimmed} "),
         (
@@ -348,7 +364,9 @@ pub fn default_variables() -> Vec<(String, String)> {
     .collect()
 }
 
-fn de_map_to_list<'de, D>(de: D) -> Result<Option<Vec<(String, String)>>, D::Error>
+fn de_map_to_list<'de, D>(
+    de: D,
+) -> Result<Option<Vec<(String, String)>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -379,7 +397,8 @@ where
         where
             A: serde::de::MapAccess<'de>,
         {
-            let mut list = map.size_hint().map(Vec::with_capacity).unwrap_or_default();
+            let mut list =
+                map.size_hint().map(Vec::with_capacity).unwrap_or_default();
 
             while let Some((k, v)) = map.next_entry()? {
                 list.push((k, v));
@@ -427,7 +446,8 @@ impl ConfigFile {
             self.config.strict = Some(strict);
         }
 
-        // Workspace-defined formats/presets/recipes override same-named base ones.
+        // Workspace-defined formats/presets/recipes override same-named base
+        // ones.
         self.formats.extend(formats2);
         self.presets.extend(presets2);
         self.recipes.extend(recipes2);
@@ -438,7 +458,9 @@ impl ConfigFile {
             (v1, Some(v2)) => {
                 if let Some(v1) = v1 {
                     for (k2, v2) in v2 {
-                        let v = v1.iter_mut().find_map(|(k, v)| (k == &k2).then_some(v));
+                        let v = v1
+                            .iter_mut()
+                            .find_map(|(k, v)| (k == &k2).then_some(v));
 
                         if let Some(v) = v {
                             *v = v2;
@@ -455,29 +477,35 @@ impl ConfigFile {
 
     /// Translate recipes (`[recipes]` + `[recipe.NAME]`) into the variable,
     /// preset, and format maps the rest of the engine consumes. `active` is the
-    /// set of currently-true condition flags (e.g. `["compact"]`), used to apply
-    /// `[recipe.NAME.<cond>]` overrides. Idempotent; call once flags are known.
+    /// set of currently-true condition flags (e.g. `["compact"]`), used to
+    /// apply `[recipe.NAME.<cond>]` overrides. Idempotent; call once flags
+    /// are known.
     pub fn resolve_recipes(&mut self, active: &[&str]) {
         // Seed the built-in csv/tsv/md formats first, so a user recipe of the
         // same name can override them. Each is also runnable by name (`@csv`).
         for (name, def) in builtin_formats() {
             self.formats.entry(name.clone()).or_insert(def);
-            self.presets.entry(name.clone()).or_insert_with(|| PresetDef {
-                format: Some(name),
+            self.presets
+                .entry(name.clone())
+                .or_insert_with(|| PresetDef {
+                    format: Some(name),
+                    ..Default::default()
+                });
+        }
+
+        // Body-only shorthand: a variable, and a runnable preset
+        // (template=body).
+        let shorthand: Vec<(String, String)> = self.recipes.drain().collect();
+        for (name, body) in shorthand {
+            self.set_variable(name.clone(), body.clone());
+            self.presets.entry(name).or_insert_with(|| PresetDef {
+                template: Some(body),
                 ..Default::default()
             });
         }
 
-        // Body-only shorthand: a variable, and a runnable preset (template=body).
-        let shorthand: Vec<(String, String)> = self.recipes.drain().collect();
-        for (name, body) in shorthand {
-            self.set_variable(name.clone(), body.clone());
-            self.presets
-                .entry(name)
-                .or_insert_with(|| PresetDef { template: Some(body), ..Default::default() });
-        }
-
-        let recipes: Vec<(String, Recipe)> = self.recipe.clone().into_iter().collect();
+        let recipes: Vec<(String, Recipe)> =
+            self.recipe.clone().into_iter().collect();
         for (name, _) in &recipes {
             let resolved = self.resolve_one(name, active, &mut Vec::new());
             self.install_recipe(name, &resolved);
@@ -485,9 +513,15 @@ impl ConfigFile {
         self.recipe.clear();
     }
 
-    /// Resolve a recipe by name: apply `base` inheritance (depth-first) then the
-    /// active conditional overrides. `stack` guards against base cycles.
-    fn resolve_one(&self, name: &str, active: &[&str], stack: &mut Vec<String>) -> Recipe {
+    /// Resolve a recipe by name: apply `base` inheritance (depth-first) then
+    /// the active conditional overrides. `stack` guards against base
+    /// cycles.
+    fn resolve_one(
+        &self,
+        name: &str,
+        active: &[&str],
+        stack: &mut Vec<String>,
+    ) -> Recipe {
         let Some(raw) = self.recipe.get(name) else {
             return Recipe::default();
         };
@@ -511,8 +545,8 @@ impl ConfigFile {
         resolved
     }
 
-    /// Register a resolved recipe as a variable (inline), a preset (run), and/or
-    /// a custom output format (header/body/footer).
+    /// Register a resolved recipe as a variable (inline), a preset (run),
+    /// and/or a custom output format (header/body/footer).
     fn install_recipe(&mut self, name: &str, r: &Recipe) {
         // A single-field recipe is a named value accessor, usable as `@name` in
         // filter and summary positions as well as `${@name}` in templates.
@@ -523,13 +557,10 @@ impl ConfigFile {
             self.set_variable(name.to_owned(), body);
         }
         if r.is_format() {
-            self.formats.insert(
-                name.to_owned(),
-                FormatDef {
-                    escape: r.escape.clone(),
-                    body: r.inline_body().unwrap_or_default(),
-                },
-            );
+            self.formats.insert(name.to_owned(), FormatDef {
+                escape: r.escape.clone(),
+                body: r.inline_body().unwrap_or_default(),
+            });
         }
         // Any recipe with content is runnable as a preset. A format recipe's
         // body lives in the formats map, and a column list drives `$cols`, so
@@ -566,7 +597,8 @@ impl ConfigFile {
 
 fn config_dir() -> PathBuf {
     // TODO: allow env var override
-    let strategy = choose_base_strategy().expect("Unable to find the config directory!");
+    let strategy =
+        choose_base_strategy().expect("Unable to find the config directory!");
     let mut path = strategy.config_dir();
     path.push("jlf");
     path
@@ -598,7 +630,8 @@ fn find_workspace() -> PathBuf {
 fn current_working_dir() -> PathBuf {
     // implementation of crossplatform pwd -L
     // we want pwd -L so that symlinked directories are handled correctly
-    let mut cwd = std::env::current_dir().expect("Couldn't determine current working directory");
+    let mut cwd = std::env::current_dir()
+        .expect("Couldn't determine current working directory");
 
     let pwd = std::env::var_os("PWD");
     #[cfg(windows)]
@@ -617,9 +650,7 @@ fn current_working_dir() -> PathBuf {
 mod tests {
     use super::*;
 
-    fn parse(s: &str) -> ConfigFile {
-        toml::from_str(s).unwrap()
-    }
+    fn parse(s: &str) -> ConfigFile { toml::from_str(s).unwrap() }
 
     fn var<'a>(c: &'a ConfigFile, name: &str) -> Option<&'a str> {
         c.variables
@@ -634,45 +665,69 @@ mod tests {
         let mut c = parse("[recipes]\noneline = \"${level} ${msg}\"\n");
         c.resolve_recipes(&[]);
         assert_eq!(var(&c, "oneline"), Some("${level} ${msg}"));
-        assert_eq!(c.presets["oneline"].template.as_deref(), Some("${level} ${msg}"));
+        assert_eq!(
+            c.presets["oneline"].template.as_deref(),
+            Some("${level} ${msg}")
+        );
     }
 
     #[test]
     fn single_field_out_becomes_value_variable() {
         let mut c = parse("[recipe.host]\nout = \"host|hostname:dimmed\"\n");
         c.resolve_recipes(&[]);
-        // Field recipes are optional by default, so `${@host}` collapses when absent.
+        // Field recipes are optional by default, so `${@host}` collapses when
+        // absent.
         assert_eq!(var(&c, "host"), Some("${?host|hostname:dimmed}"));
     }
 
     #[test]
     fn out_key_classified_by_shape() {
-        // single field with inline mods -> optional value + accessor (mods stripped)
-        let mut field = parse("[recipe.ts]\nout = \"timestamp|ts:dimmed,red\"\n");
+        // single field with inline mods -> optional value + accessor (mods
+        // stripped)
+        let mut field =
+            parse("[recipe.ts]\nout = \"timestamp|ts:dimmed,red\"\n");
         field.resolve_recipes(&[]);
         assert_eq!(var(&field, "ts"), Some("${?timestamp|ts:dimmed,red}"));
-        assert_eq!(field.field_aliases.get("ts").map(String::as_str), Some("timestamp|ts"));
-        assert_eq!(field.presets["ts"].template.as_deref(), Some("${timestamp|ts:dimmed,red}"));
+        assert_eq!(
+            field.field_aliases.get("ts").map(String::as_str),
+            Some("timestamp|ts")
+        );
+        assert_eq!(
+            field.presets["ts"].template.as_deref(),
+            Some("${timestamp|ts:dimmed,red}")
+        );
 
         // comma list -> columns (not a value accessor)
-        let mut cols = parse("[recipe.req]\nout = \"timestamp,level,message\"\n");
+        let mut cols =
+            parse("[recipe.req]\nout = \"timestamp,level,message\"\n");
         cols.resolve_recipes(&[]);
-        assert_eq!(var(&cols, "req"), Some("${?timestamp} ${?level} ${?message}"));
-        assert_eq!(cols.presets["req"].fields.as_deref(), Some("timestamp,level,message"));
+        assert_eq!(
+            var(&cols, "req"),
+            Some("${?timestamp} ${?level} ${?message}")
+        );
+        assert_eq!(
+            cols.presets["req"].fields.as_deref(),
+            Some("timestamp,level,message")
+        );
         assert_eq!(cols.presets["req"].template, None);
         assert!(!cols.field_aliases.contains_key("req"));
 
         // `$` -> template (not a value accessor)
-        let mut tpl = parse("[recipe.lvl]\nout = \"$match(level $else(${value}))\"\n");
+        let mut tpl =
+            parse("[recipe.lvl]\nout = \"$match(level $else(${value}))\"\n");
         tpl.resolve_recipes(&[]);
         assert!(!tpl.field_aliases.contains_key("lvl"));
-        assert_eq!(tpl.presets["lvl"].template.as_deref(), Some("$match(level $else(${value}))"));
+        assert_eq!(
+            tpl.presets["lvl"].template.as_deref(),
+            Some("$match(level $else(${value}))")
+        );
     }
 
     #[test]
     fn filter_body_recipe_becomes_preset() {
         let mut c = parse(
-            "[recipe.errors]\nfilter = \"level=error\"\nout = \"${ts} ${msg}\"\n",
+            "[recipe.errors]\nfilter = \"level=error\"\nout = \"${ts} \
+             ${msg}\"\n",
         );
         c.resolve_recipes(&[]);
         let p = &c.presets["errors"];
@@ -683,7 +738,8 @@ mod tests {
     #[test]
     fn format_recipe_becomes_format() {
         let mut c = parse(
-            "[recipe.report]\nescape = \"html\"\nout = \"<table>\\n$rows( <r>${msg}</r> )*</table>\"\n",
+            "[recipe.report]\nescape = \"html\"\nout = \"<table>\\n$rows( \
+             <r>${msg}</r> )*</table>\"\n",
         );
         c.resolve_recipes(&[]);
         let f = &c.formats["report"];
@@ -695,7 +751,8 @@ mod tests {
 
     #[test]
     fn conditional_override_applies_when_active() {
-        let toml = "[recipe.sep]\nout = \"\\n\"\n[recipe.sep.compact]\nout = \" \"\n";
+        let toml =
+            "[recipe.sep]\nout = \"\\n\"\n[recipe.sep.compact]\nout = \" \"\n";
         let mut normal = parse(toml);
         normal.resolve_recipes(&[]);
         assert_eq!(var(&normal, "sep"), Some("\n"));
@@ -708,7 +765,8 @@ mod tests {
     #[test]
     fn base_inheritance_overlays_keys() {
         let mut c = parse(
-            "[recipe.base]\nout = \"${a}\"\nfilter = \"x=1\"\n[recipe.child]\nbase = \"@base\"\nout = \"${b}\"\n",
+            "[recipe.base]\nout = \"${a}\"\nfilter = \
+             \"x=1\"\n[recipe.child]\nbase = \"@base\"\nout = \"${b}\"\n",
         );
         c.resolve_recipes(&[]);
         // child overrides out, inherits filter

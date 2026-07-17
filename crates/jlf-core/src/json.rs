@@ -73,7 +73,10 @@ impl<'a> Json<'a> {
         }
     }
 
-    pub fn get_i_mut<'b>(&'b mut self, index: usize) -> Option<&'b mut Json<'a>> {
+    pub fn get_i_mut<'b>(
+        &'b mut self,
+        index: usize,
+    ) -> Option<&'b mut Json<'a>> {
         match self {
             Json::Array(arr) => arr.get_mut(index),
             _ => None,
@@ -89,7 +92,9 @@ impl<'a> Json<'a> {
 
     pub fn remove_i(&mut self, index: usize) -> Option<Json<'a>> {
         match self {
-            Json::Array(arr) => arr.get_mut(index).map(|e| e.replace(Json::Null)),
+            Json::Array(arr) => {
+                arr.get_mut(index).map(|e| e.replace(Json::Null))
+            }
             _ => None,
         }
     }
@@ -118,7 +123,9 @@ impl<'a> Json<'a> {
             .map(|x| x.replace("~1", "/").replace("~0", "~"))
             .try_fold(self, |target, token| match target {
                 Json::Object(map) => map.try_get(&token),
-                Json::Array(list) => parse_index(&token).and_then(|x| list.get(x)),
+                Json::Array(list) => {
+                    parse_index(&token).and_then(|x| list.get(x))
+                }
                 _ => None,
             })
     }
@@ -135,7 +142,10 @@ impl<'a> Json<'a> {
     /// `None` is returned.
     ///
     /// For more information read [RFC6901](https://tools.ietf.org/html/rfc6901).
-    pub fn pointer_mut<'b>(&'b mut self, pointer: &str) -> Option<&'b mut Json<'a>> {
+    pub fn pointer_mut<'b>(
+        &'b mut self,
+        pointer: &str,
+    ) -> Option<&'b mut Json<'a>> {
         if pointer.is_empty() {
             return Some(self);
         }
@@ -149,7 +159,9 @@ impl<'a> Json<'a> {
             .map(|x| x.replace("~1", "/").replace("~0", "~"))
             .try_fold(self, |target, token| match target {
                 Json::Object(map) => map.get_mut(&token),
-                Json::Array(list) => parse_index(&token).and_then(move |x| list.get_mut(x)),
+                Json::Array(list) => {
+                    parse_index(&token).and_then(move |x| list.get_mut(x))
+                }
                 _ => None,
             })
     }
@@ -167,7 +179,9 @@ impl<'a> Json<'a> {
             Json::Array(arr) => arr.is_empty() || arr.iter().all(Json::is_null),
             Json::String(s) => s.is_empty(),
             Json::Value(_) => false,
-            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => true,
+            Json::Null | Json::NullPrevObject(_) | Json::NullPrevArray(_) => {
+                true
+            }
         }
     }
 
@@ -222,7 +236,9 @@ impl<'a> Json<'a> {
     }
 
     // Replace self with a new value and return the previous value
-    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> { std::mem::replace(self, value) }
+    pub fn replace(&mut self, value: Json<'a>) -> Json<'a> {
+        std::mem::replace(self, value)
+    }
 
     fn parse_value_in_place<I>(
         &mut self,
@@ -312,7 +328,8 @@ impl<'a> Json<'a> {
             *self = Json::NullPrevObject(obj);
         } else if let Json::Array(arr) = prev {
             *self = Json::NullPrevArray(arr);
-        } else if matches!(prev, Json::NullPrevObject(_)) || matches!(prev, Json::NullPrevArray(_))
+        } else if matches!(prev, Json::NullPrevObject(_))
+            || matches!(prev, Json::NullPrevArray(_))
         {
             *self = prev;
         }
@@ -323,7 +340,9 @@ impl<'a> Json<'a> {
 pub struct JsonObject<'a>(pub Vec<(&'a str, Json<'a>)>);
 
 impl<'a> JsonObject<'a> {
-    pub fn get(&self, key: &str) -> &Json<'_> { self.try_get(key).unwrap_or(&Json::Null) }
+    pub fn get(&self, key: &str) -> &Json<'_> {
+        self.try_get(key).unwrap_or(&Json::Null)
+    }
 
     pub fn get_mut<'b>(&'b mut self, key: &str) -> Option<&'b mut Json<'a>> {
         self.0.iter_mut().find(|(k, _)| k == &key).map(|(_, v)| v)
@@ -357,12 +376,22 @@ impl<'a> JsonObject<'a> {
         self.0.iter().all(|(_, v)| v.is_null())
     }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, (&'a str, Json<'a>)> { self.0.iter() }
+    pub fn iter(&self) -> std::slice::Iter<'_, (&'a str, Json<'a>)> {
+        self.0.iter()
+    }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (&'a str, Json<'a>)> { self.0.iter_mut() }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (&'a str, Json<'a>)> {
+        self.0.iter_mut()
+    }
 
-    pub fn parse_insert(&mut self, key: &'a str, input: &'a str) -> Result<(), ParseError> {
-        if let Some((old_key, value)) = self.0.iter_mut().find(|(k, _)| k == &key) {
+    pub fn parse_insert(
+        &mut self,
+        key: &'a str,
+        input: &'a str,
+    ) -> Result<(), ParseError> {
+        if let Some((old_key, value)) =
+            self.0.iter_mut().find(|(k, _)| k == &key)
+        {
             *old_key = key;
             value.parse_replace(input)?;
         } else {
@@ -464,7 +493,10 @@ impl<'a> JsonObject<'a> {
                         message: "Expected comma or closing brace '}' in \
                                   object",
                         value: input.to_owned(),
-                        index: chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len()),
+                        index: chars
+                            .peek()
+                            .map(|&(i, _)| i)
+                            .unwrap_or_else(|| input.len()),
                     })
                 }
             }
@@ -535,7 +567,10 @@ where
     }
 }
 
-fn parse_string<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_string<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
@@ -565,11 +600,15 @@ where
     })
 }
 
-fn parse_null<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_null<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index =
+        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     if chars.next().map(|(_, c)| c) == Some('n')
         && chars.next().map(|(_, c)| c) == Some('u')
         && chars.next().map(|(_, c)| c) == Some('l')
@@ -586,11 +625,15 @@ where
     }
 }
 
-fn parse_raw_value<'a, I>(chars: &mut Peekable<I>, input: &'a str) -> Result<Json<'a>, ParseError>
+fn parse_raw_value<'a, I>(
+    chars: &mut Peekable<I>,
+    input: &'a str,
+) -> Result<Json<'a>, ParseError>
 where
     I: Iterator<Item = (usize, char)>,
 {
-    let start_index = chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
+    let start_index =
+        chars.peek().map(|&(i, _)| i).unwrap_or_else(|| input.len());
     while let Some(&(i, c)) = chars.peek() {
         if c == ',' || c == ']' || c == '}' {
             return Ok(Json::Value(&input[start_index..i]));
@@ -651,7 +694,10 @@ impl StyledJson<'_> {
 }
 
 impl fmt::Display for StyledJson<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.json.fmt_compact(f, &self.styles)
     }
 }
@@ -682,13 +728,19 @@ impl Default for MarkupStyles {
 }
 
 impl fmt::Display for Json<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.fmt_compact(f, &None)
     }
 }
 
 impl fmt::Debug for Json<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         self.fmt_pretty(f, 0, &None)
     }
 }
@@ -824,7 +876,8 @@ impl Json<'_> {
     /// by earlier args (timestamp, level, message, ...) are skipped while the
     /// rest of the object is printed. Unlike the previous implementation it
     /// renders a *filtered view* of the original object instead of deep-cloning
-    /// it and deleting the used fields, so no per-line allocation/clone happens.
+    /// it and deleting the used fields, so no per-line allocation/clone
+    /// happens.
     ///
     /// `indent` selects the layout: `None` => compact, `Some(n)` => pretty with
     /// base indentation `n`.
@@ -837,10 +890,9 @@ impl Json<'_> {
     ) -> fmt::Result {
         match self {
             Json::Object(obj) => {
-                if !obj
-                    .iter()
-                    .any(|(key, value)| !value.is_null() && !is_excluded_key(excluded, key))
-                {
+                if !obj.iter().any(|(key, value)| {
+                    !value.is_null() && !is_excluded_key(excluded, key)
+                }) {
                     return write_syntax(f, "{}", styles);
                 }
                 write_syntax(f, "{", styles)?;
@@ -872,17 +924,18 @@ impl Json<'_> {
                 write_syntax(f, "}", styles)
             }
             Json::Array(arr) => {
-                if !arr
-                    .iter()
-                    .enumerate()
-                    .any(|(i, value)| !value.is_null() && !is_excluded(excluded, |t| token_matches_index(t, i)))
-                {
+                if !arr.iter().enumerate().any(|(i, value)| {
+                    !value.is_null()
+                        && !is_excluded(excluded, |t| token_matches_index(t, i))
+                }) {
                     return write_syntax(f, "[]", styles);
                 }
                 write_syntax(f, "[", styles)?;
                 let mut first = true;
                 for (i, value) in arr.iter().enumerate() {
-                    if value.is_null() || is_excluded(excluded, |t| token_matches_index(t, i)) {
+                    if value.is_null()
+                        || is_excluded(excluded, |t| token_matches_index(t, i))
+                    {
                         continue;
                     }
                     if !first {
@@ -892,7 +945,8 @@ impl Json<'_> {
                     if let Some(ind) = indent {
                         write!(f, "\n{:width$}", "", width = ind + 2)?;
                     }
-                    let child = child_excluded(excluded, |t| token_matches_index(t, i));
+                    let child =
+                        child_excluded(excluded, |t| token_matches_index(t, i));
                     write_rest_value(f, value, &child, indent, styles)?;
                 }
                 if let Some(ind) = indent {
@@ -915,18 +969,18 @@ impl Json<'_> {
     pub fn has_rest_content(&self, excluded: &[&[PathToken<'_>]]) -> bool {
         match self {
             Json::Object(obj) => obj.iter().any(|(key, value)| {
-                !value.is_null()
-                    && !is_excluded_key(excluded, key)
-                    && {
-                        let child = child_excluded_key(excluded, key);
-                        child.is_empty() || value.has_rest_content(&child)
-                    }
+                !value.is_null() && !is_excluded_key(excluded, key) && {
+                    let child = child_excluded_key(excluded, key);
+                    child.is_empty() || value.has_rest_content(&child)
+                }
             }),
             Json::Array(arr) => arr.iter().enumerate().any(|(i, value)| {
                 !value.is_null()
                     && !is_excluded(excluded, |t| token_matches_index(t, i))
                     && {
-                        let child = child_excluded(excluded, |t| token_matches_index(t, i));
+                        let child = child_excluded(excluded, |t| {
+                            token_matches_index(t, i)
+                        });
                         child.is_empty() || value.has_rest_content(&child)
                     }
             }),
@@ -958,7 +1012,10 @@ fn write_rest_value(
 
 /// `true` if any excluded path is exactly this field (length 1 and its first
 /// token matches), meaning the field should be omitted entirely.
-fn is_excluded(excluded: &[&[PathToken<'_>]], matches: impl Fn(&PathToken<'_>) -> bool) -> bool {
+fn is_excluded(
+    excluded: &[&[PathToken<'_>]],
+    matches: impl Fn(&PathToken<'_>) -> bool,
+) -> bool {
     excluded.iter().any(|p| p.len() == 1 && matches(&p[0]))
 }
 
@@ -976,9 +1033,9 @@ fn child_excluded<'p>(
 }
 
 /// Length of the leading `Name`-token prefix of `path` whose dotted join equals
-/// `key`, or `None`. This lets an excluded path like `[fields, log, file]` match
-/// the actual flattened key `"log.file"` under `fields` (join of its last two
-/// tokens), consuming two tokens — mirroring how a dotted path resolves.
+/// `key`, or `None`. This lets an excluded path like `[fields, log, file]`
+/// match the actual flattened key `"log.file"` under `fields` (join of its last
+/// two tokens), consuming two tokens — mirroring how a dotted path resolves.
 fn key_match_len(path: &[PathToken<'_>], key: &str) -> Option<usize> {
     let mut joined = String::new();
     for (i, tok) in path.iter().enumerate() {
@@ -1003,7 +1060,9 @@ fn key_match_len(path: &[PathToken<'_>], key: &str) -> Option<usize> {
 
 /// A key is fully excluded when some excluded path is entirely consumed by it.
 fn is_excluded_key(excluded: &[&[PathToken<'_>]], key: &str) -> bool {
-    excluded.iter().any(|p| key_match_len(p, key) == Some(p.len()))
+    excluded
+        .iter()
+        .any(|p| key_match_len(p, key) == Some(p.len()))
 }
 
 /// Sub-paths of excluded paths that descend *through* `key` (consuming its
@@ -1113,7 +1172,7 @@ impl std::fmt::Debug for ParseError {
             self.message,
             self.index,
             snippet,
-            "^",                        // Caret pointing to the error location
+            "^", // Caret pointing to the error location
             width = caret_position + 1, // Correct alignment for the caret
         )
     }
@@ -1142,7 +1201,8 @@ mod tests {
             }
         }
 
-        let arr = parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
+        let arr =
+            parse_json(r#"["mixed", 123, {"obj": "inside array"}]"#).unwrap();
         println!("Array: {:#?}", arr);
         assert_eq!(arr.get_i(2).get("obj").as_str(), Some("inside array"));
     }

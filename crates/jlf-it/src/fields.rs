@@ -69,14 +69,16 @@ fn walk(
                 walk(&child, val, counts, values);
             }
         }
-        // Descend the first element so `spans.0.method` completes; the index is a
-        // valid accessor and covers arrays-of-objects (spans, etc.).
+        // Descend the first element so `spans.0.method` completes; the index is
+        // a valid accessor and covers arrays-of-objects (spans, etc.).
         Value::Array(arr) => {
             if let Some(first) = arr.first() {
                 walk(&format!("{path}.0"), first, counts, values);
             }
         }
-        Value::String(_) | Value::Number(_) | Value::Bool(_) if !path.is_empty() => {
+        Value::String(_) | Value::Number(_) | Value::Bool(_)
+            if !path.is_empty() =>
+        {
             let s = match v {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -102,13 +104,17 @@ pub fn match_values(values: &[String], token: &str, cap: usize) -> Vec<String> {
     matching(values, token, cap)
 }
 
-/// Field paths the user has typed (or is typing) in `buf`, for highlighting them
-/// in the sample record. A token highlights every path it equals, prefixes, or
-/// is contained in. Single characters are ignored to avoid lighting up the whole
-/// record.
-pub fn active_fields(buf: &str, paths: &[String]) -> std::collections::HashSet<String> {
+/// Field paths the user has typed (or is typing) in `buf`, for highlighting
+/// them in the sample record. A token highlights every path it equals,
+/// prefixes, or is contained in. Single characters are ignored to avoid
+/// lighting up the whole record.
+pub fn active_fields(
+    buf: &str,
+    paths: &[String],
+) -> std::collections::HashSet<String> {
     let mut hl = std::collections::HashSet::new();
-    let is_sep = |c: char| c.is_whitespace() || c == ',' || "=!<>~|".contains(c);
+    let is_sep =
+        |c: char| c.is_whitespace() || c == ',' || "=!<>~|".contains(c);
     for tok in buf.split(is_sep) {
         let t = tok.trim();
         if t.len() < 2 {
@@ -186,8 +192,19 @@ mod tests {
     #[test]
     fn collects_nested_and_array_paths() {
         let c = Catalog::from_sample(SAMPLE, 100);
-        for p in ["level", "fields", "fields.status", "fields.message", "spans", "spans.0.method"] {
-            assert!(c.paths.contains(&p.to_string()), "missing {p}: {:?}", c.paths);
+        for p in [
+            "level",
+            "fields",
+            "fields.status",
+            "fields.message",
+            "spans",
+            "spans.0.method",
+        ] {
+            assert!(
+                c.paths.contains(&p.to_string()),
+                "missing {p}: {:?}",
+                c.paths
+            );
         }
     }
 
@@ -210,15 +227,18 @@ mod tests {
 
     #[test]
     fn match_paths_prefers_prefix_then_substring() {
-        let paths = vec!["fields.status".to_string(), "status_code".to_string()];
+        let paths =
+            vec!["fields.status".to_string(), "status_code".to_string()];
         let m = match_paths(&paths, "status", 8);
-        assert_eq!(m, vec!["status_code", "fields.status"]); // prefix before substring
+        assert_eq!(m, vec!["status_code", "fields.status"]); // prefix before
+                                                             // substring
     }
 
     #[test]
     fn match_paths_is_case_insensitive_substring() {
         let paths = vec!["fields.message".to_string()];
-        // `mess` is a direct substring; `MSG` now matches fuzzily (m-s-g in order).
+        // `mess` is a direct substring; `MSG` now matches fuzzily (m-s-g in
+        // order).
         assert_eq!(match_paths(&paths, "mess", 8), vec!["fields.message"]);
         assert_eq!(match_paths(&paths, "MSG", 8), vec!["fields.message"]);
     }
@@ -230,10 +250,14 @@ mod tests {
             "span.method".to_string(),
             "level".to_string(),
         ];
-        // `spamess` is a subsequence of `span.message` but of neither other path.
+        // `spamess` is a subsequence of `span.message` but of neither other
+        // path.
         assert_eq!(match_paths(&paths, "spamess", 8), vec!["span.message"]);
         // Prefix/substring still win over fuzzy: `span` prefixes both spans.
         let m = match_paths(&paths, "span", 8);
-        assert!(m.contains(&"span.message".to_string()) && m.contains(&"span.method".to_string()));
+        assert!(
+            m.contains(&"span.message".to_string())
+                && m.contains(&"span.method".to_string())
+        );
     }
 }

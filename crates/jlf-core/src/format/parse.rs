@@ -4,8 +4,8 @@ use owo_colors::Style;
 use smallvec::SmallVec;
 
 use super::{
-    Arg, ArmTest, CmpOp, Cond, Escape, Field, FieldOptions, FieldType, Format, Piece, RepOp,
-    RepSource,
+    Arg, ArmTest, CmpOp, Cond, Escape, Field, FieldOptions, FieldType, Format,
+    Piece, RepOp, RepSource,
 };
 use crate::{
     colors::{parse_color, ParseColorError},
@@ -45,7 +45,8 @@ pub(super) fn crunch_input(
 fn absorb_line_prefixes(pieces: &mut Vec<Piece>) {
     let mut i = 0;
     while i < pieces.len() {
-        let is_block = matches!(pieces[i], Piece::RepStart(..) | Piece::CondStart(..));
+        let is_block =
+            matches!(pieces[i], Piece::RepStart(..) | Piece::CondStart(..));
         if is_block && i > 0 {
             if let Piece::Literal(prev) = &pieces[i - 1] {
                 if let Some(cut) = line_prefix_start(prev) {
@@ -61,8 +62,8 @@ fn absorb_line_prefixes(pieces: &mut Vec<Piece>) {
     }
 }
 
-/// Byte index where a trailing `\n[ \t]*` run begins (block sits at a line start),
-/// or `None` if the literal doesn't end that way.
+/// Byte index where a trailing `\n[ \t]*` run begins (block sits at a line
+/// start), or `None` if the literal doesn't end that way.
 fn line_prefix_start(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut j = b.len();
@@ -119,7 +120,12 @@ impl Scanner<'_> {
                     Some(b'(') => {
                         flush_lit(pieces, &mut lit);
                         self.i += 2;
-                        self.parse_rep(pieces, args, rep_depth, RepSource::Record)?;
+                        self.parse_rep(
+                            pieces,
+                            args,
+                            rep_depth,
+                            RepSource::Record,
+                        )?;
                     }
                     Some(b'{') => {
                         flush_lit(pieces, &mut lit);
@@ -155,12 +161,17 @@ impl Scanner<'_> {
                     let start = self.i;
                     while self.i < self.b.len() {
                         let c = self.b[self.i];
-                        if c == b'\\' || c == b'$' || (in_rep && (c == b'(' || c == b')')) {
+                        if c == b'\\'
+                            || c == b'$'
+                            || (in_rep && (c == b'(' || c == b')'))
+                        {
                             break;
                         }
                         self.i += 1;
                     }
-                    lit.push_str(std::str::from_utf8(&self.b[start..self.i]).unwrap());
+                    lit.push_str(
+                        std::str::from_utf8(&self.b[start..self.i]).unwrap(),
+                    );
                 }
             }
         }
@@ -212,14 +223,36 @@ impl Scanner<'_> {
             self.i += 1;
             let src = match name {
                 "match" => return self.parse_match(pieces, args, rep_depth),
-                "if" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::If),
-                "has" => return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Has),
-                "config" => {
-                    return self.parse_cond_chain(pieces, args, rep_depth, CondKind::Config)
+                "if" => {
+                    return self.parse_cond_chain(
+                        pieces,
+                        args,
+                        rep_depth,
+                        CondKind::If,
+                    )
                 }
-                // `$elif`/`$else`/`$when` only appear as chain/arm continuations,
-                // parsed by their opener; standalone they are an error.
-                "elif" | "else" | "when" => return Err(FormatError::OrphanArm(name.to_owned())),
+                "has" => {
+                    return self.parse_cond_chain(
+                        pieces,
+                        args,
+                        rep_depth,
+                        CondKind::Has,
+                    )
+                }
+                "config" => {
+                    return self.parse_cond_chain(
+                        pieces,
+                        args,
+                        rep_depth,
+                        CondKind::Config,
+                    )
+                }
+                // `$elif`/`$else`/`$when` only appear as chain/arm
+                // continuations, parsed by their opener;
+                // standalone they are an error.
+                "elif" | "else" | "when" => {
+                    return Err(FormatError::OrphanArm(name.to_owned()))
+                }
                 "cols" => RepSource::Columns,
                 _ => RepSource::Path(parse_field(name)?),
             };
@@ -231,11 +264,12 @@ impl Scanner<'_> {
         pieces.push(Piece::Arg(args.len() - 1));
         Ok(())
     }
+
     /// Parse `$match( subject  $when(pat => body) … $else(body) )`. The subject
-    /// (first token, fallbacks allowed) is bound to `$value` for every arm body,
-    /// and the first arm whose pattern matches renders. A missing subject matches
-    /// no arm — not even `$else` — so it renders nothing. Cursor is just past
-    /// `$match(`.
+    /// (first token, fallbacks allowed) is bound to `$value` for every arm
+    /// body, and the first arm whose pattern matches renders. A missing
+    /// subject matches no arm — not even `$else` — so it renders nothing.
+    /// Cursor is just past `$match(`.
     fn parse_match(
         &mut self,
         pieces: &mut Vec<Piece>,
@@ -244,7 +278,9 @@ impl Scanner<'_> {
     ) -> Result<(), FormatError> {
         self.skip_ws();
         let start = self.i;
-        while self.i < self.b.len() && (is_path_byte(self.b[self.i]) || self.b[self.i] == b'|') {
+        while self.i < self.b.len()
+            && (is_path_byte(self.b[self.i]) || self.b[self.i] == b'|')
+        {
             self.i += 1;
         }
         if self.i == start {
@@ -267,12 +303,24 @@ impl Scanner<'_> {
                 Some(b'$') if self.rest_is("$when(") => {
                     self.i += 6;
                     let pat = self.read_until_arrow()?;
-                    self.push_arm(pieces, args, rep_depth, parse_arm(&pat)?, first)?;
+                    self.push_arm(
+                        pieces,
+                        args,
+                        rep_depth,
+                        parse_arm(&pat)?,
+                        first,
+                    )?;
                 }
                 Some(b'$') if self.rest_is("$else(") => {
                     self.i += 6;
                     self.skip_hspace();
-                    self.push_arm(pieces, args, rep_depth, Cond::Arm(Vec::new()), first)?;
+                    self.push_arm(
+                        pieces,
+                        args,
+                        rep_depth,
+                        Cond::Arm(Vec::new()),
+                        first,
+                    )?;
                 }
                 _ => return Err(FormatError::BadMatchArm),
             }
@@ -283,8 +331,8 @@ impl Scanner<'_> {
         Ok(())
     }
 
-    /// Emit one match arm: the arm condition tests the bound subject (`$value`),
-    /// then the body is scanned up to the arm's closing `)`.
+    /// Emit one match arm: the arm condition tests the bound subject
+    /// (`$value`), then the body is scanned up to the arm's closing `)`.
     fn push_arm(
         &mut self,
         pieces: &mut Vec<Piece>,
@@ -326,7 +374,10 @@ impl Scanner<'_> {
                 q @ (b'"' | b'\'') if quote == 0 => quote = q,
                 q if quote == q => quote = 0,
                 b'=' if quote == 0 && self.b.get(self.i + 1) == Some(&b'>') => {
-                    let pat = std::str::from_utf8(&self.b[start..self.i]).unwrap().trim().to_owned();
+                    let pat = std::str::from_utf8(&self.b[start..self.i])
+                        .unwrap()
+                        .trim()
+                        .to_owned();
                     self.i += 2; // consume `=>`
                     self.skip_hspace();
                     return Ok(pat);
@@ -347,7 +398,8 @@ impl Scanner<'_> {
         }
     }
 
-    /// Skip spaces, tabs, and newlines (decorative layout between arms/branches).
+    /// Skip spaces, tabs, and newlines (decorative layout between
+    /// arms/branches).
     fn skip_ws(&mut self) {
         while matches!(self.b.get(self.i), Some(b' ' | b'\t' | b'\r' | b'\n')) {
             self.i += 1;
@@ -372,7 +424,13 @@ impl Scanner<'_> {
             self.skip_ws();
             if self.rest_is("$elif(") {
                 self.i += 6;
-                self.push_cond_open(pieces, args, rep_depth, CondKind::If, true)?;
+                self.push_cond_open(
+                    pieces,
+                    args,
+                    rep_depth,
+                    CondKind::If,
+                    true,
+                )?;
             } else if self.rest_is("$else(") {
                 self.i += 6;
                 self.skip_hspace();
@@ -403,8 +461,12 @@ impl Scanner<'_> {
     ) -> Result<(), FormatError> {
         let cond_text = self.read_until_arrow()?;
         match kind {
-            CondKind::If => self.push_cond(pieces, args, &cond_text, Cond::If, is_else)?,
-            CondKind::Has => self.push_cond(pieces, args, &cond_text, Cond::Has, is_else)?,
+            CondKind::If => {
+                self.push_cond(pieces, args, &cond_text, Cond::If, is_else)?
+            }
+            CondKind::Has => {
+                self.push_cond(pieces, args, &cond_text, Cond::Has, is_else)?
+            }
             CondKind::Config => {
                 let b = match cond_text.trim() {
                     "compact" => self.compact,
@@ -445,7 +507,8 @@ impl Scanner<'_> {
         if self.i >= self.b.len() {
             return Err(FormatError::ClosingBrace);
         }
-        let content = std::str::from_utf8(&self.b[start..self.i]).unwrap().trim();
+        let content =
+            std::str::from_utf8(&self.b[start..self.i]).unwrap().trim();
         self.i += 1; // consume '}'
         self.push_arg(pieces, args, content, rep_depth)
     }
@@ -462,7 +525,9 @@ impl Scanner<'_> {
         // `key` just tests presence, so its content is always a field path.
         let (field_str, cond) = match cond {
             Cond::If => match split_comparison(content) {
-                Some((lhs, op, rhs)) => (lhs, Cond::Cmp(op, unquote(rhs).to_owned())),
+                Some((lhs, op, rhs)) => {
+                    (lhs, Cond::Cmp(op, unquote(rhs).to_owned()))
+                }
                 None => (content.trim(), Cond::If),
             },
             other => (content.trim(), other),
@@ -490,11 +555,19 @@ impl Scanner<'_> {
         // text with the arg's modifiers (so raw text can be styled/escaped).
         if let Some(quote) = content.trim_start().chars().next() {
             if quote == '"' || quote == '\'' {
-                return self.push_literal_arg(pieces, args, content.trim_start(), quote);
+                return self.push_literal_arg(
+                    pieces,
+                    args,
+                    content.trim_start(),
+                    quote,
+                );
             }
         }
         let (name_part, mut format) = match content.split_once(':') {
-            Some((n, styles)) => (n.trim(), parse_format(Some(styles), self.no_color, self.compact)?),
+            Some((n, styles)) => (
+                n.trim(),
+                parse_format(Some(styles), self.no_color, self.compact)?,
+            ),
             None => (content, parse_format(None, self.no_color, self.compact)?),
         };
         let name_part = match name_part.strip_prefix('?') {
@@ -531,7 +604,8 @@ impl Scanner<'_> {
                     'n' => lit.push('\n'),
                     't' => lit.push('\t'),
                     'r' => lit.push('\r'),
-                    other => lit.push(other), // \\, \", \', and any other: literal
+                    other => lit.push(other), /* \\, \", \', and any other:
+                                               * literal */
                 }
                 escaped = false;
             } else if c == '\\' {
@@ -546,10 +620,9 @@ impl Scanner<'_> {
         let close_end = close_end.ok_or(FormatError::UnterminatedLiteral)?;
         let styles = match content[close_end..].trim() {
             "" => None,
-            rest => Some(
-                rest.strip_prefix(':')
-                    .ok_or_else(|| FormatError::LiteralTrailing(rest.to_owned()))?,
-            ),
+            rest => Some(rest.strip_prefix(':').ok_or_else(|| {
+                FormatError::LiteralTrailing(rest.to_owned())
+            })?),
         };
         let format = parse_format(styles, self.no_color, self.compact)?;
         let mut fields = FieldOptions::new();
@@ -609,22 +682,29 @@ impl Scanner<'_> {
                         other => bytes.push(other),
                     }
                 }
-                String::from_utf8(bytes).map_err(|_| FormatError::UnterminatedSep)
+                String::from_utf8(bytes)
+                    .map_err(|_| FormatError::UnterminatedSep)
             }
             Some(_) => {
                 // A bare (unquoted) separator is a short run right after `)`,
-                // e.g. `,` in `$cols( $key ),*`. Stop at a newline or a template
-                // marker so a malformed repetition (an operator-less `$x( … )`)
-                // can't silently swallow the following line/blocks as its
+                // e.g. `,` in `$cols( $key ),*`. Stop at a newline or a
+                // template marker so a malformed repetition (an
+                // operator-less `$x( … )`) can't silently
+                // swallow the following line/blocks as its
                 // "separator" — it surfaces as a clear MissingRepOp error.
                 let start = self.i;
                 while let Some(&c) = self.b.get(self.i) {
-                    if matches!(c, b'*' | b'+' | b'?' | b'\n' | b'\r' | b'$' | b'{') {
+                    if matches!(
+                        c,
+                        b'*' | b'+' | b'?' | b'\n' | b'\r' | b'$' | b'{'
+                    ) {
                         break;
                     }
                     self.i += 1;
                 }
-                Ok(std::str::from_utf8(&self.b[start..self.i]).unwrap().to_owned())
+                Ok(std::str::from_utf8(&self.b[start..self.i])
+                    .unwrap()
+                    .to_owned())
             }
         }
     }
@@ -670,11 +750,12 @@ fn trim_body_edges(body: &mut Vec<Piece>) {
     }
 }
 
-/// Trim a `$if`/`$when`/`$else`/… body. An all-whitespace body is an intentional
-/// separator (e.g. `$else(\n)`, `$config(compact =>  )`) and is kept as-is.
-/// Otherwise, drop leading/trailing whitespace runs that span a newline
-/// (decorative line breaks + indentation), so an arm can be written across lines
-/// while its output stays on one line; same-line padding is preserved.
+/// Trim a `$if`/`$when`/`$else`/… body. An all-whitespace body is an
+/// intentional separator (e.g. `$else(\n)`, `$config(compact =>  )`) and is
+/// kept as-is. Otherwise, drop leading/trailing whitespace runs that span a
+/// newline (decorative line breaks + indentation), so an arm can be written
+/// across lines while its output stays on one line; same-line padding is
+/// preserved.
 fn trim_cond_body(body: &mut [Piece]) {
     let all_ws = body
         .iter()
@@ -714,13 +795,16 @@ fn trailing_layout_ws(s: &str) -> Option<usize> {
     s[i..].contains('\n').then_some(i)
 }
 
-fn is_ident_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_'
-}
+fn is_ident_start(b: u8) -> bool { b.is_ascii_alphabetic() || b == b'_' }
 
-/// Bytes allowed in a bare field path: identifiers plus `.`/`[`/`]` for nesting.
+/// Bytes allowed in a bare field path: identifiers plus `.`/`[`/`]` for
+/// nesting.
 fn is_path_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'[' || b == b']'
+    b.is_ascii_alphanumeric()
+        || b == b'_'
+        || b == b'.'
+        || b == b'['
+        || b == b']'
 }
 
 /// Split a comparison condition (`field OP literal`) into its parts, or `None`
@@ -742,7 +826,8 @@ fn unquote(s: &str) -> &str {
     let bytes = s.as_bytes();
     if bytes.len() >= 2 {
         let first = bytes[0];
-        if (first == b'"' || first == b'\'') && bytes[bytes.len() - 1] == first {
+        if (first == b'"' || first == b'\'') && bytes[bytes.len() - 1] == first
+        {
             return &s[1..s.len() - 1];
         }
     }
@@ -759,8 +844,9 @@ const CMP_OPS: [(&str, CmpOp); 6] = [
     ("<", CmpOp::Lt),
 ];
 
-/// Parse a `$when(pattern => …)` pattern into its arm condition. `$else` uses an
-/// empty test list (the wildcard); otherwise it's `test | test | …` alternation.
+/// Parse a `$when(pattern => …)` pattern into its arm condition. `$else` uses
+/// an empty test list (the wildcard); otherwise it's `test | test | …`
+/// alternation.
 fn parse_arm(content: &str) -> Result<Cond, FormatError> {
     let c = content.trim();
     let mut tests = Vec::new();
@@ -827,7 +913,11 @@ fn split_top_level_pipe(s: &str) -> Vec<&str> {
 
 /// Map a field name to a [`Field`], honouring the `$key`/`$value` loop locals
 /// inside a repetition.
-fn push_field(fields: &mut FieldOptions, name: &str, rep_depth: usize) -> Result<(), FormatError> {
+fn push_field(
+    fields: &mut FieldOptions,
+    name: &str,
+    rep_depth: usize,
+) -> Result<(), FormatError> {
     if rep_depth > 0 {
         if name == "value" {
             fields.push(Field::ColValue);
@@ -847,7 +937,10 @@ fn push_field(fields: &mut FieldOptions, name: &str, rep_depth: usize) -> Result
     crunch_field_options(name, fields)
 }
 
-fn crunch_field_options(content: &str, field_options: &mut FieldOptions) -> Result<(), FormatError> {
+fn crunch_field_options(
+    content: &str,
+    field_options: &mut FieldOptions,
+) -> Result<(), FormatError> {
     if content.is_empty() {
         return Ok(());
     }
@@ -970,13 +1063,15 @@ pub fn parse_format(
 
         match name {
             "fg" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 if let Some(s) = style.take() {
                     style = Some(s.color(color));
                 }
             }
             "bg" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 if let Some(s) = style.take() {
                     style = Some(s.on_color(color));
                 }
@@ -988,19 +1083,23 @@ pub fn parse_format(
                 indent = value;
             }
             "key" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.key = markup_styles.key.color(color);
             }
             "value" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.value = markup_styles.value.color(color);
             }
             "str" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.str = markup_styles.str.color(color);
             }
             "syntax" => {
-                let color = parse_color(value).toss_parse_color_with(|| value.to_owned())?;
+                let color = parse_color(value)
+                    .toss_parse_color_with(|| value.to_owned())?;
                 markup_styles.syntax = markup_styles.syntax.color(color);
             }
             _ => return Err(FormatError::InvalidModifier(name.to_owned())),
@@ -1023,7 +1122,11 @@ use tosserror::Toss;
 
 #[derive(Debug, Error, Toss)]
 pub enum FormatError {
-    #[error("Failed to parse color '{value}' — if this was a style modifier, it is not one jlf knows (note: the `:level` modifier was removed; use the `${{@level}}` recipe or a `$match` to color by level)")]
+    #[error(
+        "Failed to parse color '{value}' — if this was a style modifier, it \
+         is not one jlf knows (note: the `:level` modifier was removed; use \
+         the `${{@level}}` recipe or a `$match` to color by level)"
+    )]
     ParseColor {
         source: ParseColorError,
         value: String,
@@ -1045,27 +1148,48 @@ pub enum FormatError {
     },
     #[error("Unsupported config value in formatter '{config}'")]
     UnsupportedConfig { config: String },
-    #[error("A `$( … )` block is missing its closing `)` — check your `$(`, `$path(`, `$cols(`, and `$rows(` blocks all have a matching `)`")]
+    #[error(
+        "A `$( … )` block is missing its closing `)` — check your `$(`, \
+         `$path(`, `$cols(`, and `$rows(` blocks all have a matching `)`"
+    )]
     UnclosedRep,
-    #[error("A `$( … )` repetition needs an operator (`*`, `+`, or `?`) after it — if you meant a conditional, use `$has(path => …)`, `$if(cond => …)`, or `$match(subject $when(…))` instead (note: `$key`/`$value` are loop variables, not conditionals)")]
+    #[error(
+        "A `$( … )` repetition needs an operator (`*`, `+`, or `?`) after it \
+         — if you meant a conditional, use `$has(path => …)`, `$if(cond => \
+         …)`, or `$match(subject $when(…))` instead (note: `$key`/`$value` \
+         are loop variables, not conditionals)"
+    )]
     MissingRepOp,
     #[error("Unterminated quoted separator in a repetition")]
     UnterminatedSep,
     #[error("A `$match( … )` needs a subject, e.g. `$match(status $when(…))`")]
     EmptyMatchSubject,
-    #[error("A `$match( … )` arm must be `$when(pattern => body)` or `$else(body)`")]
+    #[error(
+        "A `$match( … )` arm must be `$when(pattern => body)` or `$else(body)`"
+    )]
     BadMatchArm,
-    #[error("A `$when`/`$if`/`$elif`/`$has`/`$config` block is missing its `=>` between the condition and the body")]
+    #[error(
+        "A `$when`/`$if`/`$elif`/`$has`/`$config` block is missing its `=>` \
+         between the condition and the body"
+    )]
     MissingArrow,
-    #[error("`$when`/`$elif`/`$else` may only appear inside `$match( … )` or an `$if`/`$has`/`$config` chain, not on their own: `${0}( … )`")]
+    #[error(
+        "`$when`/`$elif`/`$else` may only appear inside `$match( … )` or an \
+         `$if`/`$has`/`$config` chain, not on their own: `${0}( … )`"
+    )]
     OrphanArm(String),
     #[error("Invalid numeric range in a `$when( … )` arm: '{0}'")]
     BadRange(String),
 
-    #[error("Unterminated quoted literal in `${{ … }}` — a `${{\"text\"}}` literal needs a closing quote")]
+    #[error(
+        "Unterminated quoted literal in `${{ … }}` — a `${{\"text\"}}` \
+         literal needs a closing quote"
+    )]
     UnterminatedLiteral,
 
-    #[error("Unexpected text after a `${{\"text\"}}` literal — only `:modifiers` may follow (got '{0}')")]
+    #[error(
+        "Unexpected text after a `${{\"text\"}}` literal — only `:modifiers` \
+         may follow (got '{0}')"
+    )]
     LiteralTrailing(String),
 }
-
