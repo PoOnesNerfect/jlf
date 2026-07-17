@@ -176,9 +176,9 @@ parent level, which resumes exactly where it left off — no rescanning — and 
 mid-string edit pops to the deepest still-valid prefix. Even a level whose match
 list is too big to hand down is skipped past where its matches *began*: since a
 shorter query's first match can't come later than a longer one's, its child
-resumes past that known-empty head instead of rescanning it. Above ~100k records
-search matches the raw record instead of the formatted text to stay fast, so the
-WYSIWYG guarantee applies below that; highlighting is always on the visible rows.
+resumes past that known-empty head instead of rescanning it. Formatted mode always
+searches the rendered text that is actually visible; raw mode (`r`) searches the
+raw JSON because that is what is visible there.
 
 Search and filter are independent and compose: a search highlights within the
 current (possibly filtered) view.

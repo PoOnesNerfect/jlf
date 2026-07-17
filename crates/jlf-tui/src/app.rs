@@ -75,13 +75,6 @@ const SUMMARY_BATCH: usize = 50_000;
 /// ~10ms even with disk spilling.
 const DRAIN_BATCH: usize = 50_000;
 
-/// Above this many records a full-view match test renders too slowly to keep up,
-/// so search falls back to matching the raw record (fast, but not WYSIWYG)
-/// instead of the formatted text. Below it, search matches exactly what's on
-/// screen. Governs the render-vs-raw choice only — how *much* gets scanned per
-/// step is [`SCAN_STEP`], not this.
-const RENDER_MATCH_CAP: usize = 100_000;
-
 /// Time slice for one background search-scan step. Typing never scans on the key
 /// path — a keystroke only pushes/pops a stack level (instant); this budget bounds
 /// how long the *background* spends scanning per frame. Kept small so, on the
@@ -109,8 +102,8 @@ const MAX_SCAN_STACK: usize = 128;
 
 /// Cap on cached rendered search text (records). Bounds memory to roughly this
 /// many rendered lines; on overflow the cache is dropped and refills on the next
-/// scan. Comfortably above [`RENDER_MATCH_CAP`] so a single scan never evicts
-/// itself mid-pass.
+/// scan. Sized so the working set for revisits (the preview probe, `n`/`N`,
+/// backspace re-scans) stays resident.
 const SEARCH_CACHE_CAP: usize = 200_000;
 
 /// The search match count for the status line.
@@ -634,15 +627,16 @@ impl App {
         self.search_haystack(pos).is_some_and(|hay| matcher.is_match(&hay))
     }
 
-    /// The text `/` search matches against for view position `pos`. WYSIWYG: the
-    /// same text the list shows, minus ANSI. Raw mode matches the record verbatim
-    /// (that *is* what's shown), as does a view too large to render on every
-    /// keystroke — there we trade exactness for staying responsive. Rendered text
-    /// is cached per record so scanning as you type is cheap after the first pass.
+    /// The text `/` search matches against for view position `pos`: the rendered
+    /// text the list actually shows (minus ANSI), so a match is always something
+    /// you can see — searching `time` won't hit a `timestamp` *key* that only its
+    /// value is shown for. Raw mode matches the record verbatim (that *is* what's
+    /// shown there). Rendered text is cached per record, so revisits (the preview
+    /// probe, `n`/`N`, backspace) are cheap after the first pass.
     fn search_haystack(&self, pos: usize) -> Option<Rc<str>> {
         let idx = self.view_index(pos)?;
         let raw = self.store.get(idx);
-        if self.raw || self.view_len() > RENDER_MATCH_CAP {
+        if self.raw {
             return Some(raw);
         }
         if let Some(hit) = self.search_cache.borrow().get(&idx) {
@@ -810,24 +804,42 @@ impl App {
         if self.active_needle() == needle {
             return; // already active — resume carries it forward
         }
-        // Seed the child from its parent without touching records. A small parent
-        // list is copied as `pending` for the background to filter (resuming the
-        // record scan from the parent's cursor); a big one is skipped past its
-        // first match and re-scanned instead of copied.
-        let (cursor, pending) = match self.scan_stack.last() {
-            Some(p) if p.matches.len() <= LEVEL_LIST_CAP => (p.cursor, p.matches.clone()),
-            Some(p) => (p.matches.first().copied().unwrap_or(p.cursor), Vec::new()),
+        // Seed the child from its parent without touching records. Its candidates
+        // in `[0, parent.cursor)` are the parent's confirmed matches **plus** any
+        // candidates the parent itself hasn't filtered yet — a child match implies
+        // an ancestor match, so re-testing those directly against the longer needle
+        // is valid, and skipping them would lose matches. A small candidate set is
+        // copied as `pending` for the background to filter (resuming the record
+        // scan from the parent's cursor); a big one is skipped past its first
+        // candidate and re-scanned instead of copied.
+        let candidates = self.scan_stack.last().map(|p| {
+            let start = p.pending_idx.min(p.pending.len());
+            let mut c = Vec::with_capacity(p.matches.len() + p.pending.len() - start);
+            c.extend_from_slice(&p.matches);
+            c.extend_from_slice(&p.pending[start..]);
+            c
+        });
+        let (cursor, pending) = match candidates {
             None => (0, Vec::new()),
+            Some(cand) if cand.len() <= LEVEL_LIST_CAP => {
+                (self.scan_stack.last().unwrap().cursor, cand)
+            }
+            Some(cand) => {
+                // Too many to copy: resume past the first candidate (nothing before
+                // it can match) and re-scan. The parent's lists are then only needed
+                // for a pop back to it (which re-scans), so free them now.
+                let skip = cand
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| self.scan_stack.last().unwrap().cursor);
+                let top = self.scan_stack.last_mut().unwrap();
+                top.matches = Vec::new();
+                top.pending = Vec::new();
+                top.pending_idx = 0;
+                top.cursor = skip;
+                (skip, Vec::new())
+            }
         };
-        // A big parent's list isn't inherited, and only a pop back to it would need
-        // it (which re-scans anyway) — so drop it now, keeping just its skip.
-        if self.scan_stack.last().is_some_and(|p| p.matches.len() > LEVEL_LIST_CAP) {
-            let top = self.scan_stack.last_mut().unwrap();
-            top.cursor = top.matches.first().copied().unwrap_or(top.cursor);
-            top.matches = Vec::new();
-            top.pending = Vec::new();
-            top.pending_idx = 0;
-        }
         if self.scan_stack.len() + 1 > MAX_SCAN_STACK {
             let overflow = self.scan_stack.len() + 1 - MAX_SCAN_STACK;
             self.scan_stack.drain(..overflow);
@@ -877,8 +889,15 @@ impl App {
         {
             let top = self.scan_stack.last_mut().unwrap();
             top.matches.extend(survivors);
-            top.pending_idx = idx;
-            top.pending = if idx >= pending.len() { Vec::new() } else { std::mem::take(&mut pending) };
+            if idx >= pending.len() {
+                // Done filtering: drop the candidates and reset the index so the
+                // empty `pending` and `pending_idx` stay consistent.
+                top.pending = Vec::new();
+                top.pending_idx = 0;
+            } else {
+                top.pending = std::mem::take(&mut pending);
+                top.pending_idx = idx;
+            }
         }
         if yielded {
             return;
@@ -1732,6 +1751,32 @@ mod tests {
     }
 
     #[test]
+    fn child_inherits_the_parents_unfiltered_candidates() {
+        // records: 0=alice, 1=bob, 2=alice.
+        let mut app = app_with(SAMPLE);
+        app.scan_gen = app.view_gen;
+        // A parent "a" mid-filter: candidates [0, 2], only [0] filtered so far
+        // (a survivor), [2] still pending. Records [0,3) are covered by these.
+        app.scan_stack.push(ScanLevel {
+            needle: "a".to_string(),
+            matches: vec![0],
+            cursor: 3,
+            pending: vec![0, 2],
+            pending_idx: 1,
+        });
+        // Push child "al": it must inherit the confirmed match [0] *and* the
+        // parent's unfiltered candidate [2] — dropping the latter would lose it.
+        app.search_query = "al".to_string();
+        app.reconcile_scan_stack();
+        assert_eq!(app.scan_stack.last().unwrap().pending, vec![0, 2]);
+        assert_eq!(app.scan_cursor(), 3);
+        // Resuming filters both (0 and 2 are alice, matching "al") — none lost.
+        app.resume_search_scan(Instant::now() + Duration::from_secs(60));
+        assert_eq!(app.scan_matches(), [0, 2]);
+        assert!(app.search_count_complete());
+    }
+
+    #[test]
     fn a_child_level_resumes_past_its_parents_empty_prefix() {
         // 12 records; "z" doesn't appear until record 5.
         let lines: Vec<String> = (0..12)
@@ -1790,11 +1835,13 @@ mod tests {
         for c in "Xyz".chars() {
             app.input_char(c);
         }
+        settle(&mut app);
         assert_eq!(app.search_position(), Some(MatchCount::Counted { current: None, total: 0 }));
         // Cancel the way main.rs does: leave the field first, then cancel.
         app.mode = Mode::Normal;
         app.input.clear();
         app.cancel_search();
+        settle(&mut app);
         // Selection is back where the committed search left it, and the count
         // reflects the committed query again — not the abandoned "aliceXyz".
         assert_eq!(app.selected, committed_sel);
