@@ -11,18 +11,9 @@ if ! rustup toolchain list | grep -q '^nightly'; then
     exit 1
 fi
 
-if ! git diff --quiet -- '*.rs' .rustfmt.toml; then
-    echo "pre-commit: unstaged Rust formatting inputs exist." >&2
-    echo "pre-commit: stage or stash Rust files and .rustfmt.toml before committing so rustfmt does not rewrite unrelated work." >&2
-    exit 1
-fi
-
-echo "pre-commit: formatting Rust with nightly rustfmt"
-cargo +nightly fmt --all
-
-if ! git diff --quiet -- '*.rs'; then
-    echo "pre-commit: rustfmt updated Rust files." >&2
-    echo "pre-commit: review and stage the formatting changes, then commit again." >&2
-    git diff --name-only -- '*.rs' >&2
+echo "pre-commit: checking Rust formatting with nightly rustfmt"
+if ! cargo +nightly fmt --all -- --check >/dev/null 2>&1; then
+    echo "pre-commit: Rust code is not formatted." >&2
+    echo "pre-commit: run: cargo +nightly fmt --all" >&2
     exit 1
 fi
