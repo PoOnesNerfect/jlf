@@ -324,6 +324,14 @@ fn cursor_gutter_style(focused: bool) -> Style {
     }
 }
 
+fn app_badge_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::White).bg(Color::DarkGray)
+    }
+}
+
 /// The always-visible key hint shown on the prompt line in Normal mode.
 const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · e editor · a actions · h help · q quit";
 
@@ -332,10 +340,7 @@ const HINT: &str = "↑↓ move · / search · ? filter · c expand · r raw · 
 /// command, else the normal keys). The active filter and record count live in
 /// the input box above (see [`draw_input_section`]), so they aren't repeated here.
 fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![Span::styled(
-        " jlf-tui ",
-        Style::default().fg(Color::Black).bg(Color::Cyan),
-    )];
+    let mut spans = vec![Span::styled(" jlf-tui ", app_badge_style(app.focused))];
     // Follow state: a green dot while auto-scrolling to the newest record, a red
     // bar when paused.
     if app.follow {
@@ -963,6 +968,10 @@ mod tests {
         assert_eq!(
             cursor_gutter_style(false),
             Style::default().fg(Color::DarkGray)
+        );
+        assert_eq!(
+            app_badge_style(false),
+            Style::default().fg(Color::White).bg(Color::DarkGray)
         );
     }
 
