@@ -325,6 +325,7 @@ fn draw_status_line(f: &mut Frame, app: &App, inner: Rect) {
 
 /// The highlight color for search matches (in the list and the status line).
 const SEARCH_HL: Color = Color::Yellow;
+const BADGE_FG: Color = Color::Rgb(255, 255, 255);
 
 fn record_count_title(total: usize) -> String {
     if total == 1 {
@@ -360,9 +361,9 @@ fn cursor_gutter_style(focused: bool) -> Style {
 
 fn app_badge_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::White).bg(Color::Cyan)
+        Style::default().fg(BADGE_FG).bg(Color::Cyan)
     } else {
-        Style::default().fg(Color::White).bg(Color::DarkGray)
+        Style::default().fg(BADGE_FG).bg(Color::DarkGray)
     }
 }
 
@@ -1028,11 +1029,11 @@ mod tests {
         );
         assert_eq!(
             app_badge_style(true),
-            Style::default().fg(Color::White).bg(Color::Cyan)
+            Style::default().fg(BADGE_FG).bg(Color::Cyan)
         );
         assert_eq!(
             app_badge_style(false),
-            Style::default().fg(Color::White).bg(Color::DarkGray)
+            Style::default().fg(BADGE_FG).bg(Color::DarkGray)
         );
     }
 
