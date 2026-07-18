@@ -360,7 +360,7 @@ fn cursor_gutter_style(focused: bool) -> Style {
 
 fn app_badge_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
+        Style::default().fg(Color::White).bg(Color::Cyan)
     } else {
         Style::default().fg(Color::White).bg(Color::DarkGray)
     }
@@ -1025,6 +1025,10 @@ mod tests {
         assert_eq!(
             cursor_gutter_style(false),
             Style::default().fg(Color::DarkGray)
+        );
+        assert_eq!(
+            app_badge_style(true),
+            Style::default().fg(Color::White).bg(Color::Cyan)
         );
         assert_eq!(
             app_badge_style(false),
