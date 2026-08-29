@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+if ! command -v rustup >/dev/null 2>&1; then
+    echo "pre-commit: rustup is required to run nightly rustfmt." >&2
+    exit 1
+fi
+
+if ! rustup toolchain list | grep -q '^nightly'; then
+    echo "pre-commit: nightly Rust is required. Install it with: rustup toolchain install nightly" >&2
+    exit 1
+fi
+
+echo "pre-commit: checking Rust formatting with nightly rustfmt"
+if ! cargo +nightly fmt --all -- --check >/dev/null 2>&1; then
+    echo "pre-commit: Rust code is not formatted." >&2
+    echo "pre-commit: run the following command:" >&2
+    echo "cargo +nightly fmt --all" >&2
+    exit 1
+fi

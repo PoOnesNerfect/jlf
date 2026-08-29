@@ -1,39 +1,10 @@
-[package]
-name = "jlf"
-version = "0.3.1"
+[workspace]
+members = ["crates/jlf-core", "crates/jlf", "crates/jlf-tui", "crates/jlf-it"]
+resolver = "2"
+
+[workspace.package]
+version = "0.4.0-dev"
 edition = "2021"
 authors = ["Jack Lee <jack.y.l.dev@gmail.com>"]
-description = "CLI for converting JSON logs to human-readable format"
-categories = ["command-line-interface"]
-keywords = ["json", "log", "jl", "format", "cli"]
-documentation = "https://docs.rs/jlf"
-repository = "https://github.com/poonesnerfect/jlf"
 license = "MIT OR Apache-2.0"
-
-[lib]
-path = "src/lib.rs"
-name = "jlf"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-clap = { version = "4.6", features = ["derive"] }
-color-eyre = "0.6.5"
-owo-colors = { version = "4.3", features = ["alloc", "supports-colors"] }
-smallvec = "1.15"
-strip-ansi-escapes = "0.2.1"
-thiserror = "2.0"
-tosserror = "0.1.2"
-
-# config handling
-serde = { version = "1.0", features = ["derive"] }
-toml = "1.1"
-etcetera = "0.11"
-
-[dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
-serde_json = "1.0.150"
-
-[[bench]]
-name = "parse_json"
-harness = false
+repository = "https://github.com/poonesnerfect/jlf"

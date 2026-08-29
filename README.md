@@ -1,622 +1,714 @@
 # jlf
 
-[![Crates.io][crates-badge]][crates-url]
-[![MIT licensed][mit-badge]][mit-url]
-
-[crates-badge]: https://img.shields.io/crates/v/jlf.svg
-[crates-url]: https://crates.io/crates/jlf
-[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/PoOnesNerfect/jlf/blob/main/LICENSE
-
-**jlf** is a CLI that converts hard-to-read JSON logs into colorful human-readable logs.
-
-> **🚧 Preview: 0.4 is in review.** A large rework — a new `$` template DSL, reusable
-> recipes, an assistive `jlf it` command builder, and a full-screen `jlf tui`
-> viewer — is under review in
-> [#5](https://github.com/PoOnesNerfect/jlf/pull/5). `cargo install jlf` still
-> installs the current stable; to try the preview build:
->
-> ```sh
-> cargo install jlf jlf-it jlf-tui --version 0.4.0-dev
-> ```
->
-> Feedback on the PR is welcome.
-
-Simply pipe your JSON logs with `jlf`.
+`jlf` turns JSON logs into something you can read. Pipe a stream of JSON lines in
+and it prints a compact, colored, human-readable view — and the same command can
+filter, summarize, redact, and export those logs.
 
 ```sh
-cat ./examples/dummy_logs | jlf
+# raw JSON in…
+$ tail -f app.log
+{"timestamp":"2026-07-05T18:17:10.430Z","level":"INFO","message":"started","port":8080}
+{"timestamp":"2026-07-05T18:17:11.201Z","level":"error","msg":"db timeout","retries":3}
+
+# …readable out
+$ tail -f app.log | jlf
+2026-07-05T18:17:10.430Z INFO started
+{
+  "port": 8080
+}
+2026-07-05T18:17:11.201Z error db timeout
+{
+  "retries": 3
+}
 ```
 
-### Basic Example
+It works on a growing file or a live pipe, colors on a terminal and stays plain
+when piped, and prints non-JSON lines through untouched — so you can leave it in
+front of any log stream.
+## What you can do
 
-**left**: `cat ./examples/dummy_logs`
-
-**right**: `cat ./examples/dummy_logs | jlf`
-
-<img width="1631" alt="Screenshot 2025-03-03 at 9 45 38 PM" src="https://github.com/user-attachments/assets/95b027e1-d005-48d7-a3c9-72b3b1be51b8" />
-
-## Installation
-
-### Cargo
-
-**cargo** is a rust's package manager.
-
-To install **cargo**, visit [Install Rust - Rust Programming Language](https://www.rust-lang.org/tools/install)
+Each line below is a real command; the sections further down cover them in
+detail.
 
 ```sh
-cargo install jlf
+tail -f app.log | jlf              # pretty-print a live stream (the default)
+jlf level=error                    # filter — also >, <, ~, !=, AND/OR, a|b fallback
+jlf count level                    # summarize — count, stats, top, uniq (optionally `by`)
+jlf stats latency_ms               # percentiles: count/min/max/mean/p50/p90/p99
+jlf @csv ts,level,message          # export a CSV / TSV / Markdown table
+jlf -r token,*.email               # redact fields by name
+jlf '$level ${user} ${latency}ms'  # custom layout with the $-template language
+jlf @errors                        # run a saved recipe from your config
+jlf-tui app.log                    # a full-screen viewer, or `jlf-it` to build a command
 ```
 
-### Manual Installation
+`jlf` reads JSON lines from stdin or `-i FILE`, colors on a terminal and stays
+plain when piped, and passes non-JSON lines through untouched. Its JSON parser
+is tuned for log lines — roughly 3× faster than `serde_json::Value` on typical
+input.
 
-You can also clone the repo and install it manually.
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Reading logs](#reading-logs)
+- [Filtering](#filtering)
+- [Selecting fields](#selecting-fields)
+- [Summaries](#summaries)
+- [Exporting](#exporting)
+- [Interactive viewer (`jlf-tui`)](#interactive-viewer-jlf-tui)
+- [Command builder (`jlf-it`)](#command-builder-jlf-it)
+- [Custom formatting](#custom-formatting)
+- [Recipes and configuration](#recipes-and-configuration)
+- [How it works](#how-it-works)
+- [More docs](#more-docs)
+
+## Install
 
 ```sh
-git clone https://github.com/PoOnesNerfect/jlf.git
-cd jlf
-cargo install --path . --locked
+cargo install jlf                # the core CLI
+cargo install jlf-tui            # optional: interactive viewer
+cargo install jlf-it             # optional: command builder
 ```
 
-## Table of Contents
-
-<!--toc:start-->
-
-- [Basic Example](#basic-example)
-- [Installation](#installation)
-  - [Cargo](#cargo)
-  - [Manual Installation](#manual-installation)
-- [Table of Contents](#table-of-contents)
-- [CLI Options](#cli-options)
-- [Usage](#usage)
-  - [Compact Format](#compact-format)
-  - [No Color](#no-color)
-  - [Strict](#strict)
-- [Custom Formatting](#custom-formatting)
-  - [Accessing Fields](#accessing-fields)
-  - [Styling Fields](#styling-fields)
-    - [Available Styles](#available-styles)
-  - [Conditionals](#conditionals)
-    - [{#if cond1}{:else if cond2}{:else}{/if}](#if-cond1else-if-cond2elseif)
-    - [{#key field1}{:else key field2}{:else}{/key}](#key-field1else-key-field2elsekey)
-    - [{#config config1}{:else}{/config}](#config-config1elseconfig)
-  - [Variables](#variables)
-    - [Storing Variables](#storing-variables)
-- [Config File](#config-file)
-- [Neat Trick](#neat-trick)
-- [Implementation](#implementation)
-  - [JSON Parsing](#json-parsing)
-    - [Some characteristics of common json logs:](#some-characteristics-of-common-json-logs)
-    - [Optimizations](#optimizations)
-    - [Benchmarks](#benchmarks)
-
-<!--toc:end-->
-
-## CLI Options
-
-```
-$ jlf -h
-
-CLI for converting JSON logs to human-readable format
-
-Usage: jlf [OPTIONS] [FORMAT] [COMMAND]
-
-Commands:
-  expand  Print variable with its inner variables expanded. If no variable is specified, the default format string will be used
-  list    List all variables
-  help    Print this message or the help of the given subcommand(s)
-
-Arguments:
-  [FORMAT]  Formatter to use to format json log. [default: {&output}]
-
-Options:
-  -v, --variable <KEY=VALUE>  Pass variable as KEY=VALUE format; can be passed multiple times
-  -n, --no-color              Disable color output. If output is not a terminal, this is always true
-  -c, --compact               Display log in a compact format
-  -s, --strict                If log line is not valid JSON, then report it and exit, instead of printing the line as is
-  -t, --take <TAKE>           Take only the first N lines
-  -h, --help                  Print help
-  -V, --version               Print version
-```
-
-## Usage
-
-### Compact Format
-
-By default, **jlf** prints the standard log in the first line, then rest of json data in a pretty format in the following lines.
-
-If you want to print everything in a single line, you can pass the option `-c`/`--compact`.
+Or from a clone:
 
 ```sh
-cat ./examples/dummy_logs | jlf -c
+cargo install --path crates/jlf
+cargo install --path crates/jlf-tui
+cargo install --path crates/jlf-it
 ```
 
-<img width="700" alt="Screenshot 2025-03-03 at 11 01 27 PM" src="https://github.com/user-attachments/assets/b6f9ebe3-1f51-4a5e-9127-5b55a5b0e0a6" />
-
-### No Color
-
-By default, **jlf** prints in pretty colors.
-
-However, when you pipe logs into a file, **jlf** will automatically write with no colors, so the file isn't corrupted with ANSI characters.
-
-For any reason, if you would like to print with no colors to the terminal, you can pass the option `-n`/`--no-color`.
+## Quick start
 
 ```sh
-# writing into a file will remove all ANSI characters automatically
-cat ./examples/dummy_logs | jlf > pretty_logs
+# pretty-print a stream (the default)
+tail -f app.log | jlf
 
-# pass `-n` to print to terminal with no colors
-cat ./examples/dummy_logs | jlf -n
+# keep only errors
+jlf level=error -i app.log
+
+# a frequency breakdown by level
+jlf count level -i app.log
+
+# latency percentiles
+jlf stats latency_ms -i app.log
+
+# export selected columns as CSV
+jlf @csv ts,level,message -i app.log
 ```
 
-<img width="700" alt="Screenshot 2025-03-03 at 11 07 47 PM" src="https://github.com/user-attachments/assets/7bebd267-6bca-4fe2-9102-e4dbc8416a44" />
+Input comes from stdin or one or more `-i/--input` files. Everything else is a
+positional argument, classified by shape: a token with `$` is a **template**, a
+token with an operator (`level=error`) is a **filter**, a comma-list
+(`ts,level`) selects **fields**, and `@name` runs a **recipe**. The first
+subcommand (`count`, `stats`, `top`, `uniq`) switches to summary mode.
 
-### Strict
+## Reading logs
 
-When **jlf** encounters log lines that are not valid JSON, it will simply pass the line through without any transformation.
-
-However, if you would rather like to exit with an error when encountered an invalid JSON or a non-JSON line, pass the option `-s`/`--strict`.
-
-It will even print out a snippet of where the JSON is invalid.
+With no template, `jlf` renders the default view: `timestamp`, `level`, and
+`message` on the first line (level colored by severity), then every remaining
+field as JSON below.
 
 ```sh
-# pass `-s` to exit when non-JSON is found
-cat ./examples/dummy_logs | jlf -s
+printf '%s\n' \
+  '{"timestamp":"t1","level":"WARN","message":"slow","code":5}' \
+  '{"note":"raw, no standard fields"}' | jlf
+```
+```text
+t1 WARN slow
+{
+  "code": 5
+}
+{
+  "note": "raw, no standard fields"
+}
 ```
 
-<img width="700" alt="Screenshot 2025-03-03 at 11 20 49 PM" src="https://github.com/user-attachments/assets/640cea33-3197-4e78-b452-37883a2243c6" />
+A record without timestamp/level/message collapses those slots and just shows
+the JSON. Common options:
 
-## Custom Formatting
-
-You can optionally provide your custom format of the output line.
+| flag | effect |
+| ---- | ------ |
+| `-c`, `--compact` | keep the trailing JSON inline instead of pretty-printed |
+| `--color <auto\|always\|never>` | color mode; `-n`/`--no-color` is `never` |
+| `-t`, `--take <N>` | stop after the first N records |
+| `-i`, `--input <FILE>` | read from files (repeatable); default is stdin |
+| `-s`, `--strict` | exit on a non-JSON line instead of printing it as-is |
 
 ```sh
-# Provide custom format. If `data` field exists, print `data` field as `json`; if not, print "`data` field not found".
-cat ./examples/dummy_logs | jlf '{#if data}{data:json}{:else}`data` field not found{/if}'
+printf '{"timestamp":"t1","level":"WARN","message":"slow","code":5}\n' | jlf -c
+# -> t1 WARN slow {"code":5}
 ```
 
-<img width="700" alt="Screenshot 2025-03-03 at 11 32 02 PM" src="https://github.com/user-attachments/assets/a24cee4d-c1af-4dec-801c-88f118566278" />
+Because non-JSON lines pass through unchanged, and color is dropped when the
+output is piped, `some-app | jlf > app.log` is a handy way to strip ANSI codes
+from a mixed stream while still coloring it live on screen.
 
-Isn't it neat? The formatting syntax is very simple and readble, inspired by popular formatting syntax from the likes of rust and svelte.
+## Filtering
 
-We'll go over all the formatting rules now: fields, styles, conditionals, and variables.
-
-Especially, `variables` is a new addition in `jlf v0.2.0` which unlocked the power of granular customization.
-
-### Accessing Fields
-
-To print the fields of JSON log, simple write the field name in braces `{field1}`.
+A filter is `key OP value`. Filters keep matching records; multiple filters are
+ANDed.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "My Body", "data": {"user_id": 3175, "session_id": "Nsb3P5mZ7971NFIt", "ip_address": "149.215.200.169", "friends":["Jack","Jill"]}}
-
-# access the field by writing the field in braces
-cat ./examples/dummy_logs | jlf 'Msg: {message}!' # -> Msg: User logged in successfully!
-
-# if field may not exist, provide fallback fields separated by '|'. It will print the first field that exits.
-cat ./examples/dummy_logs | jlf 'Msg: {msg|body|message}!' # -> Msg: My Body!
-
-# access nested field using '.' as a separator.
-cat ./examples/dummy_logs | jlf 'User {data.user_id} logged in!' # -> User 3175 logged in!
-
-# access array items using '[n]' to index at `n`.
-cat ./examples/dummy_logs | jlf 'My girl friend is {data.friends[1]}.' # -> My girl friend is Jill.
-
-# if the field is an object or array, it will it as pretty json by default.
-cat ./examples/dummy_logs | jlf 'user data: {data}'
-# ->
-# user data: {
-#  "user_id": 3175,
-#  "session_id": "Nsb3P5mZ7971NFIt",
-#  "ip_address": "149.215.200.169",
-#  "friends": [
-#     "Jack",
-#     "Jill"
-#   ]
-# }
-
-# print the entire json by writing `{.}`
-cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{.}'
-# ->
-# user(3175): User logged in successfully
-# {
-#   "message": "User logged in successfully",
-#   "body": "My Body",
-#   "data": {
-#     "user_id": 3175,
-#     "session_id": "Nsb3P5mZ7971NFIt",
-#     "ip_address": "149.215.200.169",
-#     "friends": [
-#       "Jack",
-#       "Jill"
-#     ]
-#   }
-# }
-
-# print only the un-printed fields by writing `{..}`
-cat ./examples/dummy_logs | jlf 'user({data.user_id}): {message}\n{..}'
-# ->
-# user(3175): User logged in successfully
-# {
-#   "body": "My Body",
-#   "data": {
-#     "session_id": "Nsb3P5mZ7971NFIt",
-#     "ip_address": "149.215.200.169",
-#     "friends": [
-#       "Jack",
-#       "Jill"
-#     ]
-#   }
-# }
+jlf level=error                 # exact match
+jlf 'latency_ms>500'            # numeric (quote > and < for the shell)
+jlf msg~timeout                 # substring contains
+jlf level!=info                 # negation
+jlf level=error user=alice      # AND across tokens
+jlf level=error,warn            # OR within a field (comma)
+jlf 'lvl|level|severity=error'  # fallback fields — first present wins
 ```
 
-### Styling Fields
-
-You can provide styles to the values by providing styles after the `:`.
+Operators: `=` `!=` (string), `>` `>=` `<` `<=` (numeric), `~` `!~` (substring).
+Nested keys use dots (`data.user.id=7`). Numeric operators and `stats` read a
+leading number from the value, so a unit-suffixed field like `"6.193 ms"` is
+compared and aggregated as `6.193`. If the values aren't numeric, the ordering
+operators fall back to comparing timestamps chronologically, so
+`ts>2026-07-11T15:00:00Z` (or a partial bound like `ts>2026-07-11`) works. The
+common log timestamp formats are recognized — ISO 8601 / RFC 3339, RFC 2822 /
+HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`), Apache common-log
+(`10/Oct/2000:13:55:36 -0700`), log4j (`2026-07-11 15:11:48,123`), month-name
+dates, and syslog (`Oct 11 15:11:48`). Timezones understood are `Z`/`UTC`/`GMT`
+and numeric `±HH:MM`; named abbreviations like `EST` are not.
 
 ```sh
-cat ./examples/dummy_logs | jlf '{timestamp:bright blue,bg=red,bold} {level|lvl:level} {message|msg|body:fg=bright white}'
+printf '%s\n' \
+  '{"level":"info","user":"alice","latency_ms":42}' \
+  '{"level":"error","user":"bob","latency_ms":510}' \
+  '{"level":"error","user":"alice","latency_ms":620}' | jlf level=error -c
+```
+```text
+error {"user":"bob","latency_ms":510}
+error {"user":"alice","latency_ms":620}
 ```
 
-If you have multiple styles, you can separate them with `,`, like `fg=red,bg=blue`.
+## Selecting fields
 
-You can optionally provide the style type before the `=`. If you don't provide it, it will default to `fg`.
-
-<img width="700" alt="Screenshot 2025-03-04 at 12 18 28 AM" src="https://github.com/user-attachments/assets/acc21974-695b-4cf7-ba27-c873f944356d" />
-
-`level` is a special style that is only applied to `level` field; it will print in different colors for different levels.
-
-#### Available Styles
-
-- `dimmed`: make the text dimmed
-- `bold`: make the text bold
-- `fg={color}`: set the text color
-- `{color}`: same as `fg={color}`
-- `bg={color}`: set the background color
-- `indent={n}`: indent the value by `n` spaces
-- `key={color}`: sets the color of the key in JSON object
-- `value={color}`: sets the color of the non-string types in JSON object
-- `str={color}`: sets the color of the string data type in JSON object
-- `syntax={color}`: sets the color of the syntax characters in JSON object
-- `json`: print the json value as json; this is the default and only available format, so you don't have to specify it
-- `compact`: print in a single line
-- `level`: color the level based on the level (debug = green, info = cyan, etc.)
-
-In the above list, `{color}` is a placeholder for any color value.
-
-You can view all available colors in [colors.md](https://github.com/PoOnesNerfect/jlf/blob/main/colors.md).
-
-### Conditionals
-
-For conditionals, main conditional starts with `#` like `{#if ..}`, else conditions start with `:` like `{:else ..}`, and ending symbols start with `/` like `{/if}`.
-
-#### {#if cond1}{:else if cond2}{:else}{/if}
-
-**if** condition accepts a single field or multiple fields separated by '|'.
-
-**if** checks for the `truthy`ness of the given field values; one difference with Javascript truthiness is that empty object and array is evaluated to `false`.
+`-f`/`--fields` (or a bare comma-list) picks which fields to show, in order:
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
-
-# if field doesn't exist, or is null, it's `false`.
-cat ./examples/dummy_logs | jlf '{#if msg}msg: {msg}{:else if message}message: {message}{/if}' # -> message: User logged in successfully!
-
-# empty string is also `false`.
-cat ./examples/dummy_logs | jlf '{#if body}body = {body}{:else}no body{/if}' # -> no body
-
-# number 0 is also 'false'.
-cat ./examples/dummy_logs | jlf '{#if count}count = {count}{:else}count is zero{/if}' # -> count is zero
-
-# empty object or arrays are also 'false'.
-cat ./examples/dummy_logs | jlf '{#if data.friends}friends: {data.friends}{:else}I have no friends{/if}' # -> I have no friends
-
-# nesting is allowed
-cat ./examples/dummy_logs | jlf '{#if data.user_id}user ({data.user_id}) {#if message}has a message{:else}has no message{/if}{/if}.' # -> user (3175) has a message.
-
-# if multiple fields are given, it will return `true` if at least one of them is `truthy`.
-cat ./examples/dummy_logs | jlf "{#if msg|body|data.count|message}I'm still here{/if}" # -> I'm still here
+printf '{"ts":"t1","level":"info","user":"alice","latency_ms":42}\n' | jlf -f ts,level,user
+# -> t1 info alice
 ```
 
-#### {#key field1}{:else key field2}{:else}{/key}
+The selected fields are also the columns for table formats (`@csv`, `@md`) and
+for `$cols(...)` in a template.
 
-**key** condition accepts a single field or multiple fields separated by '|'.
+## Summaries
 
-**key** checks the existence of the given field; even when the field value is `falsey`, it will evaluate to `true` if the field exists, and is not null.
+A summary subcommand comes first; filters still apply.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
-
-# if field doesn't exist, or is null, it's `false`.
-cat ./examples/dummy_logs | jlf '{#key msg}msg: {msg}{:else key message}message: {message}{/key}' # -> message: User logged in successfully!
-
-# empty string is still `true`.
-cat ./examples/dummy_logs | jlf '{#key body}body = {body}{:else}no body{/key}' # -> body = 
-
-# number 0 is also 'true'.
-cat ./examples/dummy_logs | jlf '{#key count}count = {count}{:else}count is zero{/key}' # -> count = 0
-
-# empty object or arrays are also 'true'.
-cat ./examples/dummy_logs | jlf '{#key data.friends}friends: {data.friends}{:else}I have no friends{/key}' # -> friends: []
-
-# nesting is allowed
-cat ./examples/dummy_logs | jlf '{#key data.user_id}user ({data.user_id}) {#key message}has a message{:else}has no message{/key}{/key}.' # -> user (3175) has a message.
-
-# if multiple fields are given, it will return `true` if at least one of them exists.
-cat ./examples/dummy_logs | jlf "{#key msg|no_field|message}I'm still here{/key}" # -> I'm still here
+jlf count                       # count matching lines
+jlf count level                 # frequency breakdown by a field
+jlf stats latency_ms            # count/min/max/mean/p50/p90/p99
+jlf stats latency_ms by level   # grouped stats
+jlf top user                    # most frequent values (top N, default 10)
+jlf uniq user                   # number of distinct values
+jlf count level level=error     # filters apply to summaries too
 ```
-
-#### {#config config1}{:else}{/config}
-
-**config** condition accepts a config: `compact`, `no_color`, or `strict`.
-
-**config** returns `true` if the given config is set.
 
 ```sh
-# Example Line: {"message": "User logged in successfully", "body": "", "data": {"user_id": 3175, "count": 0, "friends":[]}}
-
-# If `compact` is set, print ` `; if `compact` is not set, print `\n`
-cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else}\n{/config}{..}'
-# `jlf -c`
-# User logged in successfully {"body":"","data":{"user_id":3175,"count":0,"friends":[]}}
-#
-# `jlf`
-# User logged in successfully
-# {
-#   "body": "",
-#   "data": {
-#     "user_id": 3175,
-#     "count": 0,
-#     "friends": []
-#   }
-# }
-
-
-# {:else config ..} is not supported.
-cat ./examples/dummy_logs | jlf '{message}{#config compact} {:else config strict}strict{:else}\n{/config}{..}' -> INVALID
+printf '%s\n' \
+  '{"level":"info","latency_ms":42}' \
+  '{"level":"error","latency_ms":510}' \
+  '{"level":"error","latency_ms":620}' | jlf stats latency_ms
+```
+```text
+count 3
+min   42.00
+max   620.00
+mean  390.67
+p50   510.00
+p90   620.00
+p99   620.00
 ```
 
-### Variables
+Percentiles are exact for normal inputs and switch to a t-digest approximation
+past ~50k values per group (count/min/max/mean stay exact). A summary field
+accepts a `|` fallback chain too (`stats latency_ms|duration`).
 
-**variable** are key=value pairs, where `key` is a string, and `value` is a format string.
+Render a summary as a table by adding a format:
 
-You can reference a variable in the format string or in another variable as `{&variable}`.
+```sh
+jlf count level @csv
+jlf stats latency_ms by endpoint @md
+```
 
-Here is the list of all default variables:
+## Exporting
+
+The built-in `csv`, `tsv`, and `md` formats turn selected columns into a table.
+Run one by name (`@csv`) with a column list:
+
+```sh
+printf '%s\n' '{"a":"1","b":"x,y"}' '{"a":"2","b":"z"}' | jlf @csv a,b
+```
+```text
+a,b
+1,"x,y"
+2,z
+```
+
+`@md` frames a GitHub-style table; `@tsv` uses tabs. Values are escaped for the
+target format (the `x,y` above is quoted). Redirect to a file as usual:
+
+```sh
+jlf @csv ts,level,message -i app.log > out.csv
+```
+
+**Redaction** masks fields by name or path (comma-separated), for both the view
+and exports:
+
+```sh
+printf '{"user":"bob","token":"secret"}\n' | jlf -c --redact token
+# -> {"user":"bob","token":"***"}
+```
+
+A bare name or `*.name` matches that key at any depth; a dotted path targets a
+specific one, e.g. `--redact password,*.email,fields.message`.
+
+## Interactive viewer (`jlf-tui`)
+
+`jlf-tui` is a full-screen terminal app for viewing, filtering, redacting, and
+summarizing logs with vi-style keys. It **live-tails** its input, so it works on
+a growing file or a pipe, and it renders records in color.
+
+```sh
+tail -f app.log | jlf-tui     # follow a live stream
+jlf-tui app.log               # open a file (keeps following appends)
+jlf-tui app.log level=error   # start with a filter applied
+```
+
+Layout: a colored record list, an optional detail pane (**Enter** toggles it)
+showing the selected record as syntax-highlighted JSON, and a single bottom bar
+with the follow state, any transient message, and the key hints (or the input
+line while you're typing a `/` search, `?` filter, or `:` command). The active
+filter, search, and record count show in the framed input box. The list is one
+dense line per record by default; **`c`** expands it to the full multi-line
+rendering (header + pretty data), like piped `jlf`.
+
+| key | action |
+| --- | ------ |
+| `j`/`k`, `↓`/`↑` | move selection |
+| `g`/`G` | jump to top / bottom |
+| `d`/`u` | half page down / up |
+| `D`/`U` | full page down / up |
+| `Enter` | open / close the detail pane |
+| `J`/`K` | scroll the detail pane |
+| `f` | toggle follow (auto-scroll to newest) |
+| `c` | compact / expand the record rows |
+| `r` | raw rows (the record as-is) / formatted |
+| `e` | open the current view in `$EDITOR` (raw JSON, honoring the filter) |
+| `a` | **Actions** panel — summaries, export, save-as-recipe |
+| `/` | search — highlight matches (see below) |
+| `n`/`N` | next / previous search match |
+| `?` | filter — narrow to matching rows (see below) |
+| `:` | command (see below) |
+| `h` | help overlay |
+| `Esc` | close a popup, then clear the search, then the filter |
+| `q` | quit |
+
+**Memory over long streams.** A viewer that held every line would grow without
+bound on a busy `tail -f`. Instead `jlf-tui` keeps the **first** and **most
+recent** records resident — the two places `g` and `G` jump to — and spills the
+middle to a temp file, paging chunks back on demand (prefetching just off the
+visible edges so scrolling stays smooth). Memory stays bounded no matter how long
+the stream runs; the temp file is removed on exit. Summaries and filters still
+cover the **whole** stream (memory and file), not just what's in RAM.
+
+**Search** (`/`): highlights matching text in the **displayed** (formatted) rows
+— what you see, not the raw JSON, so every match is visible and reachable
+(smart-case: lowercase matches any case, uppercase is exact; raw mode `r` matches
+the JSON verbatim). Search is **without hiding rows** — every record stays visible
+and the matched text is highlighted. It's **incremental**: the selection jumps to
+the nearest match as you type (with a live count in the bottom bar), **Enter**
+commits and **Esc** returns to where you started. After committing, **`n`** steps
+up (older) and **`N`** down (newer), and the status line shows your position
+(`/query 3/12 matches`).
+
+**Filter** (`?`): **narrows** to matching records. Tokens shaped like
+`field=value` (operators `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`) filter
+structurally; **bare words** match anywhere in the raw record, and you can mix
+them (`?level=error timeout`). It autocompletes field paths (nested and array
+ones like `fields.status`, `spans.0.method`), then operators, then that field's
+values. Nothing is selected until you press **Tab/↓**, which selects and fills
+successive candidates (so **Enter** applies immediately); **Shift-Tab/↑** steps
+back, returning to what you typed past the first item; **Esc** exits. Search and
+filter compose — a search highlights within the filtered view.
+
+**Commands** (`:`) also autocomplete (the verb, then a field). Available:
+`count [field]`, `stats field`, `top field [n]`, `uniq field`, `redact a,b`,
+`csv|tsv|md cols [file]`, `follow`, `save name`, `help`, `quit`. Summaries and
+exports run against the **current filtered view** over the whole stream (memory
+and spilled file); a summary shows a `computing…` progress line while it folds a
+large store and keeps updating live as new records arrive.
+
+**Actions panel** (`a`) is a one-stop menu: pick a summary (count/stats/top/uniq)
+with a group-by field, export as csv/tsv/md, or **save the current filter and
+redaction as a `[recipe.NAME]`** in your workspace config — reusable from the CLI
+as `jlf @name`.
+
+For example: `/error` to highlight errors and `n` to jump between them, `Enter`
+to inspect a record, then `a` → "Stats" → pick a field, or `:save errors` to keep
+the view as a recipe.
+
+See **[docs/tui.md](docs/tui.md)** for the full viewer reference.
+
+## Command builder (`jlf-it`)
+
+`jlf-it` is an interactive builder that lets you assemble a command and see the
+result update as you go. You pick a mode, then an **edit menu** shows the current
+command and a **live preview** against your sample. Editing any part — filters, a
+template, columns, a summary — refreshes the preview **on every keystroke**, so
+you see the effect as you type, without leaving the field.
+
+When a filter excludes everything in the sample, the preview doesn't just go
+blank: it **synthesizes a matching record** (by adjusting a real sample line to
+satisfy the filter) and shows that instead, clearly labelled, so you can still
+see the shape of the result. While you edit a filter, non-matching records stay
+on screen **dimmed** rather than vanishing as you type.
+
+Press **Tab** to autocomplete: it suggests the sample's field paths — nested and
+array ones included (`fields.status`, `spans.0.method`) — then the comparison
+operators, then that field's actual values, so you rarely have to type a full
+`level=error` by hand. Nothing is selected until you press **Tab/↓**, which
+selects and fills successive candidates (so **Enter** applies immediately);
+**Shift-Tab/↑** steps back, returning to what you typed past the first item;
+**Esc** exits; and **Ctrl-W** (plus the usual **Ctrl-U/K/A/E**) edit the line.
+
+The screen shows two bordered panels — the **raw sample record** (colored, with
+the fields you type highlighted) above the **preview** of your command. When a
+record is taller than its panel, **PgUp/PgDn** scroll the sample so you can read
+all of it.
+
+```sh
+jlf-it app.log          # build against a file
+head -200 app.log | jlf-it   # ...or a finite pipe (used as the sample)
+jlf-it                  # ...or pick a sample interactively
+```
+
+The main menu shows each part with a single-key accelerator (`[f]` filters,
+`[t]` fields, `[r]` run, `[s]` save, …), a **live preview**, and the equivalent
+command, all in bordered panels. The preview is curated — near-identical records
+collapse and errors float up, so you see variety rather than the first
+repetitive lines. When you're happy, **Run it** streams the built command against
+the real input (re-reading a file, or resuming a live pipe, so
+`docker logs -f | jlf-it` keeps tailing), or **Save** it as a `[recipe.NAME]`
+block in your `.jlf.toml` (or user config) to reuse with `jlf @NAME`.
+
+It works on a file, a finite pipe, or a live stream — it reads a bounded sample
+for the preview and needs a terminal for the prompts.
+
+See **[docs/it.md](docs/it.md)** for the full builder reference.
+
+## Custom formatting
+
+The default view is just a template. Provide your own to lay records out however
+you like — `jlf` uses a small `$`-based template language.
+
+```sh
+printf '{"level":"INFO","user":"alice","latency_ms":42}\n' \
+  | jlf '$level ${user} took ${latency_ms}ms'
+# -> INFO alice took 42ms
+```
+
+Plain text is literal; `$` introduces interpolation. Two families make up the
+language: `${ … }` interpolation, and self-closing `$name( … )` blocks
+(repetition, conditionals, and `$match`). The block forms borrow their shape
+from Rust's `macro_rules!`. Here's a tour; see **[docs/DSL.md](docs/DSL.md)** for
+the complete reference with an example of every construct.
+
+**Fields.** `$name`, nested `${a.b}`, fallbacks `${a|b|c}` (first present wins),
+the whole record `${.}`, the leftovers `${..}`, and optional `${?field}` (an
+absent field collapses one adjacent space).
+
+```sh
+echo '{"a":1,"b":2}' | jlf -c 'a=$a rest=${..}'
+# -> a=1 rest={"b":2}
+```
+
+**Modifiers** follow a `:` — styling (`fg=cyan`, `dimmed`, `bold`, or a bare
+color name), `:json` for object/array values, and escaping (`:csv`, `:tsv`,
+`:md`, `:html`).
+
+```sh
+echo '{"v":"<x>"}' | jlf '${v:html}'
+# -> &lt;x&gt;
+```
+
+**Conditionals** are self-closing blocks that chain by adjacency:
+
+```sh
+printf '{"status":200}\n{"status":404}\n{"status":503}\n' \
+  | jlf '$if(status >= 500 => down)$elif(status >= 400 => client)$else(ok)'
+# -> ok
+# -> client
+# -> down
+```
+
+- `$if(COND => body)` — truthy, or a comparison with `== != > >= < <=`.
+- `$has(FIELD => body)` — existence (a present-but-falsey `0`/`""` still counts).
+- `$config(FLAG => body)` — branch on `compact`/`no_color`/`strict`.
+
+Everything inside the parens is layout, so a chain can be written across lines in
+a config recipe (whitespace between branches is ignored, and a decorative line
+break at a branch body's edge is dropped — the output stays on one line):
 
 ```toml
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
+[recipe.output]
+out = '''$if(status >= 500 => ${timestamp} DOWN ${status})
+$elif(status >= 400 => ${timestamp} WARN ${status})
+$else(${timestamp} ok ${status})'''
 ```
 
-You can see the variables with command `jlf list`.
-
-When expanded, variable `output` will look like this:
+**Match** dispatches on a value, binding the subject to `$value`:
 
 ```sh
-{#key timestamp|level|lvl|severity|message|msg|body|fields.message}{#key timestamp}{timestamp:dimmed} {/key}{#key level|lvl|severity}{level|lvl|severity:level} {/key}{message|msg|body|fields.message}{#config compact} {:else}\n{/config}{/key}{..:json}
+printf '{"s":200}\n{"s":503}\n' \
+  | jlf '$match(s $when(>=500 => 5xx) $when(400..500 => 4xx) $else(ok:$value))'
+# -> ok:200
+# -> 5xx
 ```
 
-You can view the expanded variables by calling `jlf expand VARIABLE`.
+Patterns are comparisons, numeric ranges (`400..500`), literals, and `|`
+alternation. A missing subject matches no arm (not even `$else`).
 
-For example, `jlf expand log` will output `{timestamp|level|lvl|severity|message|msg|body|fields.message}`.
-
-If you don't provide at variable, `jlf expand`, it will print the fully expanded format string.
+**Repetition** iterates fields, an object/array, columns, or the record stream —
+`$( … )`, `$path( … )`, `$cols( … )`, `$rows( … )` — with a `*`/`+`/`?` operator:
 
 ```sh
-# Example Line: {"timestamp": "2024-02-09T07:22:41.439284", "level": "DEBUG", "message": "User logged in successfully", "data": {"user_id": 3175}}
-
-cat ./examples/dummy_logs | jlf
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
-# {
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# replace variable `message_log`
-cat ./examples/dummy_logs | jlf -v message_fmt="Message: {&message}"
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG Message: User logged in successfully
-# {
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# don't print timestamp by resetting variable `timestamp`
-cat ./examples/dummy_logs | jlf -v timestamp=
-# ->
-# DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# we can pass multiple variables
-cat ./examples/dummy_logs | jlf -v timestamp= -v message_fmt="Message: {&message}"
-# ->
-# DEBUG Message: User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# instead of printing only unused fields, print the entire json
-cat ./examples/dummy_logs | jlf -v data="{.}"
-# ->
-# 2024-02-09T07:22:41.439284 DEBUG User logged in successfully
-# {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "message": "User logged in successfully",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
-
-# replace the entire format.
-# default format string is `{&output}`; therefore, replacing variable `output`
-# will replace the format string.
-cat ./examples/dummy_logs | jlf -v output="{&message_fmt}: {&data_fmt}"
-# User logged in successfully: {
-#   "timestamp": "2024-02-09T07:22:41.439284",
-#   "level": "DEBUG",
-#   "data": {
-#     "user_id": 3175
-#   }
-# }
+echo '{"a":1,"b":2}' | jlf '$( $key=$value )" "*'
+# -> a=1 b=2
 ```
 
-As you can see, it's extremely easy to update the format either partially or wholly by replacing the default variables.
+**Includes** inline another recipe: `${@name}` (and `${?@name}` to optionalize).
 
-#### Storing Variables
+## Recipes and configuration
 
-This is all and good, but it may still become annoying to specify variables as commands options everytime.
+A **recipe** is a named, reusable definition — a layout fragment, a template, a
+saved command, or an output format. It's the one shape that replaces separate
+variables, presets, and formats. Refer to a recipe as `@name`:
 
-Instead we can set the variables in the config file.
+- `jlf @name` runs it (filter → summarize/render → `out`).
+- `${@name}` inlines its `out` in another template.
 
-**jlf** looks for the config file `$XDG_CONFIG_HOME/jlf/config.toml` and `jlf.toml`/`.jlf.toml` in the current workspace.
-
-Priority of config and variables is `Command options` > `jlf.toml`|`.jlf.toml` > `$XDG_CONFIG_HOME/jlf/config.toml`.
-
-Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
-You can copy this file into your config directory as `jlf/config.toml` or to your workspace as `.jlf.toml` or `jlf.toml`.
-
-_**jlf.toml**_
+Recipes live in a config file: a workspace `.jlf.toml` / `jlf.toml`, or your user
+config at `$XDG_CONFIG_HOME/jlf/config.toml`. Workspace values override user
+values.
 
 ```toml
-# Default variables
-# Replace or add variables as needed
-[variables]
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
+[recipe.errors]                 # a saved command: filter + layout
+filter = "lvl|level|severity=error,fatal"
+out    = "$ts $level $message"
+
+[recipe.slow]                   # a summary
+filter = "status>=500"
+stats  = "latency_ms"
+by     = "endpoint"
+format = "md"
 ```
 
-## Config File
+```sh
+jlf @errors                     # filter to errors/fatals, render with its layout
+jlf @slow                       # grouped latency stats as a Markdown table
+```
 
-Default config values are written in [PoOnesNerfect/jlf/.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
+A recipe is a starting point, not a frozen command — explicit args layer on top:
 
-Feel free to copy this into your config directory, like `$XDG_CONFIG_HOME/jlf/config.toml`, or your workspace directory as `.jlf.toml` or `jlf.toml`.
+```sh
+jlf @errors status=500          # add a filter (ANDed with the recipe's)
+jlf @errors level=warn          # override the same-field filter
+jlf @errors '$ts $msg'          # override the layout
+```
 
-_**jlf.toml**_
+### One key, three shapes
+
+Every recipe has **one content key, `out`** — what the recipe shows. Its *shape*
+decides how it's used, exactly like an argument you'd type on the CLI:
+
+| `out` looks like | it's a… | example |
+| ---------------- | ------- | ------- |
+| a `$…` template | layout | `out = "$ts $level $message"` |
+| an `a,b,c` list | column set | `out = "timestamp,level,message"` |
+| a single `field[:mods]` | value accessor | `out = "latency_ms|duration:yellow"` |
+
+Only the **single-field** shape is a *value*, so only it becomes an `@name` you
+can filter and summarize on. A template or a column list is display-only.
+
+### A named value — one definition, three uses
+
+When `out` is a single field (a fallback chain), the recipe names a value. Once
+named, it works the same in **templates, filters, and summaries**:
 
 ```toml
-# Default config values
+[recipe.latency]
+out = "latency_ms|duration|elapsed"
+```
+
+```sh
+jlf '${@latency}ms $message'    # template: render it
+jlf @latency>500                # filter: keep slow requests
+jlf stats @latency              # summary: percentiles
+jlf count @latency              # summary: value breakdown
+```
+
+Each resolves the same `latency_ms|duration|elapsed` chain, picking the first
+present field. Add an inline style with `:` — `out = "latency_ms|duration:yellow"`
+— and the accessor (`latency_ms|duration`) still filters and summarizes; the
+`:yellow` only affects how it renders.
+
+A **template or column** recipe is not a value, so using it in a filter or
+summary slot is an error with a hint — filter the underlying field instead:
+
+```sh
+jlf @level=error                # error: `@level` is a display recipe, not a value
+jlf level=error                 # do this — `level` is a real field
+```
+
+### Recipe keys
+
+All keys are optional; a recipe uses only the ones its role needs.
+
+| key | purpose |
+| --- | ------- |
+| `out` | what the recipe shows — a `$…` template, an `a,b,c` column list, or a single `field[:mods]` value accessor (see the table above) |
+| `filter` | records to keep (same operators as CLI filters) |
+| `count` / `stats` / `top` / `uniq` | run a summary over a field; `by` groups, `n` sets top-N |
+| `escape` | default escape for interpolated values (`html`/`csv`/`tsv`/`md`/`none`); also marks the recipe as a format |
+| `redact` / `compact` | mask fields; force compact |
+| `format` | the output *encoding* — same axis as `--format` (`csv`/`tsv`/`md`, or a format recipe by name). `out` is *what* to show; `format` is how to wrap it |
+| `base` | inherit another recipe (`@other`), then override its keys |
+
+A single-field `out` can carry inline render modifiers after a `:` —
+`out = "timestamp:dimmed"`, `out = "latency_ms|duration:fg=cyan,bold"`. The part
+before the `:` is the value accessor; the modifiers only affect how it renders.
+
+### Output formats are recipes
+
+An output format is a recipe whose `out` frames the stream with `$rows(...)`
+(text before it prints once as a header, text after once as a footer) or that
+sets a global `escape`. The built-in `csv`/`tsv`/`md` are seeded this way, and
+custom formats are ordinary recipes:
+
+```toml
+[recipe.report]
+escape = "html"
+out = "<ul>\n$rows( <li>${level}: ${msg}</li>\n)*</ul>\n"
+```
+
+```sh
+printf '{"level":"INFO","msg":"a<b"}\n' | jlf @report
+# -> <ul>
+# -> <li>INFO: a&lt;b</li>
+# -> </ul>
+```
+
+`format` names an *encoding* — the same axis as `--format md` or the built-in
+`csv`/`tsv`/`md` — so a custom frame like `report` is just another value it can
+take. `out` still says *what* to show (here, which columns); `format` says how to
+wrap it. Just as `format = "md"` renders columns as a Markdown table, this renders
+them through the `report` frame above:
+
+```toml
+[recipe.errdump]
+out    = "timestamp,level,msg"  # what to show (the columns)
+format = "report"               # how to wrap it (the frame above; cf. --format)
+filter = "level=error"
+```
+
+### Conditional overrides
+
+A `[recipe.NAME.<flag>]` sub-table overrides individual keys when a flag holds
+(`compact`, `no_color`, `strict`). The default `output` uses this so `--compact`
+keeps the JSON inline, separated by a tab (rendered at the terminal's tab stops)
+instead of a newline:
+
+```toml
+[recipe.output]
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
+
+[recipe.output.compact]
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
+```
+
+### The default configuration
+
+These are the built-in defaults, and a good starting point to copy and tweak.
+Inspect resolved recipes with `jlf list`, and expand one with `jlf expand NAME`.
+
+```toml
 [config]
-format   = "{&output}"
+out      = "${@output}"
 compact  = false
 no_color = false
 strict   = false
 
-# Default variables
-[variables]
-output        = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log           = "{&timestamp|&level|&message}"
-log_fmt       = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp     = "{timestamp}"
-level_fmt     = "{#key &level}{&level:level} {/key}"
-level         = "{level|lvl|severity}"
-message_fmt   = "{&message}"
-message       = "{message|msg|body|fields.message}"
-new_line      = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt      = "{&data:json}"
-data          = "{..}"
+# `output` joins the recipes below. Each is optional by default, so an absent
+# field collapses its space.
+[recipe.output]
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
+
+[recipe.output.compact]
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
+
+[recipe.timestamp]
+out = "timestamp:dimmed"
+
+# `level` dispatches on lvl|level|severity and colors it by severity; an unknown
+# level renders uncolored, and a missing one renders nothing.
+[recipe.level]
+out = '''$match(lvl|level|severity
+  $when("ERROR"|"error" => ${value:fg=red})
+  $when("WARN"|"warn"   => ${value:fg=yellow})
+  $when("INFO"|"info"   => ${value:fg=cyan})
+  $when("DEBUG"|"debug" => ${value:fg=green})
+  $when("TRACE"|"trace" => ${value:fg=cyan,dimmed})
+  $else(${value})
+)'''
+
+[recipe.message]
+out = "message|msg|body|fields.message"
+
+[recipe.data]
+out = "..:json"
 ```
 
-## Neat Trick
+The canonical copy lives at
+[.jlf.toml](https://github.com/PoOnesNerfect/jlf/blob/main/.jlf.toml).
 
-Given that:
+## How it works
 
-- If the input line is not a JSON, **jlf** will print the line as is.
-- **jlf** removes all ANSI escape codes when piping to a file.
+`jlf` can't assume the shape of incoming logs, so it parses each line
+dynamically. The usual tool for that is `serde_json::Value`, but logs have
+properties worth optimizing for:
 
-This means, you can just use `jlf` for non-JSON logs to pipe logs to a file with all the ansi escape codes removed.
-When you just pipe it to a terminal, it will still style the logs as before.
+1. each line is small,
+2. lines share a similar structure,
+3. we reformat rather than transform the data.
 
-Neat, right?
+So `jlf` uses a custom parser that:
 
-## Implementation
+1. parses objects into a vec of key/value pairs (not a map),
+2. reuses the vecs already allocated for the previous line,
+3. skips validating primitive values (we don't transform them),
+4. borrows `&str` slices of the input line instead of allocating new strings.
 
-### JSON Parsing
+On typical log lines it parses in roughly a third of the time of
+`serde_json::Value`:
 
-The program cannot assume what the data structure of the incoming JSON logs will be.
-There is no guarantee that the application that is piping the logs uses the best practices for logging,
-or keep the consistent structure.
-
-Thus, it must be able to parse any JSON log dynamically; that leaves us with having to use `serde_json::Value`.
-
-But, can we do better? The answer is yes.
-
-Although we cannot assume the data structure of the logs, we can still optimize for the common characteristics of JSON logs.
-So, I decided to make a custom JSON parser that is optimized for JSON logs.
-
-#### Some characteristics of common json logs:
-
-Below are some characteristics of common json logs that I thought I could optimize for:
-
-1. each log line is usually not super huge:
-2. log lines usually have similar structures:
-3. we don't need to transform data; we just reformat them.
-
-#### Optimizations
-
-Below are the optimizations I implemented for the corresponding items above:
-
-1. JSON objects are parsed into vec of key-value pairs instead of map.
-   - this way, we don't have to allocate memory for each key and value.
-2. Since each line of JSON log has a similar structure, we can reuse the existing vecs that are already allocated.
-   - we don't have to allocate memory for each line.
-3. Don't validate primitive values, since we don't need to transform the data.
-4. Instead of allocating new `String`s for each key and value, we use `&str` slices of the log string.
-
-#### Benchmarks
-
-So, how did it perform? That's the only thing that matters.
-
-```
-custom parse time: [987.52 ns 993.59 ns 1.0006 µs]
-Found 12 outliers among 100 measurements (12.00%)
-9 (9.00%) high mild
-3 (3.00%) high severe
-
-serde value parse time: [2.8045 µs 2.8357 µs 2.8729 µs]
-Found 8 outliers among 100 measurements (8.00%)
-4 (4.00%) high mild
-4 (4.00%) high severe
-
-serde structured parse time: [712.16 ns 714.93 ns 717.54 ns]
+```text
+custom parse:       ~0.99 µs / line
+serde_json::Value:  ~2.84 µs / line
 ```
 
-First section is the custom parse, second is the parsing into `serde_json::Value` parse and third is deserializing into a structured rust object.
+## More docs
 
-The time is how long it took to deserialize a single line of json log.
-
-As we can see, our custom parser is about 3x faster than the `serde_json::Value` parsing.
-Yes, it is still slower than the structured parsing, but our parser is still pretty darn fast for parsing a dynamic JSON data.
+- **[docs/tui.md](docs/tui.md)** — the interactive viewer (`jlf tui`): keys,
+  views, filtering, summaries, and the bounded-memory model.
+- **[docs/it.md](docs/it.md)** — the command builder (`jlf it`): modes, the live
+  preview, autocomplete, and running or saving what you build.
+- **[docs/DSL.md](docs/DSL.md)** — the complete template language reference, with
+  a runnable example for every construct.
+- **[docs/colors.md](docs/colors.md)** — the color formats accepted by style
+  modifiers.

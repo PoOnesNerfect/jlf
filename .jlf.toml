@@ -1,21 +1,61 @@
-# Default config values
-[config]
-format = "{&output}"
-compact = false
-no_color = false
-strict = false
+# Default config + recipes. Copy this to your config dir
+# ($XDG_CONFIG_HOME/jlf/config.toml) or workspace (.jlf.toml / jlf.toml).
+# See the README (Recipes and configuration) for the full recipe model.
 
-# Default variables
-[variables]
-output = "{#key &log}{&log_fmt}{&new_line}{/key}{&data_fmt}"
-log = "{&timestamp|&level|&message}"
-log_fmt = "{&timestamp_fmt}{&level_fmt}{&message_fmt}"
-timestamp_fmt = "{#key &timestamp}{&timestamp:dimmed} {/key}"
-timestamp = "{timestamp}"
-level_fmt = "{#key &level}{&level:level} {/key}"
-level = "{level|lvl|severity}"
-message_fmt = "{&message}"
-message = "{message|msg|body|fields.message}"
-new_line = "{#key &data}{#config compact} {:else}\\n{/config}{/key}"
-data_fmt = "{&data:json}"
-data = "{..}"
+[config]
+out      = "${@output}"   # the default output template renders the `output` recipe
+compact  = false
+no_color = false
+strict   = false
+
+# Every recipe has one key: `out` — what it shows. Its shape decides the role:
+#   a `$…` template, an `a,b,c` column list, or a single `field[:mods]` value.
+# `output` is the entry point: it joins the recipes below. Each is optional, so
+# an absent field collapses its space — you write ${@name}, not ${?@name}.
+# output.compact only changes the separator before the JSON: a tab (rendered at
+# the terminal's tab stops) instead of the newline the multi-line output uses.
+[recipe.output]
+out = "${@timestamp} ${@level} ${@message}\n${@data}"
+
+[recipe.output.compact]
+out = "${@timestamp} ${@level} ${@message}\t${@data}"
+
+# A single field[:mods] `out` is a value: reusable as ${@name} in a template,
+# and usable as @name in filters (@timestamp>...) and summaries (stats @message).
+[recipe.timestamp]
+out = "timestamp:dimmed"
+
+# `level` colors the value by its severity via $match: the subject
+# (lvl|level|severity) is bound to ${value}, and the first matching arm renders.
+# A missing level matches no arm (not even $else), so it collapses to nothing.
+# This is a template, so it renders/colors but isn't itself a filter value —
+# filter the real field instead (level=error).
+[recipe.level]
+out = '''$match(lvl|level|severity
+  $when("ERROR"|"error" => ${value:fg=red})
+  $when("WARN"|"warn"   => ${value:fg=yellow})
+  $when("INFO"|"info"   => ${value:fg=cyan})
+  $when("DEBUG"|"debug" => ${value:fg=green})
+  $when("TRACE"|"trace" => ${value:fg=cyan,dimmed})
+  $else(${value})
+)'''
+
+[recipe.message]
+out = "message|msg|body|fields.message"
+
+[recipe.data]
+out = "..:json"
+
+# Built-in output formats, shown here for reference (they are seeded by jlf even
+# without a config). Run by name — `jlf @csv ts,level` — or via `--format md`.
+# `$cols( … )SEP*` repeats a cell per column joined by SEP; `$rows( … )*` repeats
+# the block per record, so text outside it frames the stream once.
+[recipe.csv]
+out = "$cols( $key ),*\n$rows( $cols( ${value:csv} ),* )*"
+
+[recipe.tsv]
+out = "$cols( $key )\t*\n$rows( $cols( ${value:tsv} )\t* )*"
+
+[recipe.md]
+out = "| $cols( $key )\" | \"* |\n| $cols( --- )\" | \"* |\n$rows( | $cols( ${value:md} )\" | \"* | )*"
+

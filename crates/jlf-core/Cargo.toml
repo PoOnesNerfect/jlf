@@ -1,0 +1,37 @@
+[package]
+name = "jlf-core"
+description = "Engine for jlf: zero-copy JSON parsing and template-based log formatting"
+documentation = "https://docs.rs/jlf-core"
+categories = ["parsing", "value-formatting"]
+keywords = ["json", "log", "format", "template"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "jlf_core"
+
+[dependencies]
+color-eyre = "0.6.5"
+owo-colors = { version = "4.3", features = ["alloc", "supports-colors"] }
+smallvec = "1.15"
+strip-ansi-escapes = "0.2.1"
+thiserror = "2.0"
+tosserror = "0.1.2"
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1"
+etcetera = "0.11"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1.0.150"
+
+[[bench]]
+name = "parse_json"
+harness = false
+
+[[bench]]
+name = "render"
+harness = false

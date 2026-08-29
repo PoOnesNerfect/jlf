@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use jlf::{parse_json, Json};
+use jlf_core::{parse_json, Json};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -116,7 +116,9 @@ fn serde_structured_parse_bench(c: &mut Criterion) {
     let mut value = serde_json::from_str(INPUTS[0]).unwrap();
 
     c.bench_function("serde structured parse", |b| {
-        b.iter(|| serde_structured_parse(black_box(&mut value), black_box(INPUTS)))
+        b.iter(|| {
+            serde_structured_parse(black_box(&mut value), black_box(INPUTS))
+        })
     });
 }
 
